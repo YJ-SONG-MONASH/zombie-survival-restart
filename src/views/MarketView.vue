@@ -91,11 +91,10 @@
 
           <template v-else>
             <span class="item-icon">
-              <img v-if="lootItem(slot)" :src="itemIconSrc(lootItem(slot))" :alt="lootItem(slot).canonicalName" @error="markIconMissing" />
+              <img v-if="lootItem(slot)" :src="itemIconSrc(lootItem(slot))" :alt="lootItem(slot).name" @error="markIconMissing" />
               <span>{{ lootItem(slot)?.fallbackIcon ?? '??' }}</span>
             </span>
             <strong>{{ lootItem(slot)?.name ?? '未知物资' }}</strong>
-            <small>{{ lootItem(slot)?.canonicalName ?? slot.itemId }}</small>
             <em>{{ lootStatusText(slot) }}</em>
           </template>
         </button>
@@ -240,7 +239,7 @@ function lootTooltip(slot) {
   if (!item) return '未知物资';
   const effects = itemEffects(item);
   return [
-    `${item.name} (${item.canonicalName})`,
+    item.name,
     `品质：${tierMeta(item.tier).shortLabel}`,
     `占用：${item.space} 格`,
     effects.length ? `属性：${effects.join(' / ')}` : '',
