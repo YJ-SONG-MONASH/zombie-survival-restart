@@ -55,7 +55,7 @@
     </section>
 
     <div class="trait-actions">
-      <button class="secondary" @click="game.selectedTraits = []">清空</button>
+      <button class="secondary" @click="clearTraits">清空</button>
       <button class="primary-action" :disabled="game.traitPointsRemaining < 0" @click="router.push('/market')">
         确认特性，开始囤货
       </button>
@@ -94,6 +94,11 @@ function iconSrc(trait) {
 
 function hideIcon(event) {
   event.currentTarget.classList.add('missing');
+}
+
+function clearTraits() {
+  game.selectedTraits = [];
+  game.recalculateCharacterState(false);
 }
 
 onMounted(() => {

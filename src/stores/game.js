@@ -1,12 +1,25 @@
 import { defineStore } from 'pinia';
-import { hiddenProfessionAliases, marketItems, professions, scenarios, shelterQualities, shelters, spawnLocations, traits } from '../data/zombie.js';
+import {
+  hiddenProfessionAliases,
+  marketItems,
+  professions,
+  scenarios,
+  shelterQualities,
+  shelters,
+  skillDefinitions,
+  spawnLocations,
+  traitAttributeMods,
+  traits,
+  vitalDefinitions,
+} from '../data/zombie.js';
 import { createDayEvent, createEnding, resolveAction } from '../services/engine.js';
 
 const defaultState = () => ({
   scenario: cloneCatalogRecord(scenarios[0]),
   day: 1,
   maxDay: 20,
-  stats: { hp: 100, san: 100 },
+  vitals: createBaseVitals(),
+  skills: createBaseSkills(),
   baseTraitPoints: 0,
   survivorName: '',
   spawnLocation: cloneCatalogRecord(spawnLocations[0]),
@@ -28,20 +41,27 @@ const defaultState = () => ({
 export const useGameStore = defineStore('game', {
   state: defaultState,
   getters: {
-    isGameOver: (state) => state.stats.hp <= 0 || state.stats.san <= 0 || state.day > state.maxDay,
-    isVictory: (state) => state.day > state.maxDay && state.stats.hp > 0 && state.stats.san > 0,
+    isGameOver: (state) => state.vitals.health <= 0 || state.day > state.maxDay,
+    isVictory: (state) => state.day > state.maxDay && state.vitals.health > 0,
     usedSpace: (state) => state.inventory.reduce((sum, item) => sum + item.space * item.count, 0),
     maxSpace: (state) => {
       const base = state.shelter?.space ?? 30;
-      if (state.selectedTraits.some((trait) => trait.id === 'organized')) return Math.floor(base * 1.3);
-      if (state.selectedTraits.some((trait) => trait.id === 'disorganized')) return Math.floor(base * 0.7);
-      return base;
+      const strengthBonus = Math.max(0, (state.skills?.strength ?? 5) - 5) * 3;
+      const bagBonus = state.inventory.reduce((sum, item) => sum + ((item.effects?.capacity ?? 0) * item.count), 0);
+      const total = base + strengthBonus + bagBonus;
+      if (state.selectedTraits.some((trait) => trait.id === 'organized')) return Math.floor(total * 1.3);
+      if (state.selectedTraits.some((trait) => trait.id === 'disorganized')) return Math.floor(total * 0.7);
+      return total;
     },
     remainingSpace() {
       return this.maxSpace - this.usedSpace;
     },
     traitPointsRemaining: (state) => state.baseTraitPoints + state.selectedTraits.reduce((sum, trait) => sum + trait.points, 0),
     traitTags: (state) => [...new Set(state.selectedTraits.flatMap((trait) => trait.tags ?? []))],
+    legacyStats: (state) => ({
+      hp: state.vitals.health,
+      san: Math.max(0, 100 - Math.max(state.vitals.panic, state.vitals.stress)),
+    }),
     unlockedProfessionIds: (state) => {
       const normalized = normalizeName(state.survivorName);
       return hiddenProfessionAliases
@@ -62,6 +82,7 @@ export const useGameStore = defineStore('game', {
         if (this.baseTraitPoints === undefined || this.baseTraitPoints === null) this.baseTraitPoints = this.profession?.traitPointMod ?? 0;
         if (!this.spawnLocation) this.spawnLocation = cloneCatalogRecord(spawnLocations[0]);
         if (!this.survivorName) this.survivorName = '';
+        if (!parsed?.game?.vitals || !parsed?.game?.skills) this.recalculateCharacterState(false);
       } catch {
         localStorage.removeItem('moshi-survival-state');
       }
@@ -91,7 +112,7 @@ export const useGameStore = defineStore('game', {
       const location = spawnLocations.find((item) => item.id === id);
       if (!location) return false;
       this.spawnLocation = cloneCatalogRecord(location);
-      if (this.profession) this.applyCharacterProfile(false);
+      if (this.profession) this.recalculateCharacterState(false);
       return true;
     },
     selectProfession(id) {
@@ -104,7 +125,7 @@ export const useGameStore = defineStore('game', {
       this.shelterChoices = [];
       this.shelterRollsUsed = 0;
       this.activeEvent = null;
-      this.applyCharacterProfile(true);
+      this.recalculateCharacterState(true);
       return true;
     },
     normalizeCatalogReferences() {
@@ -124,14 +145,42 @@ export const useGameStore = defineStore('game', {
         : [];
       this.shelterRollsUsed = Number.isFinite(this.shelterRollsUsed) ? Math.max(0, this.shelterRollsUsed) : 0;
       this.maxShelterRolls = Number.isFinite(this.maxShelterRolls) ? this.maxShelterRolls : 3;
+      this.vitals = normalizeVitals(this.vitals, this.stats);
+      this.skills = normalizeSkills(this.skills);
+      const rawInventory = Array.isArray(this.inventory) ? this.inventory : [];
+      this.inventory = rawInventory
+        .map((item) => marketItems.find((entry) => entry.id === item?.id || entry.name === item?.name))
+        .filter(Boolean)
+        .map((item) => ({ ...cloneCatalogRecord(item), count: rawInventory.find((entry) => entry?.id === item.id || entry?.name === item.name)?.count ?? 1 }));
+      this.selectedTraits = Array.isArray(this.selectedTraits)
+        ? this.selectedTraits
+            .map((trait) => traits.find((entry) => entry.id === trait?.id))
+            .filter(Boolean)
+            .map(cloneCatalogRecord)
+        : [];
     },
-    applyCharacterProfile(includeUnlocks = false) {
+    recalculateCharacterState(includeUnlocks = false) {
       if (!this.profession) return;
       const location = this.spawnLocation ?? spawnLocations[0];
+      const vitals = createBaseVitals();
+      const skills = createBaseSkills();
+      applyVitalMods(vitals, {
+        health: location.hpMod ?? 0,
+        panic: -(location.sanMod ?? 0),
+        stress: -(location.sanMod ?? 0),
+        ...(location.vitalMods ?? {}),
+      });
+      applyVitalMods(vitals, this.profession.vitalMods ?? {});
+      applySkillMods(skills, this.profession.skillMods ?? {});
+      this.selectedTraits.forEach((trait) => {
+        const mods = traitAttributeMods[trait.id] ?? {};
+        applyVitalMods(vitals, { ...(mods.vitalMods ?? {}), ...(trait.vitalMods ?? {}) });
+        applySkillMods(skills, { ...(mods.skillMods ?? {}), ...(trait.skillMods ?? {}) });
+      });
       this.baseTraitPoints = this.profession.traitPointMod ?? 0;
       this.money = 6500 + this.profession.money + (location.moneyMod ?? 0);
-      this.stats.hp = Math.max(1, 100 + this.profession.hp + (location.hpMod ?? 0));
-      this.stats.san = Math.max(1, 100 + this.profession.san + (location.sanMod ?? 0));
+      this.vitals = vitals;
+      this.skills = skills;
       if (!includeUnlocks) return;
       this.profession.unlocks?.forEach((itemId) => {
         const item = marketItems.find((entry) => entry.id === itemId);
@@ -144,10 +193,12 @@ export const useGameStore = defineStore('game', {
       const selected = this.selectedTraits.find((item) => item.id === id);
       if (selected) {
         this.selectedTraits = this.selectedTraits.filter((item) => item.id !== id);
+        this.recalculateCharacterState(false);
         return true;
       }
       if (this.selectedTraits.some((item) => item.conflicts?.includes(id) || trait.conflicts?.includes(item.id))) return false;
       this.selectedTraits.push(trait);
+      this.recalculateCharacterState(false);
       return true;
     },
     canSelectTrait(id) {
@@ -187,7 +238,8 @@ export const useGameStore = defineStore('game', {
       if (!this.activeEvent) {
         this.activeEvent = createDayEvent({
           day: this.day,
-          stats: this.stats,
+          vitals: this.vitals,
+          skills: this.skills,
           inventory: this.inventory,
           tags: this.hiddenTags,
           traits: this.selectedTraits,
@@ -207,7 +259,8 @@ export const useGameStore = defineStore('game', {
         inventory: this.inventory,
         tags: this.hiddenTags,
         traits: this.selectedTraits,
-        stats: this.stats,
+        vitals: this.vitals,
+        skills: this.skills,
       });
 
       outcome.consume.forEach((itemId) => this.removeItem(itemId, 1));
@@ -218,8 +271,7 @@ export const useGameStore = defineStore('game', {
       outcome.addTags.forEach((tag) => {
         if (!this.hiddenTags.includes(tag)) this.hiddenTags.push(tag);
       });
-      this.stats.hp = Math.max(0, Math.min(140, this.stats.hp + outcome.hp));
-      this.stats.san = Math.max(0, Math.min(140, this.stats.san + outcome.san));
+      this.vitals = applyVitalDelta(this.vitals, outcome.vitals);
       this.history.push({
         day: this.day,
         title: this.activeEvent.title,
@@ -238,7 +290,8 @@ export const useGameStore = defineStore('game', {
         this.ending = createEnding({
           day: this.day - 1,
           victory: this.isVictory,
-          stats: this.stats,
+          vitals: this.vitals,
+          skills: this.skills,
           profession: this.profession,
           survivorName: this.survivorName,
           spawnLocation: this.spawnLocation,
@@ -280,7 +333,75 @@ function cloneCatalogRecord(record) {
     ...record,
     tags: record.tags ? [...record.tags] : undefined,
     unlocks: record.unlocks ? [...record.unlocks] : undefined,
+    effects: record.effects ? { ...record.effects } : undefined,
+    vitalMods: record.vitalMods ? { ...record.vitalMods } : undefined,
+    skillMods: record.skillMods ? { ...record.skillMods } : undefined,
   };
+}
+
+function createBaseVitals() {
+  return Object.fromEntries(vitalDefinitions.map((vital) => [vital.id, vital.kind === 'bad' ? 20 : 100]));
+}
+
+function createBaseSkills() {
+  return Object.fromEntries(skillDefinitions.map((skill) => [skill.id, skill.defaultLevel ?? 0]));
+}
+
+function normalizeVitals(vitals, legacyStats = null) {
+  const normalized = createBaseVitals();
+  if (legacyStats?.hp !== undefined) normalized.health = legacyStats.hp;
+  if (legacyStats?.san !== undefined) {
+    const pressure = Math.max(0, Math.min(90, 100 - legacyStats.san));
+    normalized.panic = pressure;
+    normalized.stress = pressure;
+  }
+  Object.entries(vitals ?? {}).forEach(([key, value]) => {
+    if (key in normalized && Number.isFinite(value)) normalized[key] = value;
+  });
+  return clampVitals(normalized);
+}
+
+function normalizeSkills(skills) {
+  const normalized = createBaseSkills();
+  Object.entries(skills ?? {}).forEach(([key, value]) => {
+    if (key in normalized && Number.isFinite(value)) normalized[key] = clampSkill(value);
+  });
+  return normalized;
+}
+
+function applyVitalMods(vitals, mods = {}) {
+  Object.entries(mods).forEach(([key, value]) => {
+    if (key in vitals && Number.isFinite(value)) vitals[key] = clampVital(key, vitals[key] + value);
+  });
+}
+
+function applySkillMods(skills, mods = {}) {
+  Object.entries(mods).forEach(([key, value]) => {
+    if (key in skills && Number.isFinite(value)) skills[key] = clampSkill(skills[key] + value);
+  });
+}
+
+function applyVitalDelta(vitals, delta = {}) {
+  const next = normalizeVitals(vitals);
+  applyVitalMods(next, delta);
+  return next;
+}
+
+function clampVitals(vitals) {
+  const next = { ...vitals };
+  vitalDefinitions.forEach((vital) => {
+    next[vital.id] = clampVital(vital.id, next[vital.id]);
+  });
+  return next;
+}
+
+function clampVital(key, value) {
+  const max = vitalDefinitions.find((vital) => vital.id === key)?.max ?? 100;
+  return Math.max(0, Math.min(max, Math.round(value)));
+}
+
+function clampSkill(value) {
+  return Math.max(0, Math.min(10, Math.round(value)));
 }
 
 export function drawShelterChoices(count = 3) {

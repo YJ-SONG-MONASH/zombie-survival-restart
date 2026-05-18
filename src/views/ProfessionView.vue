@@ -29,10 +29,20 @@
           <h2>{{ game.profession.name }}</h2>
           <p>{{ game.profession.canonicalName }}</p>
           <small>{{ game.profession.summary }}</small>
-          <div class="stat-row">
+          <div class="stat-row stat-row-four">
             <span>点数 <strong>{{ signed(game.baseTraitPoints) }}</strong></span>
-            <span>生命 <strong>{{ game.stats.hp }}</strong></span>
-            <span>理智 <strong>{{ game.stats.san }}</strong></span>
+            <span v-for="vital in coreVitals" :key="vital.id">
+              {{ vital.label }} <strong>{{ vital.value }}</strong>
+            </span>
+          </div>
+          <div class="skill-chip-list">
+            <span v-for="skill in featuredSkills" :key="skill.id" class="skill-chip">
+              <span class="skill-icon">
+                <img :src="skillIconSrc(skill)" :alt="skill.canonicalName" @error="markIconMissing" />
+                <span>{{ skill.fallbackIcon }}</span>
+              </span>
+              {{ skill.label }} {{ skill.level }}
+            </span>
           </div>
           <div class="tag-list">
             <span v-for="tag in game.profession.tags" :key="tag">{{ tag }}</span>
@@ -98,7 +108,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { professions, spawnLocations } from '../data/zombie.js';
+import { professions, skillDefinitions, spawnLocations, vitalDefinitions } from '../data/zombie.js';
 import { useGameStore } from '../stores/game.js';
 
 const router = useRouter();
@@ -108,6 +118,15 @@ const survivorName = ref(game.survivorName || '');
 const visibleProfessions = computed(() => professions.filter((profession) => !profession.hiddenOnly || game.unlockedProfessionIds.includes(profession.id)));
 const unlockedHidden = computed(() => visibleProfessions.value.filter((profession) => profession.hiddenOnly));
 const canContinue = computed(() => survivorName.value.trim().length > 0 && Boolean(game.spawnLocation) && Boolean(game.profession));
+const coreVitals = computed(() => ['health', 'endurance', 'panic'].map((id) => {
+  const vital = vitalDefinitions.find((item) => item.id === id);
+  return { ...vital, value: game.vitals[id] };
+}));
+const featuredSkills = computed(() => skillDefinitions
+  .map((skill) => ({ ...skill, level: game.skills[skill.id] ?? 0 }))
+  .filter((skill) => skill.level > (skill.defaultLevel ?? 0))
+  .sort((a, b) => b.level - a.level)
+  .slice(0, 6));
 
 watch(survivorName, (value) => game.setSurvivorName(value), { immediate: true });
 
@@ -146,6 +165,10 @@ function professionGlyph(icon) {
 
 function professionIconSrc(profession) {
   return `${import.meta.env.BASE_URL}pz-occupations/${profession.iconFile}`;
+}
+
+function skillIconSrc(skill) {
+  return `${import.meta.env.BASE_URL}pz-skills/${skill.iconFile}`;
 }
 
 function markIconMissing(event) {

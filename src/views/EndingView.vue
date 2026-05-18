@@ -27,15 +27,27 @@
           <dt>出生点</dt>
           <dd>{{ game.ending.spawnName }}</dd>
         </div>
-        <div>
-          <dt>理智</dt>
-          <dd>{{ game.ending.san }}</dd>
+        <div v-for="vital in endingVitals" :key="vital.id">
+          <dt>{{ vital.label }}</dt>
+          <dd>{{ vital.value }}</dd>
         </div>
       </dl>
 
       <section class="highlight-box">
         <h2>高光时刻</h2>
         <p>{{ game.ending.highlight }}</p>
+      </section>
+
+      <section class="inventory-summary">
+        <h2>最高技能</h2>
+        <p v-if="!game.ending.topSkills?.length">没有明显技能优势</p>
+        <span v-for="skill in game.ending.topSkills" :key="skill.id" class="skill-chip">
+          <span class="skill-icon">
+            <img :src="skillIconSrc(skill)" :alt="skill.canonicalName" @error="markIconMissing" />
+            <span>{{ skill.fallbackIcon }}</span>
+          </span>
+          {{ skill.name }} {{ skill.level }}
+        </span>
       </section>
 
       <section class="inventory-summary">
@@ -66,13 +78,18 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
+import { vitalDefinitions } from '../data/zombie.js';
 import { useGameStore } from '../stores/game.js';
 
 const router = useRouter();
 const game = useGameStore();
 const nickname = ref('');
+const endingVitals = computed(() => vitalDefinitions.map((vital) => ({
+  ...vital,
+  value: game.ending?.vitals?.[vital.id] ?? 0,
+})));
 
 function saveArchive() {
   game.saveArchive(nickname.value.trim() || game.survivorName || game.profession?.name || '匿名幸存者');
@@ -82,5 +99,13 @@ function saveArchive() {
 function restart() {
   game.resetGame();
   router.push('/profession');
+}
+
+function skillIconSrc(skill) {
+  return `${import.meta.env.BASE_URL}pz-skills/${skill.iconFile}`;
+}
+
+function markIconMissing(event) {
+  event.currentTarget.classList.add('missing');
 }
 </script>

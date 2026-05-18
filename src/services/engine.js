@@ -1,10 +1,16 @@
-import { eventDeck, marketItems } from '../data/zombie.js';
+import { eventDeck, marketItems, skillDefinitions, vitalDefinitions } from '../data/zombie.js';
 
-const foodIds = ['biscuit', 'canned', 'noodle'];
-const waterIds = ['water'];
+const foodIds = ['canned_soup', 'canned_beans', 'canned_tuna', 'cereal', 'chips', 'peanut_butter'];
+const waterIds = ['water_bottle'];
 
-export function createDayEvent({ day, stats, inventory, tags, traits = [], shelter }) {
-  const pressure = (stats.hp < 35 ? 1 : 0) + (stats.san < 35 ? 1 : 0) + (tags.length > 2 ? 1 : 0);
+export function createDayEvent({ day, vitals, inventory, tags, traits = [], shelter }) {
+  const pressure =
+    (vitals.health < 35 ? 1 : 0) +
+    (vitals.hunger > 70 ? 1 : 0) +
+    (vitals.thirst > 70 ? 1 : 0) +
+    (vitals.fatigue > 70 ? 1 : 0) +
+    (Math.max(vitals.panic, vitals.stress) > 70 ? 1 : 0) +
+    (tags.length > 2 ? 1 : 0);
   const scoutBias = traits.some((trait) => ['eagle_eyed', 'keen_hearing', 'outdoorsman'].includes(trait.id)) ? 1 : 0;
   const index = (day * 3 + pressure + (shelter?.defense ?? 0) + scoutBias) % eventDeck.length;
   const event = eventDeck[index];
@@ -14,50 +20,66 @@ export function createDayEvent({ day, stats, inventory, tags, traits = [], shelt
   };
 }
 
-export function resolveAction({ day, actionText, optionId, event, profession, shelter, inventory, tags, traits = [], stats }) {
+export function resolveAction({ day, actionText, optionId, event, profession, shelter, inventory, tags, traits = [], vitals, skills }) {
   const option = event.options.find((entry) => entry.id === optionId);
   const action = `${option?.label ?? ''} ${actionText ?? ''}`.toLowerCase();
   const traitIds = new Set(traits.map((trait) => trait.id));
-  const profile = scoreProfile({ action, option, profession, shelter, inventory, tags, traits, stats, event });
+  const profile = scoreProfile({ action, option, profession, shelter, inventory, tags, traits, vitals, skills, event });
   const needsFood = !(traitIds.has('light_eater') && day % 2 === 0);
   const needsWater = !(traitIds.has('low_thirst') && day % 2 === 0);
   const food = needsFood ? consumeOne(inventory, foodIds) : null;
   const water = needsWater ? consumeOne(inventory, waterIds) : null;
 
-  let hp = profile.hp;
-  let san = profile.san;
+  const vitalDelta = {
+    health: profile.health,
+    endurance: profile.endurance,
+    hunger: 7,
+    thirst: 9,
+    fatigue: (traitIds.has('wakeful') ? 3 : 6) + profile.fatigue,
+    panic: profile.panic,
+    stress: profile.stress,
+  };
   const consume = [];
   const add = [];
   const addTags = [];
   const removeTags = [];
   const notes = [];
 
-  if (food) consume.push(food.id);
-  else if (!needsFood) notes.push('轻食简餐节省了一份食物');
-  else {
-    hp -= profession?.tags?.includes('高消耗') || traitIds.has('hearty_appetite') ? 26 : 18;
+  if (food) {
+    consume.push(food.id);
+    vitalDelta.hunger -= food.effects?.hunger ? Math.abs(food.effects.hunger) : 22;
+  } else if (!needsFood) {
+    notes.push('轻食简餐节省了一份食物');
+  } else {
+    vitalDelta.hunger += traitIds.has('hearty_appetite') ? 22 : 16;
+    vitalDelta.health -= vitals.hunger > 75 ? 12 : 5;
     notes.push('缺少食物');
     addTags.push('饥饿');
   }
 
-  if (water) consume.push(water.id);
-  else if (!needsWater) notes.push('低口渴节省了一瓶水');
-  else {
-    hp -= traitIds.has('high_thirst') ? 42 : 32;
-    san -= 4;
+  if (water) {
+    consume.push(water.id);
+    vitalDelta.thirst -= water.effects?.thirst ? Math.abs(water.effects.thirst) : 30;
+  } else if (!needsWater) {
+    notes.push('低口渴节省了一瓶水');
+  } else {
+    vitalDelta.thirst += traitIds.has('high_thirst') ? 30 : 22;
+    vitalDelta.health -= vitals.thirst > 75 ? 18 : 8;
+    vitalDelta.stress += 3;
     notes.push('缺少饮水');
     addTags.push('脱水');
   }
 
   if (traitIds.has('high_thirst')) {
-    const consumedWater = consume.filter((id) => id === 'water').length;
+    const consumedWater = consume.filter((id) => id === 'water_bottle').length;
     const extraWater = inventory.find((item) => waterIds.includes(item.id) && item.count > consumedWater);
     if (extraWater) {
       consume.push(extraWater.id);
+      vitalDelta.thirst -= 18;
       notes.push('高口渴额外消耗饮水');
     } else {
-      hp -= 10;
-      san -= 3;
+      vitalDelta.thirst += 12;
+      vitalDelta.health -= 6;
       notes.push('高口渴加重脱水压力');
     }
   }
@@ -67,24 +89,17 @@ export function resolveAction({ day, actionText, optionId, event, profession, sh
     const cigarette = inventory.find((item) => item.id === 'cigarette' && item.count > consumedCigarettes);
     if (cigarette) {
       consume.push(cigarette.id);
-      san += 5;
+      vitalDelta.stress -= 12;
       notes.push('烟瘾得到缓解');
     } else {
-      san -= 8;
+      vitalDelta.stress += 10;
       addTags.push('焦躁');
       notes.push('烟瘾发作');
     }
   }
 
-  if (inventory.some((item) => item.id === 'cat')) {
-    san += 5;
-    notes.push('橘猫让夜晚没那么空');
-  }
-
-  if (inventory.some((item) => item.id === 'book') && stats.san < 45) {
-    san += traitIds.has('illiterate') ? 0 : 3;
-  }
-
+  if (inventory.some((item) => item.id === 'teabag')) vitalDelta.stress -= 2;
+  if (inventory.some((item) => item.id === 'coffee') && vitals.fatigue > 55) vitalDelta.fatigue -= 4;
   if (profile.score < 35) addTags.push(profile.injury ? '受伤' : '精神紧绷');
   if (action.includes('绷带') || action.includes('包扎')) removeTags.push('受伤');
   if (action.includes('抗生素')) removeTags.push('感染');
@@ -94,7 +109,7 @@ export function resolveAction({ day, actionText, optionId, event, profession, sh
     notes.push('搜到额外物资');
   }
   if (event.id === 'rain' && (optionId === 'collect' || action.includes('接水'))) {
-    add.push({ ...marketItems.find((item) => item.id === 'water'), count: 2 });
+    add.push({ ...marketItems.find((item) => item.id === 'water_bottle'), count: 2 });
     notes.push('雨水补给');
   }
   if (event.id === 'broadcast' && profile.score >= 50) {
@@ -104,8 +119,7 @@ export function resolveAction({ day, actionText, optionId, event, profession, sh
 
   const result = buildNarrative({ actionText, day, event, option, profession, score: profile.score });
   return {
-    hp,
-    san,
+    vitals: vitalDelta,
     score: profile.score,
     consume,
     add,
@@ -117,17 +131,25 @@ export function resolveAction({ day, actionText, optionId, event, profession, sh
   };
 }
 
-export function createEnding({ day, victory, stats, profession, survivorName, spawnLocation, shelter, inventory, history, traits = [], highlight }) {
+export function createEnding({ day, victory, vitals, skills, profession, survivorName, spawnLocation, shelter, inventory, history, traits = [], highlight }) {
   const best = [...history].sort((a, b) => b.score - a.score)[0];
   const worst = [...history].sort((a, b) => a.score - b.score)[0];
-  const reason = victory
-    ? '等到军方撤离'
-    : stats.hp <= 0
-      ? '生命值耗尽'
-      : stats.san <= 0
-        ? '理智崩溃'
-        : '生存记录中断';
-  const archetype = pickArchetype({ history, profession, stats, victory });
+  const reason = victory ? '等到军方撤离' : vitals.health <= 0 ? '生命值耗尽' : '生存记录中断';
+  const archetype = pickArchetype({ history, profession, vitals, victory });
+  const topSkills = Object.entries(skills ?? {})
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([id, level]) => {
+      const skill = skillDefinitions.find((entry) => entry.id === id);
+      return {
+        id,
+        level,
+        name: skill?.label ?? id,
+        canonicalName: skill?.canonicalName ?? id,
+        iconFile: skill?.iconFile ?? '',
+        fallbackIcon: skill?.fallbackIcon ?? id.slice(0, 3).toUpperCase(),
+      };
+    });
   const comment = victory
     ? `${profession?.name ?? '幸存者'}撑过了封城二十天。你不是无伤通关，只是每一次快倒下时都找到了下一口气。`
     : `${worst?.title ?? '末日'}没有给你第二次解释的机会。${reason}不是突然发生的，它是每个代价累积后的最后一句话。`;
@@ -141,45 +163,56 @@ export function createEnding({ day, victory, stats, profession, survivorName, sp
     color: archetype.color,
     comment,
     highlight: highlight || best?.result || '没有特别耀眼的时刻，但每一天都算数。',
-    hp: stats.hp,
-    san: stats.san,
+    vitals: Object.fromEntries(vitalDefinitions.map((vital) => [vital.id, vitals[vital.id]])),
+    topSkills,
     survivorName: survivorName || '无名幸存者',
     professionName: profession?.name ?? '未知身份',
     spawnName: spawnLocation?.name ?? '未知出生点',
     traits: traits.map((trait) => ({ name: trait.name, canonicalName: trait.canonicalName, points: trait.points, icon: trait.icon })),
     shelterName: shelter?.name ?? '无避难所',
-    inventory: inventory.map((item) => ({ name: item.name, count: item.count, icon: item.icon })),
+    inventory: inventory.map((item) => ({ name: item.name, count: item.count, icon: item.fallbackIcon ?? item.icon })),
   };
 }
 
-function scoreProfile({ action, event, inventory, option, profession, shelter, stats, tags, traits }) {
-  let score = 54 + (shelter?.defense ?? 1) * 4 - event.risk * 8;
-  let hp = -event.risk * 3;
-  let san = -event.risk * 2;
+function scoreProfile({ action, event, inventory, option, profession, shelter, vitals, skills, tags, traits }) {
+  let score = 50 + (shelter?.defense ?? 1) * 4 - event.risk * 7;
+  let health = -event.risk * 2;
+  let endurance = -event.risk * 4;
+  let fatigue = 0;
+  let panic = event.risk * 4;
+  let stress = event.risk * 3;
   const professionTags = profession?.tags ?? [];
   const traitIds = new Set(traits.map((trait) => trait.id));
 
-  if (option?.stat === 'fight' && professionTags.some((tag) => ['战斗经验', '体能充沛', '警戒', '枪械训练', '斧头', '斧头专家', '短钝器', '力量'].includes(tag))) score += 18;
-  if (option?.stat === 'scout' && professionTags.some((tag) => ['警戒', '野外求生', '森林穿行', '潜行', '盗车老手', '车辆', '钓鱼', '户外'].includes(tag))) score += 14;
-  if (option?.stat === 'defense' && professionTags.some((tag) => ['建造', '木工', '维护', '修理', '焊接', '防御', '金属加工', '高级电工'].includes(tag))) score += 12;
-  if (option?.stat === 'empathy' && ['无业者', '医生', '护士'].includes(profession?.name)) score += 12;
-  if (option?.stat === 'scout' && professionTags.some((tag) => ['电工', '发电机知识', '工程', '机械'].includes(tag)) && action.includes('电')) score += 12;
-  if (option?.stat === 'san' && stats.san > 60) score += 10;
+  score += Math.floor(((skills.strength ?? 5) - 5) * 2);
+  score += Math.floor(((skills.fitness ?? 5) - 5) * 2);
+  if (vitals.endurance < 35) score -= 10;
+  if (vitals.fatigue > 70) score -= 10;
+  if (vitals.hunger > 80 || vitals.thirst > 80) score -= 12;
+  if (vitals.panic > 70) score -= 8;
+  if (vitals.stress > 70) score -= 6;
 
-  if (option?.stat === 'fight' && ['strong', 'stout', 'brawler', 'baseball_player', 'hunter', 'axe_man'].some((id) => traitIds.has(id))) score += 14;
-  if (option?.stat === 'scout' && ['cats_eyes', 'eagle_eyed', 'keen_hearing', 'graceful', 'inconspicuous', 'outdoorsman', 'hunter', 'burglar', 'former_scout', 'hiker'].some((id) => traitIds.has(id))) score += 12;
-  if (option?.stat === 'defense' && ['handy', 'amateur_mechanic', 'organized', 'sewer'].some((id) => traitIds.has(id))) score += 10;
-  if (option?.stat === 'empathy' && traitIds.has('hemophobic')) score -= 8;
-  if (option?.stat === 'san' && (traitIds.has('brave') || traitIds.has('desensitized'))) score += 8;
+  if (option?.stat === 'fight') score += bestCombatSkill(skills, inventory) * 5 + Math.floor((skills.strength ?? 5) * 1.2);
+  if (option?.stat === 'scout') score += ((skills.sneaking ?? 0) + (skills.lightfooted ?? 0) + (skills.nimble ?? 0) + (skills.foraging ?? 0)) * 2;
+  if (option?.stat === 'defense') score += ((skills.carpentry ?? 0) + (skills.maintenance ?? 0) + (skills.metalworking ?? 0) + (skills.electrical ?? 0)) * 3;
+  if (option?.stat === 'empathy') score += (skills.first_aid ?? 0) * 3;
+  if (option?.stat === 'san') score += vitals.stress < 55 ? 10 : -4;
 
-  if (inventory.some((item) => item.tags?.includes('weapon'))) score += option?.stat === 'fight' ? 15 : 5;
-  if (inventory.some((item) => item.id === 'shotgun') && inventory.some((item) => item.id === 'shells')) score += 12;
-  if (inventory.some((item) => item.tags?.includes('medical')) && tags.includes('受伤')) score += 8;
-  if (professionTags.includes('傻人傻福') && event.id === 'shop') score += 18;
+  if (option?.stat === 'fight' && professionTags.some((tag) => ['战斗经验', '体能充沛', '警戒', '枪械训练', '斧头', '斧头专家', '短钝器', '力量'].includes(tag))) score += 10;
+  if (option?.stat === 'scout' && professionTags.some((tag) => ['警戒', '野外求生', '森林穿行', '潜行', '盗车老手', '车辆', '钓鱼', '户外'].includes(tag))) score += 8;
+  if (option?.stat === 'defense' && professionTags.some((tag) => ['建造', '木工', '维护', '修理', '焊接', '防御', '金属加工', '高级电工'].includes(tag))) score += 8;
+
+  if (inventory.some((item) => item.tags?.includes('weapon'))) score += option?.stat === 'fight' ? 12 : 4;
+  if (inventory.some((item) => item.id === 'shotgun') && inventory.some((item) => item.id === 'shotgun_shells')) score += 12;
+  if (inventory.some((item) => item.id === 'm9_pistol') && inventory.some((item) => item.id === '9mm_rounds')) score += 9;
+  if (inventory.some((item) => item.tags?.includes('medical')) && tags.includes('受伤')) score += 8 + (skills.first_aid ?? 0) * 2;
+  if (inventory.some((item) => item.tags?.includes('generator')) && action.includes('电')) score += 8 + (skills.electrical ?? 0) * 2;
+  if (inventory.some((item) => item.id === 'gas_can') && (action.includes('车') || action.includes('发电机'))) score += 8;
+
   if (traitIds.has('lucky') && event.id === 'shop') score += 10;
   if (['cook', 'nutritionist', 'gardener', 'angler'].some((id) => traitIds.has(id)) && event.id === 'shop') score += 5;
   if (['herbalist', 'hiker', 'former_scout'].some((id) => traitIds.has(id)) && event.id === 'rain') score += 7;
-  if (traitIds.has('night_owl') && day % 2 === 0) score += 5;
+  if (traitIds.has('night_owl') && dayIsNightLike(event, action)) score += 5;
   if (traitIds.has('speed_demon') && action.includes('车')) score += 8;
   if (traitIds.has('unlucky')) score -= 8;
   if (traitIds.has('pacifist') && option?.stat === 'fight') score -= 14;
@@ -195,40 +228,58 @@ function scoreProfile({ action, event, inventory, option, profession, shelter, s
 
   if (tags.includes('受伤')) {
     score -= 10;
-    hp -= traitIds.has('slow_healer') ? 8 : 5;
+    health -= traitIds.has('slow_healer') ? 8 : 5;
   }
-  if (tags.includes('精神紧绷')) san -= 4;
-  if (tags.includes('焦躁')) san -= 4;
+  if (tags.includes('精神紧绷')) stress += 5;
+  if (tags.includes('焦躁')) stress += 5;
   if (action.includes('开枪') || action.includes('霰弹')) {
-    score += inventory.some((item) => item.id === 'shells') ? 16 : -18;
-    san -= 6;
+    score += inventory.some((item) => item.id === 'shotgun_shells' || item.id === '9mm_rounds') ? 14 : -18;
+    panic += 14;
+    stress += 8;
   }
-  if (action.includes('谈判') || action.includes('交换')) san += 3;
-  if (action.includes('休息') || action.includes('等待')) san += 6;
+  if (action.includes('谈判') || action.includes('交换')) stress -= 3;
+  if (action.includes('休息') || action.includes('等待')) {
+    fatigue -= 8;
+    stress -= 5;
+  }
 
   score = Math.max(5, Math.min(98, score + Math.floor(Math.random() * 21) - 10));
   if (traitIds.has('fast_learner') && score < 55) score += 4;
   if (traitIds.has('slow_learner') && score < 55) score -= 4;
-  if (traitIds.has('thick_skinned')) hp += 4;
-  if (traitIds.has('thin_skinned')) hp -= score < 55 ? 8 : 3;
-  if (traitIds.has('fast_healer') && tags.includes('受伤')) hp += 6;
-  if (traitIds.has('prone_to_illness') && event.id === 'rain') hp -= 6;
-  if (traitIds.has('resilient') && event.id === 'rain') hp += 4;
-  if (traitIds.has('wakeful')) san += 3;
-  if (traitIds.has('sleepyhead') || traitIds.has('restless_sleeper')) san -= 4;
+  if (traitIds.has('thick_skinned')) health += 4;
+  if (traitIds.has('thin_skinned')) health -= score < 55 ? 8 : 3;
+  if (traitIds.has('fast_healer') && tags.includes('受伤')) health += 6;
+  if (traitIds.has('prone_to_illness') && event.id === 'rain') health -= 6;
+  if (traitIds.has('resilient') && event.id === 'rain') health += 4;
+  if (traitIds.has('sleepyhead') || traitIds.has('restless_sleeper')) fatigue += 5;
 
   if (score >= 75) {
-    hp += 4;
-    san += 5;
+    health += 3;
+    panic -= 8;
+    stress -= 7;
+    endurance += 3;
   } else if (score < 35) {
-    hp -= 15;
-    san -= 12;
+    health -= 15;
+    panic += 18;
+    stress += 14;
+    endurance -= 8;
   } else if (score < 50) {
-    hp -= 8;
-    san -= 6;
+    health -= 8;
+    panic += 8;
+    stress += 6;
+    endurance -= 4;
   }
 
-  return { score, hp, san, injury: score < 45 };
+  return { score, health, endurance, fatigue, panic, stress, injury: score < 45 };
+}
+
+function bestCombatSkill(skills, inventory) {
+  const weaponSkills = inventory
+    .filter((item) => item.tags?.includes('weapon'))
+    .map((item) => item.effects?.skill)
+    .filter(Boolean);
+  if (!weaponSkills.length) return Math.max(skills.strength ?? 5, skills.fitness ?? 5) / 2;
+  return Math.max(...weaponSkills.map((skill) => skills[skill] ?? 0));
 }
 
 function consumeOne(inventory, ids) {
@@ -236,7 +287,7 @@ function consumeOne(inventory, ids) {
 }
 
 function randomSupply(day) {
-  const pool = ['biscuit', 'water', 'canned', 'bandage', 'cigarette'];
+  const pool = ['canned_beans', 'water_bottle', 'chips', 'bandage', 'cigarette'];
   const id = pool[day % pool.length];
   return { ...marketItems.find((item) => item.id === id), count: 1 };
 }
@@ -251,6 +302,10 @@ function tuneLogForDay(log, day, inventory) {
   return `${log}${hasWeapon ? '你摸了摸手边的武器。' : ''}${suffix}`;
 }
 
+function dayIsNightLike(event, action) {
+  return event.id === 'broadcast' || action.includes('夜') || action.includes('等');
+}
+
 function buildNarrative({ actionText, day, option, profession, score }) {
   const actor = profession?.name ?? '你';
   const action = actionText || option?.label || '保持谨慎';
@@ -258,20 +313,19 @@ function buildNarrative({ actionText, day, option, profession, score }) {
     return `${actor}选择${action}。你把风险压到最低，在最糟糕的声音出现前完成了行动。第${day}天没有变得容易，但你把主动权抢回了一点。`;
   }
   if (score >= 55) {
-    return `${actor}选择${action}。过程不漂亮，甚至有几秒钟你几乎想退回去，但结果还算站得住。你带着新的消耗回到避难所。`;
+    return `${actor}选择${action}。过程不漂亮，但结果够用。你损失了一点体力，也换回了今天继续活着的理由。`;
   }
   if (score >= 35) {
-    return `${actor}选择${action}。判断没有完全错，执行却被噪音、恐惧和疲惫拖慢。你活着回来，但门关上后手还在抖。`;
+    return `${actor}选择${action}。犹豫和噪音让局面变坏，你勉强脱身，却把明天的压力推得更高。`;
   }
-  return `${actor}选择${action}。这一步把你推向了更糟的局面：声音、血迹和错误的时机连在一起，代价比预想中沉重。`;
+  return `${actor}选择${action}。这一步判断失误了。窗外的尸群、屋内的恐惧和身体的极限同时压下来，你付出了沉重代价。`;
 }
 
-function pickArchetype({ history, profession, stats, victory }) {
-  const avg = history.length ? history.reduce((sum, item) => sum + item.score, 0) / history.length : 50;
-  if (!victory && avg < 35) return { title: '达尔文奖', icon: '🪦', color: 'red' };
-  if (stats.san <= 0) return { title: '理智囚徒', icon: '🧠', color: 'violet' };
-  if (profession?.tags?.includes('战斗经验') || avg > 78) return { title: '废土战神', icon: '⚔️', color: 'orange' };
-  if (history.some((item) => item.action?.includes('帮') || item.action?.includes('救'))) return { title: '末世好人', icon: '🕯️', color: 'amber' };
-  if (victory) return { title: '末日幸存者', icon: '🏅', color: 'green' };
-  return { title: '末世孤狼', icon: '🌑', color: 'slate' };
+function pickArchetype({ history, profession, vitals, victory }) {
+  if (victory && history.some((entry) => entry.score >= 85)) return { title: '撤离名单上的人', icon: '🚁', color: 'gold' };
+  if (profession?.tags?.includes('枪械训练')) return { title: '枪声幸存者', icon: '▣', color: 'red' };
+  if (vitals.panic >= 90 || vitals.stress >= 90) return { title: '神经绷断的人', icon: '∿', color: 'violet' };
+  if (vitals.hunger >= 90 || vitals.thirst >= 90) return { title: '耗尽补给的人', icon: '◇', color: 'cyan' };
+  if (history.length >= 12) return { title: '封门专家', icon: '▤', color: 'cyan' };
+  return { title: '普通幸存者', icon: '□', color: 'gray' };
 }

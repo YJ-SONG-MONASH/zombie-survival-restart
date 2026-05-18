@@ -60,13 +60,21 @@
         <button
           v-for="item in filteredItems"
           :key="item.id"
-          class="item-card"
+          :class="['item-card', 'risk-item-card', `quality-${item.tier}`]"
           :disabled="!canBuy(item)"
           @click="game.addItem(item)"
         >
-          <span>{{ item.icon }}</span>
+          <span class="item-icon">
+            <img :src="itemIconSrc(item)" :alt="item.canonicalName" @error="markIconMissing" />
+            <span>{{ item.fallbackIcon }}</span>
+          </span>
+          <i>{{ tierMeta(item.tier).label }}</i>
           <strong>{{ item.name }}</strong>
+          <em>{{ item.canonicalName }}</em>
           <small>{{ item.description }}</small>
+          <span class="effect-list">
+            <span v-for="effect in itemEffects(item)" :key="effect">{{ effect }}</span>
+          </span>
           <em>¥{{ item.price }} · {{ item.space }}格</em>
           <b v-if="owned(item.id)">x{{ owned(item.id) }}</b>
         </button>
@@ -79,7 +87,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { categories, marketItems, shelterQualities } from '../data/zombie.js';
+import { categories, itemTiers, marketItems, shelterQualities } from '../data/zombie.js';
 import { useGameStore } from '../stores/game.js';
 
 const router = useRouter();
@@ -108,6 +116,29 @@ function canBuy(item) {
 
 function qualityMeta(qualityId) {
   return shelterQualities.find((quality) => quality.id === qualityId) ?? shelterQualities[shelterQualities.length - 1];
+}
+
+function tierMeta(tierId) {
+  return itemTiers.find((tier) => tier.id === tierId) ?? itemTiers[0];
+}
+
+function itemIconSrc(item) {
+  return `${import.meta.env.BASE_URL}pz-items/${item.iconFile}`;
+}
+
+function markIconMissing(event) {
+  event.currentTarget.classList.add('missing');
+}
+
+function itemEffects(item) {
+  const entries = Object.entries(item.effects ?? {});
+  if (!entries.length) return item.tags?.slice(0, 2) ?? [];
+  return entries.map(([key, value]) => {
+    if (key === 'skill') return `关联 ${value}`;
+    if (key === 'capacity') return `容量 +${value}`;
+    if (typeof value === 'number') return `${key} ${value > 0 ? '+' : ''}${value}`;
+    return `${key}: ${value}`;
+  }).slice(0, 3);
 }
 
 function defenseText(value) {

@@ -7,8 +7,11 @@
         <span>距离胜利还需坚持 {{ Math.max(0, game.maxDay - game.day + 1) }} 天</span>
       </div>
       <div class="meter-stack">
-        <label>❤️ 生命 <progress :value="game.stats.hp" max="140"></progress><span>{{ game.stats.hp }}</span></label>
-        <label>🧠 理智 <progress :value="game.stats.san" max="140"></progress><span>{{ game.stats.san }}</span></label>
+        <label v-for="vital in vitalsForDisplay" :key="vital.id" :class="{ danger: vital.danger }">
+          {{ vital.fallbackIcon }} {{ vital.label }}
+          <progress :value="vital.value" max="100"></progress>
+          <span>{{ vital.value }}</span>
+        </label>
       </div>
     </header>
 
@@ -43,7 +46,7 @@
         <h3>背包</h3>
         <p v-if="game.inventory.length === 0">空空如也</p>
         <ul v-else>
-          <li v-for="item in game.inventory" :key="item.id">{{ item.icon }} {{ item.name }} x{{ item.count }}</li>
+          <li v-for="item in game.inventory" :key="item.id">{{ item.fallbackIcon ?? item.icon }} {{ item.name }} x{{ item.count }}</li>
         </ul>
       </article>
       <article>
@@ -51,6 +54,18 @@
         <p v-if="game.hiddenTags.length === 0">暂无特殊状态</p>
         <div v-else class="tag-list">
           <span v-for="tag in game.hiddenTags" :key="tag">{{ tag }}</span>
+        </div>
+      </article>
+      <article>
+        <h3>技能</h3>
+        <div class="skill-grid compact-skill-grid">
+          <span v-for="skill in topSkills" :key="skill.id" class="skill-chip">
+            <span class="skill-icon">
+              <img :src="skillIconSrc(skill)" :alt="skill.canonicalName" @error="markIconMissing" />
+              <span>{{ skill.fallbackIcon }}</span>
+            </span>
+            {{ skill.label }} {{ skill.level }}
+          </span>
         </div>
       </article>
       <article>
@@ -74,14 +89,27 @@
 </template>
 
 <script setup>
-import { onMounted, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
+import { skillDefinitions, vitalDefinitions } from '../data/zombie.js';
 import { useGameStore } from '../stores/game.js';
 
 const router = useRouter();
 const game = useGameStore();
 const selectedOption = ref('');
 const freeText = ref('');
+const vitalsForDisplay = computed(() => vitalDefinitions.map((vital) => {
+  const value = game.vitals[vital.id] ?? 0;
+  return {
+    ...vital,
+    value,
+    danger: vital.kind === 'good' ? value <= 35 : value >= 70,
+  };
+}));
+const topSkills = computed(() => skillDefinitions
+  .map((skill) => ({ ...skill, level: game.skills[skill.id] ?? 0 }))
+  .sort((a, b) => b.level - a.level)
+  .slice(0, 10));
 
 onMounted(() => {
   if (!game.profession || !game.shelter) router.replace('/profession');
@@ -100,5 +128,13 @@ function submit() {
   selectedOption.value = '';
   freeText.value = '';
   if (game.isGameOver) router.push('/ending');
+}
+
+function skillIconSrc(skill) {
+  return `${import.meta.env.BASE_URL}pz-skills/${skill.iconFile}`;
+}
+
+function markIconMissing(event) {
+  event.currentTarget.classList.add('missing');
 }
 </script>

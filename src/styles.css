@@ -508,6 +508,10 @@ blockquote {
   overflow: visible;
 }
 
+.compact-profile .stat-row-four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .compact-profile .stat-row span {
   min-width: 0;
   padding: 10px 6px;
@@ -662,6 +666,71 @@ blockquote {
 .profession-card.hidden {
   border-color: #7f5f1a;
   background: linear-gradient(180deg, #171307, #0f130d);
+}
+
+.skill-chip-list,
+.effect-list,
+.skill-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.skill-chip-list {
+  justify-content: center;
+  margin-top: 12px;
+}
+
+.skill-chip-list > span,
+.effect-list > span,
+.skill-grid > span {
+  border: 1px solid rgba(200, 180, 107, 0.28);
+  border-radius: 4px;
+  padding: 4px 7px;
+  color: #d9d7bd;
+  background: rgba(9, 11, 7, 0.55);
+  font-size: 0.76rem;
+}
+
+.skill-chip-list .skill-chip,
+.skill-grid .skill-chip,
+.inventory-summary .skill-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.skill-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.32);
+  color: #f8fafc;
+  font-size: 0.52rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.skill-icon img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.skill-icon img + span {
+  display: none;
+}
+
+.skill-icon img.missing {
+  display: none;
+}
+
+.skill-icon img.missing + span {
+  display: inline;
 }
 
 .character-submit {
@@ -1114,7 +1183,7 @@ blockquote {
   position: relative;
   display: grid;
   gap: 7px;
-  min-height: 166px;
+  min-height: 238px;
   padding: 14px;
   border-radius: 8px;
   color: #fff;
@@ -1122,8 +1191,51 @@ blockquote {
   cursor: pointer;
 }
 
-.item-card > span {
-  font-size: 2rem;
+.risk-item-card {
+  overflow: hidden;
+}
+
+.item-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.36);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.item-icon img {
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.item-icon img + span {
+  display: none;
+}
+
+.item-icon img.missing {
+  display: none;
+}
+
+.item-icon img.missing + span {
+  display: grid;
+}
+
+.risk-item-card > i {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  border-radius: 4px;
+  padding: 3px 7px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.42);
+  font-size: 0.72rem;
+  font-style: normal;
 }
 
 .item-card em {
@@ -1164,10 +1276,14 @@ blockquote {
 
 .meter-stack label {
   display: grid;
-  grid-template-columns: 74px 1fr 38px;
+  grid-template-columns: 86px 1fr 38px;
   gap: 8px;
   align-items: center;
   color: #cbd5e1;
+}
+
+.meter-stack label.danger {
+  color: #fecaca;
 }
 
 progress {
@@ -1234,6 +1350,10 @@ input:focus {
   margin: 0;
   padding-left: 18px;
   color: #cbd5e1;
+}
+
+.compact-skill-grid {
+  margin-top: 10px;
 }
 
 .timeline {
@@ -1305,7 +1425,7 @@ input:focus {
   flex-basis: 100%;
 }
 
-.inventory-summary span {
+.inventory-summary > span {
   padding: 6px 10px;
   border-radius: 999px;
   background: #1e293b;

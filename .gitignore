@@ -108,3 +108,9 @@ utils/xlsxTransform-*
 /.idea
 
 __localStorage.json
+
+# Local-only Project Zomboid icon assets.
+public/pz-skills/*.png
+public/pz-items/*.png
+template/public/pz-skills/*.png
+template/public/pz-items/*.png
