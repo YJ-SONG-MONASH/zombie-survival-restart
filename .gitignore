@@ -108,14 +108,3 @@ utils/xlsxTransform-*
 /.idea
 
 __localStorage.json
-
-template/public
-public/data
-
-# Optional private Project Zomboid trait icons. Keep official game assets local.
-public/pz-traits/*
-!public/pz-traits/README.md
-
-# Optional private Project Zomboid occupation icons. Keep official game assets local.
-public/pz-occupations/*
-!public/pz-occupations/README.md
