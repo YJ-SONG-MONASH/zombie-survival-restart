@@ -6,6 +6,7 @@ import {
   marketItems,
   professions,
   scenarios,
+  shelterConsumableGuarantees,
   shelterLootProfiles,
   shelterQualities,
   shelters,
@@ -13,6 +14,7 @@ import {
   spawnLocations,
   traitAttributeMods,
   traits,
+  universalShelterLootPools,
   vitalDefinitions,
 } from '../data/zombie.js';
 import { createDayEvent, createEnding, resolveAction } from '../services/engine.js';
@@ -180,6 +182,7 @@ export const useGameStore = defineStore('game', {
         ? this.shelterChoices
             .map((choice) => shelters.find((item) => item.id === choice?.id))
             .filter(Boolean)
+            .filter((choice) => isShelterAvailableForLocation(choice, location.id))
             .map(cloneCatalogRecord)
         : [];
       this.shelterRollsUsed = Number.isFinite(this.shelterRollsUsed) ? Math.max(0, this.shelterRollsUsed) : 0;
@@ -253,7 +256,7 @@ export const useGameStore = defineStore('game', {
     },
     rollShelters() {
       if (this.shelter || this.shelterRollsUsed >= this.maxShelterRolls) return false;
-      this.shelterChoices = drawShelterChoices(3).map(cloneCatalogRecord);
+      this.shelterChoices = drawShelterChoices(3, this.spawnLocation?.id).map(cloneCatalogRecord);
       this.shelterRollsUsed += 1;
       return true;
     },
@@ -414,25 +417,21 @@ function findHiddenSurvivorPreset(name) {
   return hiddenSurvivorPresets.find((preset) => preset.names.some((entry) => normalizeName(entry) === normalized)) ?? null;
 }
 
-const universalLootGuarantees = [
-  { itemId: 'water_bottle' },
-  { itemIds: ['canned_soup', 'canned_beans', 'canned_tuna', 'chips'] },
-  { itemIds: ['bandage', 'adhesive_bandages', 'hammer', 'screwdriver'] },
-];
-
 const defaultLootSlotsByQuality = {
-  white: 6,
-  green: 8,
-  blue: 10,
-  purple: 12,
-  gold: 14,
-  red: 16,
+  white: 10,
+  green: 14,
+  blue: 17,
+  purple: 20,
+  gold: 24,
+  red: 26,
 };
 
 function createLootSlotsForShelter(shelter) {
   const profile = shelterLootProfiles[shelter?.id] ?? {};
-  const targetCount = profile.slotCount ?? defaultLootSlotsByQuality[shelter?.quality] ?? 8;
-  const slots = [...universalLootGuarantees, ...(profile.guaranteed ?? [])]
+  const guarantees = [...universalLootGuaranteesForShelter(shelter), ...(profile.guaranteed ?? [])];
+  const qualityTarget = defaultLootSlotsByQuality[shelter?.quality] ?? 12;
+  const targetCount = Math.max(profile.slotCount ?? qualityTarget, qualityTarget, guarantees.length);
+  const slots = guarantees
     .map((entry, index) => createLootSlot(pickGuaranteedItem(entry, profile), index, 'guaranteed'))
     .filter(Boolean);
 
@@ -452,6 +451,15 @@ function createLootSlotsForShelter(shelter) {
   }
 
   return slots.slice(0, targetCount);
+}
+
+function universalLootGuaranteesForShelter(shelter) {
+  const counts = shelterConsumableGuarantees[shelter?.quality] ?? shelterConsumableGuarantees.green;
+  return [
+    ...Array.from({ length: counts.drinks }, () => ({ itemIds: universalShelterLootPools.drinks })),
+    ...Array.from({ length: counts.foods }, () => ({ itemIds: universalShelterLootPools.foods })),
+    { itemIds: universalShelterLootPools.essentials },
+  ];
 }
 
 function normalizeLootSlots(slots, shelter) {
@@ -541,6 +549,7 @@ function cloneCatalogRecord(record) {
   return {
     ...record,
     tags: record.tags ? [...record.tags] : undefined,
+    locations: record.locations ? [...record.locations] : undefined,
     unlocks: record.unlocks ? [...record.unlocks] : undefined,
     effects: record.effects ? { ...record.effects } : undefined,
     vitalMods: record.vitalMods ? { ...record.vitalMods } : undefined,
@@ -613,26 +622,36 @@ function clampSkill(value) {
   return Math.max(0, Math.min(10, Math.round(value)));
 }
 
-export function drawShelterChoices(count = 3) {
+export function drawShelterChoices(count = 3, locationId = null) {
+  return drawShelterChoicesForLocation(count, locationId);
+}
+
+export function drawShelterChoicesForLocation(count = 3, locationId = null) {
   const choices = [];
   let attempts = 0;
   const maxAttempts = count * 80;
+  const availableShelters = shelters.filter((shelter) => isShelterAvailableForLocation(shelter, locationId));
 
   while (choices.length < count && attempts < maxAttempts) {
     attempts += 1;
     const quality = pickShelterQuality();
-    const candidates = shelters.filter((shelter) => shelter.quality === quality.id && !choices.some((choice) => choice.id === shelter.id));
+    const candidates = availableShelters.filter((shelter) => shelter.quality === quality.id && !choices.some((choice) => choice.id === shelter.id));
     if (!candidates.length) continue;
     choices.push(candidates[Math.floor(Math.random() * candidates.length)]);
   }
 
   while (choices.length < count) {
-    const candidates = shelters.filter((shelter) => !choices.some((choice) => choice.id === shelter.id));
+    const candidates = availableShelters.filter((shelter) => !choices.some((choice) => choice.id === shelter.id));
     if (!candidates.length) break;
     choices.push(candidates[Math.floor(Math.random() * candidates.length)]);
   }
 
   return choices;
+}
+
+export function isShelterAvailableForLocation(shelter, locationId = null) {
+  if (!locationId || !shelter.locations?.length) return true;
+  return shelter.locations.includes(locationId);
 }
 
 function pickShelterQuality() {

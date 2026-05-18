@@ -1126,6 +1126,17 @@ blockquote {
   font-size: 1.24rem;
 }
 
+.shelter-scope {
+  width: max-content;
+  max-width: 100%;
+  padding: 3px 7px;
+  border: 1px solid rgba(248, 250, 252, 0.14);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.34);
+  color: #e5e7eb;
+  font-size: 0.76rem;
+}
+
 .shelter-card-copy small,
 .shelter-card-copy p {
   margin: 0;

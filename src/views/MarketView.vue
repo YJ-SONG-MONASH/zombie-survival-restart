@@ -34,6 +34,7 @@
           </div>
           <div class="shelter-card-copy">
             <strong>{{ shelter.name }}</strong>
+            <small class="shelter-scope">{{ shelterScopeText(shelter) }}</small>
             <small>{{ shelter.description }}</small>
             <em>📦 {{ shelter.space }} 格　🛡️ {{ defenseText(shelter.defense) }}</em>
             <p>{{ shelter.hidden }}</p>
@@ -114,7 +115,7 @@
 <script setup>
 import { computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { itemTiers, marketItems, shelterLootProfiles, shelterQualities } from '../data/zombie.js';
+import { itemTiers, marketItems, shelterConsumableGuarantees, shelterLootProfiles, shelterQualities } from '../data/zombie.js';
 import { useGameStore } from '../stores/game.js';
 
 const router = useRouter();
@@ -144,11 +145,18 @@ function selectShelter(id) {
   game.selectShelter(id);
 }
 
+function shelterScopeText(shelter) {
+  if (!shelter.locations?.length) return '通用据点';
+  if (shelter.locations.length === 1 && shelter.locations.includes(game.spawnLocation?.id)) return `${game.spawnLocation.name}独有据点`;
+  return '地区限定据点';
+}
+
 function guaranteedLootPreview(shelter) {
   const profile = shelterLootProfiles[shelter.id] ?? {};
+  const consumables = shelterConsumableGuarantees[shelter.quality] ?? shelterConsumableGuarantees.green;
   return [
-    '水瓶',
-    '食物',
+    `水/饮料 x${consumables.drinks}`,
+    `食品 x${consumables.foods}`,
     '医疗/工具',
     ...(profile.guaranteed ?? []).map(guaranteeLabel).filter(Boolean),
   ].slice(0, 7);

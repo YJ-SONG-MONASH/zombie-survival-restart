@@ -1588,6 +1588,28 @@ export const shelters = [
     tags: ['commercial', 'loot', 'urban'],
   },
   {
+    id: 'muldraugh_large_warehouse',
+    name: '马尔德劳大型仓库',
+    quality: 'gold',
+    locations: ['muldraugh'],
+    space: 94,
+    defense: 3,
+    description: '马尔德劳工业带的大型仓库，货架、卷门和装卸区都能撑起长期基地。',
+    hidden: '工具和基地物资上限很高，但工业区空旷，尸群从公路方向涌来时很难脱身。',
+    tags: ['muldraugh', 'warehouse', 'industrial', 'high_value'],
+  },
+  {
+    id: 'muldraugh_highway_checkpoint',
+    name: '马尔德劳公路封锁点',
+    quality: 'red',
+    locations: ['muldraugh'],
+    space: 82,
+    defense: 4,
+    description: '废弃路障、警车残骸和临时帐篷堆在公路边，补给好拿，枪声也最容易传远。',
+    hidden: '车辆、弹药和急救物资收益很高，开局就可能撞上大片尸群。',
+    tags: ['muldraugh', 'checkpoint', 'police', 'vehicle', 'extreme_risk'],
+  },
+  {
     id: 'police_station',
     name: '警察局',
     quality: 'gold',
@@ -1601,6 +1623,7 @@ export const shelters = [
     id: 'fire_station',
     name: '消防局',
     quality: 'gold',
+    locations: ['rosewood'],
     space: 76,
     defense: 3,
     description: '车库、寝室和工具区都实用，是罗斯伍德路线里很强的据点模板。',
@@ -1621,6 +1644,7 @@ export const shelters = [
     id: 'gated_villa',
     name: '封闭社区别墅',
     quality: 'gold',
+    locations: ['riverside'],
     space: 96,
     defense: 4,
     description: '围栏、车库、厨房和宽敞房间都到位，像是末日前就准备好的堡垒。',
@@ -1628,14 +1652,48 @@ export const shelters = [
     tags: ['villa', 'gated_community', 'rare'],
   },
   {
+    id: 'riverside_police_armory',
+    name: '河畔镇警局武器库',
+    quality: 'red',
+    locations: ['riverside'],
+    space: 72,
+    defense: 4,
+    description: '河畔镇警局后侧的武器和证物区域，货架上的东西足够诱人，也足够吵醒整条街。',
+    hidden: '枪械弹药和药品收益高，撤离路线比看上去更窄。',
+    tags: ['riverside', 'police', 'weapons', 'extreme_risk'],
+  },
+  {
     id: 'prison_cell_block',
     name: '监狱监区',
     quality: 'red',
+    locations: ['rosewood'],
     space: 110,
     defense: 5,
     description: '铁门、走廊和牢房让这里像堡垒，也像一座已经关不住任何东西的陷阱。',
     hidden: '极高防御和极端风险并存，狱警、枪械和大规模尸群事件概率提高。',
     tags: ['prison', 'cell_block', 'extreme_risk'],
+  },
+  {
+    id: 'west_point_hardware_roof',
+    name: '西点五金店楼顶',
+    quality: 'gold',
+    locations: ['west_point'],
+    space: 74,
+    defense: 3,
+    description: '西点商区里的五金店楼顶，工具和街区视野都很好，问题是楼下永远不会安静。',
+    hidden: '工具、维修和基地路线收益很高，商区尸群密度会不断施压。',
+    tags: ['west_point', 'hardware', 'commercial', 'high_value'],
+  },
+  {
+    id: 'west_point_gun_store',
+    name: '西点枪店库房',
+    quality: 'red',
+    locations: ['west_point'],
+    space: 86,
+    defense: 4,
+    description: '枪店库房里有末世最直接的答案，也有最容易把整座城叫来的风险。',
+    hidden: '枪械和弹药收益极高，进入、搬运和撤离都会制造危险。',
+    tags: ['west_point', 'gun_store', 'weapons', 'extreme_risk'],
   },
 ];
 
@@ -1656,6 +1714,21 @@ export const lootTierWeights = [
   { tier: 'green', weight: 20 },
   { tier: 'white', weight: 19 },
 ];
+
+export const shelterConsumableGuarantees = {
+  white: { drinks: 3, foods: 5 },
+  green: { drinks: 4, foods: 6 },
+  blue: { drinks: 5, foods: 7 },
+  purple: { drinks: 6, foods: 8 },
+  gold: { drinks: 8, foods: 10 },
+  red: { drinks: 8, foods: 8 },
+};
+
+export const universalShelterLootPools = {
+  drinks: ['water_bottle', 'water_bottle', 'water_bottle', 'water_bottle', 'coffee', 'teabag'],
+  foods: ['canned_soup', 'canned_beans', 'canned_tuna', 'cereal', 'chips', 'peanut_butter'],
+  essentials: ['bandage', 'adhesive_bandages', 'hammer', 'screwdriver'],
+};
 
 export const shelterLootProfiles = {
   basement: {
@@ -1771,6 +1844,30 @@ export const shelterLootProfiles = {
     tagBoosts: { trade: 5, food: 4, capacity: 3 },
     itemBoosts: { peanut_butter: 5, antibiotics: 2, machete: 2 },
   },
+  muldraugh_large_warehouse: {
+    slotCount: 24,
+    guaranteed: [
+      { itemIds: ['generator', 'sledgehammer', 'big_hiking_bag'] },
+      { itemIds: ['propane_torch', 'welding_mask', 'gas_can', 'how_to_use_generators'] },
+      { itemIds: ['crowbar', 'pipe_wrench', 'wood_glue', 'duct_tape'] },
+      { itemIds: ['jack', 'lug_wrench', 'wrench', 'saw'] },
+    ],
+    categoryWeights: { base: 6, tool: 6, vehicle: 4, bag: 3, food: 3 },
+    tagBoosts: { tool: 7, heavy: 5, repair: 5, generator: 4, vehicle: 3 },
+    itemBoosts: { generator: 7, sledgehammer: 7, propane_torch: 6, welding_mask: 5, gas_can: 5 },
+  },
+  muldraugh_highway_checkpoint: {
+    slotCount: 26,
+    guaranteed: [
+      { itemIds: ['shotgun', 'm9_pistol', 'm36_revolver', 'shotgun_shells', '9mm_rounds'] },
+      { itemIds: ['shotgun_shells', '9mm_rounds', 'm9_pistol', 'm36_revolver'] },
+      { itemIds: ['gas_can', 'jack', 'lug_wrench', 'wrench'] },
+      { itemIds: ['first_aid_kit', 'beta_blockers', 'painkillers', 'bandage'] },
+    ],
+    categoryWeights: { weapon: 6, ammo: 7, vehicle: 5, medical: 3, food: 2 },
+    tagBoosts: { firearm: 9, ammo: 9, vehicle: 6, fuel: 6, medical: 3 },
+    itemBoosts: { gas_can: 8, shotgun_shells: 8, '9mm_rounds': 8, m9_pistol: 7, first_aid_kit: 4 },
+  },
   police_station: {
     slotCount: 14,
     guaranteed: [
@@ -1802,6 +1899,18 @@ export const shelterLootProfiles = {
     tagBoosts: { medical: 10, rare: 6, bandage: 4, disinfect: 4 },
     itemBoosts: { antibiotics: 10, suture_needle: 8, beta_blockers: 7, first_aid_kit: 8 },
   },
+  riverside_police_armory: {
+    slotCount: 26,
+    guaranteed: [
+      { itemIds: ['shotgun', 'm9_pistol', 'm36_revolver', 'shotgun_shells', '9mm_rounds'] },
+      { itemIds: ['shotgun_shells', '9mm_rounds', 'm9_pistol', 'm36_revolver'] },
+      { itemIds: ['first_aid_kit', 'beta_blockers', 'painkillers', 'suture_needle'] },
+      { itemIds: ['hiking_bag', 'duffel_bag', 'gas_can', 'flashlight'] },
+    ],
+    categoryWeights: { weapon: 7, ammo: 8, medical: 4, bag: 2, tool: 1 },
+    tagBoosts: { firearm: 10, ammo: 10, medical: 5, capacity: 2 },
+    itemBoosts: { shotgun: 8, m9_pistol: 9, m36_revolver: 8, shotgun_shells: 10, '9mm_rounds': 10, beta_blockers: 5 },
+  },
   gated_villa: {
     slotCount: 14,
     guaranteed: [
@@ -1826,6 +1935,30 @@ export const shelterLootProfiles = {
     categoryWeights: { weapon: 8, ammo: 8, medical: 4, tool: 2 },
     tagBoosts: { firearm: 10, ammo: 10, weapon: 8, medical: 4 },
     itemBoosts: { shotgun: 9, m9_pistol: 8, m36_revolver: 8, shotgun_shells: 10, '9mm_rounds': 10 },
+  },
+  west_point_hardware_roof: {
+    slotCount: 24,
+    guaranteed: [
+      { itemIds: ['sledgehammer', 'generator', 'big_hiking_bag'] },
+      { itemIds: ['propane_torch', 'welding_mask', 'how_to_use_generators', 'gas_can'] },
+      { itemIds: ['saw', 'hammer', 'wood_glue', 'duct_tape'] },
+      { itemIds: ['hiking_bag', 'crowbar', 'pipe_wrench', 'wrench'] },
+    ],
+    categoryWeights: { tool: 7, base: 6, bag: 3, weapon: 2, food: 3 },
+    tagBoosts: { tool: 7, carpentry: 5, repair: 5, metalworking: 5, capacity: 3 },
+    itemBoosts: { sledgehammer: 7, generator: 6, propane_torch: 6, welding_mask: 6, wood_glue: 5 },
+  },
+  west_point_gun_store: {
+    slotCount: 26,
+    guaranteed: [
+      { itemIds: ['shotgun', 'm9_pistol', 'm36_revolver'] },
+      { itemIds: ['shotgun_shells', 'shotgun_shells', '9mm_rounds', '9mm_rounds'] },
+      { itemIds: ['shotgun', 'm9_pistol', 'm36_revolver', 'hunting_knife'] },
+      { itemIds: ['hiking_bag', 'first_aid_kit', 'beta_blockers', 'gas_can'] },
+    ],
+    categoryWeights: { weapon: 9, ammo: 10, medical: 2, bag: 2 },
+    tagBoosts: { firearm: 12, ammo: 12, weapon: 8, loud: 6 },
+    itemBoosts: { shotgun: 12, m9_pistol: 10, m36_revolver: 9, shotgun_shells: 12, '9mm_rounds': 12 },
   },
 };
 
