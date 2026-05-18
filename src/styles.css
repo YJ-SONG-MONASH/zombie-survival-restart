@@ -1370,6 +1370,22 @@ blockquote {
   line-height: 1.2;
 }
 
+.loot-slot.status-searching {
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-content: center;
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 0;
+}
+
+.loot-slot.status-searching strong {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  font-size: 0.95rem;
+  line-height: 1.2;
+}
+
 .loot-slot.footprint-2x1 {
   grid-column: span 2;
 }
@@ -1422,16 +1438,13 @@ blockquote {
 }
 
 .loot-slot.status-hidden strong,
-.loot-slot.status-hidden em,
-.loot-slot.status-searching strong,
-.loot-slot.status-searching em {
+.loot-slot.status-hidden em {
   position: relative;
   z-index: 1;
   font-style: normal;
 }
 
-.loot-slot.status-hidden em,
-.loot-slot.status-searching em {
+.loot-slot.status-hidden em {
   color: #a8b48a;
 }
 
@@ -1473,6 +1486,44 @@ blockquote {
 .loot-inventory p {
   margin: 0;
   color: #94a3b8;
+}
+
+.inventory-item {
+  display: inline-grid;
+  grid-template-columns: auto auto auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.inventory-item strong,
+.inventory-item em {
+  font-size: 0.92rem;
+  line-height: 1.1;
+}
+
+.inventory-item strong {
+  font-weight: 700;
+}
+
+.inventory-item em {
+  color: #facc15;
+  font-style: normal;
+}
+
+.inventory-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 5px;
+  font-size: 0;
+}
+
+.inventory-icon img {
+  width: 22px;
+  height: 22px;
+}
+
+.inventory-icon.missing {
+  display: none;
 }
 
 .loot-start-action {

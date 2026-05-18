@@ -89,7 +89,6 @@
           <template v-else-if="slot.status === 'searching'">
             <span class="search-lens">⌕</span>
             <strong>搜索中</strong>
-            <em>{{ slot.space }} 格</em>
           </template>
 
           <template v-else>
@@ -106,7 +105,14 @@
       <section class="loot-inventory">
         <h2>已带走物资</h2>
         <p v-if="!game.inventory.length">背包还是空的。</p>
-        <span v-for="item in game.inventory" :key="item.id">{{ item.fallbackIcon }} {{ item.name }} x{{ item.count }}</span>
+        <span v-for="item in game.inventory" :key="item.id" class="inventory-item">
+          <span class="item-icon inventory-icon" aria-hidden="true">
+            <img :src="itemIconSrc(item)" :alt="item.name" @error="markInventoryIconMissing" />
+            <span></span>
+          </span>
+          <strong>{{ item.name }}</strong>
+          <em>x{{ item.count }}</em>
+        </span>
       </section>
 
       <button class="primary-action loot-start-action" @click="startSurvival">开始生存</button>
@@ -224,6 +230,10 @@ function markIconMissing(event) {
   event.currentTarget.classList.add('missing');
 }
 
+function markInventoryIconMissing(event) {
+  event.currentTarget.closest('.inventory-icon')?.classList.add('missing');
+}
+
 function itemEffects(item) {
   if (!item) return [];
   const entries = Object.entries(item.effects ?? {});
@@ -247,7 +257,7 @@ function tierMeta(tierId) {
 
 function lootTooltip(slot) {
   if (slot.status === 'hidden') return `未知物资\n占用：${slot.space} 格\n点击搜索。`;
-  if (slot.status === 'searching') return `搜索中\n占用：${slot.space} 格`;
+  if (slot.status === 'searching') return '搜索中';
   const item = lootItem(slot);
   if (!item) return '未知物资';
   const effects = itemEffects(item);
@@ -262,7 +272,7 @@ function lootTooltip(slot) {
 
 function lootAriaLabel(slot) {
   if (slot.status === 'hidden') return `未知物资，${slot.space} 格`;
-  if (slot.status === 'searching') return `搜索中，${slot.space} 格`;
+  if (slot.status === 'searching') return '搜索中';
   const item = lootItem(slot);
   if (!item) return `未知物资，${slot.space} 格`;
   return slot.status === 'taken'
