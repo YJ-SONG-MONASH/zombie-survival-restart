@@ -52,6 +52,13 @@
           <span v-for="tag in game.hiddenTags" :key="tag">{{ tag }}</span>
         </div>
       </article>
+      <article>
+        <h3>特性</h3>
+        <p v-if="game.selectedTraits.length === 0">无特性开局</p>
+        <div v-else class="tag-list">
+          <span v-for="trait in game.selectedTraits" :key="trait.id">{{ trait.name }}</span>
+        </div>
+      </article>
     </section>
 
     <section v-if="game.history.length" class="timeline">

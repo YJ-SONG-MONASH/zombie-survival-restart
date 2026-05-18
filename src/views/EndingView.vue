@@ -31,6 +31,14 @@
       </section>
 
       <section class="inventory-summary">
+        <h2>开局特性</h2>
+        <p v-if="!game.ending.traits?.length">没有选择特性</p>
+        <span v-for="trait in game.ending.traits" :key="trait.canonicalName">
+          {{ trait.icon }} {{ trait.name }} {{ trait.points > 0 ? `+${trait.points}` : trait.points }}
+        </span>
+      </section>
+
+      <section class="inventory-summary">
         <h2>最终背包</h2>
         <p v-if="game.ending.inventory.length === 0">背包已空</p>
         <span v-for="item in game.ending.inventory" :key="item.name">{{ item.icon }} {{ item.name }} x{{ item.count }}</span>

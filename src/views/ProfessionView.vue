@@ -21,7 +21,7 @@
     </article>
 
     <button class="dice-button" @click="roll">🎲</button>
-    <button class="primary-action" @click="confirm">确认身份，开始囤货</button>
+    <button class="primary-action" @click="confirm">确认身份，选择特性</button>
     <p class="hint">距离封城还有 3 分钟</p>
   </section>
 </template>
@@ -43,6 +43,6 @@ function roll() {
 
 function confirm() {
   game.selectProfession(current.value.id);
-  router.push('/market');
+  router.push('/traits');
 }
 </script>

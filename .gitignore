@@ -111,3 +111,7 @@ __localStorage.json
 
 template/public
 public/data
+
+# Optional private Project Zomboid trait icons. Keep official game assets local.
+public/pz-traits/*
+!public/pz-traits/README.md

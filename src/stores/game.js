@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { marketItems, professions, scenarios, shelters } from '../data/zombie.js';
+import { marketItems, professions, scenarios, shelters, traits } from '../data/zombie.js';
 import { createDayEvent, createEnding, resolveAction } from '../services/engine.js';
 
 const defaultState = () => ({
@@ -7,8 +7,10 @@ const defaultState = () => ({
   day: 1,
   maxDay: 20,
   stats: { hp: 100, san: 100 },
+  baseTraitPoints: 8,
   money: 6500,
   profession: null,
+  selectedTraits: [],
   shelter: null,
   inventory: [],
   hiddenTags: [],
@@ -24,10 +26,17 @@ export const useGameStore = defineStore('game', {
     isGameOver: (state) => state.stats.hp <= 0 || state.stats.san <= 0 || state.day > state.maxDay,
     isVictory: (state) => state.day > state.maxDay && state.stats.hp > 0 && state.stats.san > 0,
     usedSpace: (state) => state.inventory.reduce((sum, item) => sum + item.space * item.count, 0),
-    maxSpace: (state) => state.shelter?.space ?? 30,
+    maxSpace: (state) => {
+      const base = state.shelter?.space ?? 30;
+      if (state.selectedTraits.some((trait) => trait.id === 'organized')) return Math.floor(base * 1.3);
+      if (state.selectedTraits.some((trait) => trait.id === 'disorganized')) return Math.floor(base * 0.7);
+      return base;
+    },
     remainingSpace() {
       return this.maxSpace - this.usedSpace;
     },
+    traitPointsRemaining: (state) => state.baseTraitPoints + state.selectedTraits.reduce((sum, trait) => sum + trait.points, 0),
+    traitTags: (state) => [...new Set(state.selectedTraits.flatMap((trait) => trait.tags ?? []))],
     sortedArchives: (state) => [...state.archives].sort((a, b) => b.createdAt - a.createdAt),
   },
   actions: {
@@ -37,6 +46,8 @@ export const useGameStore = defineStore('game', {
       try {
         const parsed = JSON.parse(raw);
         if (parsed?.game) this.$patch(parsed.game);
+        if (!Array.isArray(this.selectedTraits)) this.selectedTraits = [];
+        if (!this.baseTraitPoints) this.baseTraitPoints = 8;
       } catch {
         localStorage.removeItem('moshi-survival-state');
       }
@@ -58,6 +69,7 @@ export const useGameStore = defineStore('game', {
       const profession = professions.find((item) => item.id === id);
       if (!profession) return;
       this.profession = profession;
+      this.selectedTraits = [];
       this.money = 6500 + profession.money;
       this.stats.hp = Math.max(1, 100 + profession.hp);
       this.stats.san = Math.max(1, 100 + profession.san);
@@ -65,6 +77,24 @@ export const useGameStore = defineStore('game', {
         const item = marketItems.find((entry) => entry.id === itemId);
         if (item) this.addItem(item, 1, true);
       });
+    },
+    toggleTrait(id) {
+      const trait = traits.find((item) => item.id === id);
+      if (!trait) return false;
+      const selected = this.selectedTraits.find((item) => item.id === id);
+      if (selected) {
+        this.selectedTraits = this.selectedTraits.filter((item) => item.id !== id);
+        return true;
+      }
+      if (this.selectedTraits.some((item) => item.conflicts?.includes(id) || trait.conflicts?.includes(item.id))) return false;
+      this.selectedTraits.push(trait);
+      return true;
+    },
+    canSelectTrait(id) {
+      const trait = traits.find((item) => item.id === id);
+      if (!trait) return false;
+      if (this.selectedTraits.some((item) => item.id === id)) return true;
+      return !this.selectedTraits.some((item) => item.conflicts?.includes(id) || trait.conflicts?.includes(item.id));
     },
     selectShelter(id) {
       const shelter = shelters.find((item) => item.id === id);
@@ -95,6 +125,7 @@ export const useGameStore = defineStore('game', {
           stats: this.stats,
           inventory: this.inventory,
           tags: this.hiddenTags,
+          traits: this.selectedTraits,
           shelter: this.shelter,
         });
       }
@@ -110,6 +141,7 @@ export const useGameStore = defineStore('game', {
         shelter: this.shelter,
         inventory: this.inventory,
         tags: this.hiddenTags,
+        traits: this.selectedTraits,
         stats: this.stats,
       });
 
@@ -146,6 +178,7 @@ export const useGameStore = defineStore('game', {
           shelter: this.shelter,
           inventory: this.inventory,
           history: this.history,
+          traits: this.selectedTraits,
           highlight: this.ending?.highlight,
         });
       } else {
@@ -160,6 +193,7 @@ export const useGameStore = defineStore('game', {
         createdAt: Date.now(),
         ending: this.ending,
         profession: this.profession,
+        traits: this.selectedTraits,
         scenario: this.scenario,
       });
       this.archives = this.archives.slice(0, 24);
