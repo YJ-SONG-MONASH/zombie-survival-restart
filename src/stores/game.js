@@ -2,9 +2,11 @@ import { defineStore } from 'pinia';
 import {
   hiddenProfessionAliases,
   hiddenSurvivorPresets,
+  lootTierWeights,
   marketItems,
   professions,
   scenarios,
+  shelterLootProfiles,
   shelterQualities,
   shelters,
   skillDefinitions,
@@ -31,6 +33,9 @@ const defaultState = () => ({
   shelterChoices: [],
   shelterRollsUsed: 0,
   maxShelterRolls: 3,
+  lootSlots: [],
+  lootSearchStarted: false,
+  searchingSlotId: null,
   inventory: [],
   hiddenTags: [],
   history: [],
@@ -57,6 +62,8 @@ export const useGameStore = defineStore('game', {
     remainingSpace() {
       return this.maxSpace - this.usedSpace;
     },
+    searchedLootCount: (state) => state.lootSlots.filter((slot) => slot.status !== 'hidden').length,
+    takenLootCount: (state) => state.lootSlots.filter((slot) => slot.status === 'taken').length,
     traitPointsRemaining: (state) => state.baseTraitPoints + state.selectedTraits.reduce((sum, trait) => sum + trait.points, 0),
     traitTags: (state) => [...new Set(state.selectedTraits.flatMap((trait) => trait.tags ?? []))],
     legacyStats: (state) => ({
@@ -114,6 +121,7 @@ export const useGameStore = defineStore('game', {
         this.profession = null;
         this.selectedTraits = [];
         this.inventory = [];
+        this.clearLootSearch();
       }
     },
     selectSpawnLocation(id) {
@@ -133,6 +141,7 @@ export const useGameStore = defineStore('game', {
       this.shelter = null;
       this.shelterChoices = [];
       this.shelterRollsUsed = 0;
+      this.clearLootSearch();
       this.activeEvent = null;
       this.recalculateCharacterState(true);
       return true;
@@ -153,6 +162,7 @@ export const useGameStore = defineStore('game', {
       this.shelter = null;
       this.shelterChoices = [];
       this.shelterRollsUsed = 0;
+      this.clearLootSearch();
       this.activeEvent = null;
       this.recalculateCharacterState(true);
       return true;
@@ -174,6 +184,7 @@ export const useGameStore = defineStore('game', {
         : [];
       this.shelterRollsUsed = Number.isFinite(this.shelterRollsUsed) ? Math.max(0, this.shelterRollsUsed) : 0;
       this.maxShelterRolls = Number.isFinite(this.maxShelterRolls) ? this.maxShelterRolls : 3;
+      this.searchingSlotId = null;
       this.vitals = normalizeVitals(this.vitals, this.stats);
       this.skills = normalizeSkills(this.skills);
       const rawInventory = Array.isArray(this.inventory) ? this.inventory : [];
@@ -187,6 +198,8 @@ export const useGameStore = defineStore('game', {
             .filter(Boolean)
             .map(cloneCatalogRecord)
         : [];
+      this.lootSlots = this.shelter ? normalizeLootSlots(this.lootSlots, this.shelter) : [];
+      this.lootSearchStarted = Boolean(this.shelter && this.lootSlots.some((slot) => slot.status !== 'hidden'));
     },
     recalculateCharacterState(includeUnlocks = false) {
       if (!this.profession) return;
@@ -248,6 +261,44 @@ export const useGameStore = defineStore('game', {
       const shelter = this.shelterChoices.find((item) => item.id === id);
       if (!shelter) return false;
       this.shelter = cloneCatalogRecord(shelter);
+      this.lootSlots = createLootSlotsForShelter(this.shelter);
+      this.lootSearchStarted = false;
+      this.searchingSlotId = null;
+      return true;
+    },
+    ensureLootSlots() {
+      if (!this.shelter) return false;
+      if (!Array.isArray(this.lootSlots) || !this.lootSlots.length) {
+        this.lootSlots = createLootSlotsForShelter(this.shelter);
+        this.lootSearchStarted = false;
+      }
+      this.searchingSlotId = null;
+      return true;
+    },
+    clearLootSearch() {
+      this.lootSlots = [];
+      this.lootSearchStarted = false;
+      this.searchingSlotId = null;
+    },
+    async searchLootSlot(slotId) {
+      if (this.searchingSlotId) return false;
+      const slot = this.lootSlots.find((entry) => entry.id === slotId);
+      if (!slot || slot.status !== 'hidden') return false;
+      slot.status = 'searching';
+      this.searchingSlotId = slot.id;
+      this.lootSearchStarted = true;
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 800));
+      const item = marketItems.find((entry) => entry.id === slot.itemId);
+      const collected = item ? this.collectLootItem(item) : false;
+      slot.status = collected ? 'taken' : 'revealed';
+      this.searchingSlotId = null;
+      return collected;
+    },
+    collectLootItem(item, count = 1) {
+      if (!item || this.remainingSpace < item.space * count) return false;
+      const existing = this.inventory.find((entry) => entry.id === item.id);
+      if (existing) existing.count += count;
+      else this.inventory.push({ ...cloneCatalogRecord(item), count });
       return true;
     },
     addItem(item, count = 1, free = false) {
@@ -361,6 +412,128 @@ function normalizeName(name) {
 function findHiddenSurvivorPreset(name) {
   const normalized = normalizeName(name);
   return hiddenSurvivorPresets.find((preset) => preset.names.some((entry) => normalizeName(entry) === normalized)) ?? null;
+}
+
+const universalLootGuarantees = [
+  { itemId: 'water_bottle' },
+  { itemIds: ['canned_soup', 'canned_beans', 'canned_tuna', 'chips'] },
+  { itemIds: ['bandage', 'adhesive_bandages', 'hammer', 'screwdriver'] },
+];
+
+const defaultLootSlotsByQuality = {
+  white: 6,
+  green: 8,
+  blue: 10,
+  purple: 12,
+  gold: 14,
+  red: 16,
+};
+
+function createLootSlotsForShelter(shelter) {
+  const profile = shelterLootProfiles[shelter?.id] ?? {};
+  const targetCount = profile.slotCount ?? defaultLootSlotsByQuality[shelter?.quality] ?? 8;
+  const slots = [...universalLootGuarantees, ...(profile.guaranteed ?? [])]
+    .map((entry, index) => createLootSlot(pickGuaranteedItem(entry, profile), index, 'guaranteed'))
+    .filter(Boolean);
+
+  let attempts = 0;
+  while (slots.length < targetCount && attempts < targetCount * 40) {
+    attempts += 1;
+    const tier = pickLootTier();
+    const item = pickWeightedItem(marketItems.filter((entry) => entry.tier === tier), profile);
+    const slot = createLootSlot(item, slots.length, 'random');
+    if (slot) slots.push(slot);
+  }
+
+  while (slots.length < targetCount) {
+    const slot = createLootSlot(pickWeightedItem(marketItems, profile), slots.length, 'random');
+    if (!slot) break;
+    slots.push(slot);
+  }
+
+  return slots.slice(0, targetCount);
+}
+
+function normalizeLootSlots(slots, shelter) {
+  if (!Array.isArray(slots) || !slots.length) return createLootSlotsForShelter(shelter);
+  const normalized = slots
+    .map((slot, index) => {
+      const item = marketItems.find((entry) => entry.id === slot?.itemId);
+      if (!item) return null;
+      const status = ['hidden', 'revealed', 'taken'].includes(slot.status) ? slot.status : 'hidden';
+      return {
+        id: slot.id || `loot-${index}-${item.id}`,
+        itemId: item.id,
+        status,
+        space: item.space,
+        footprint: footprintForSpace(item.space),
+        tier: item.tier,
+        source: slot.source === 'guaranteed' ? 'guaranteed' : 'random',
+      };
+    })
+    .filter(Boolean);
+  return normalized.length ? normalized : createLootSlotsForShelter(shelter);
+}
+
+function createLootSlot(item, index, source) {
+  if (!item) return null;
+  return {
+    id: `loot-${index}-${item.id}-${Math.random().toString(36).slice(2, 7)}`,
+    itemId: item.id,
+    status: 'hidden',
+    space: item.space,
+    footprint: footprintForSpace(item.space),
+    tier: item.tier,
+    source,
+  };
+}
+
+function pickGuaranteedItem(entry, profile) {
+  if (entry.itemId) return marketItems.find((item) => item.id === entry.itemId);
+  let candidates = marketItems;
+  if (entry.itemIds) candidates = candidates.filter((item) => entry.itemIds.includes(item.id));
+  if (entry.tier) candidates = candidates.filter((item) => item.tier === entry.tier);
+  if (entry.category) candidates = candidates.filter((item) => item.category === entry.category);
+  if (entry.tag) candidates = candidates.filter((item) => item.tags?.includes(entry.tag));
+  return pickWeightedItem(candidates, profile);
+}
+
+function pickLootTier() {
+  const totalWeight = lootTierWeights.reduce((sum, entry) => sum + entry.weight, 0);
+  let roll = Math.random() * totalWeight;
+  for (const entry of lootTierWeights) {
+    roll -= entry.weight;
+    if (roll < 0) return entry.tier;
+  }
+  return lootTierWeights[lootTierWeights.length - 1].tier;
+}
+
+function pickWeightedItem(candidates, profile = {}) {
+  if (!candidates.length) return null;
+  const weighted = candidates.map((item) => ({ item, weight: lootWeightForItem(item, profile) }));
+  const totalWeight = weighted.reduce((sum, entry) => sum + entry.weight, 0);
+  let roll = Math.random() * totalWeight;
+  for (const entry of weighted) {
+    roll -= entry.weight;
+    if (roll < 0) return entry.item;
+  }
+  return weighted[weighted.length - 1].item;
+}
+
+function lootWeightForItem(item, profile = {}) {
+  const categoryBoost = profile.categoryWeights?.[item.category] ?? 0;
+  const tagBoost = (item.tags ?? []).reduce((sum, tag) => sum + (profile.tagBoosts?.[tag] ?? 0), 0);
+  const itemBoost = profile.itemBoosts?.[item.id] ?? 0;
+  return Math.max(1, 1 + categoryBoost + tagBoost + itemBoost);
+}
+
+function footprintForSpace(space) {
+  if (space >= 8) return '4x2';
+  if (space >= 6) return '3x2';
+  if (space >= 4) return '2x2';
+  if (space >= 3) return '3x1';
+  if (space >= 2) return '2x1';
+  return '1x1';
 }
 
 function cloneCatalogRecord(record) {

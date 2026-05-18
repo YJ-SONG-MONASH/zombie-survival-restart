@@ -1,8 +1,8 @@
 <template>
   <section class="screen market-screen">
-    <header class="sticky-status">
-      <span>💰 ¥{{ game.money.toLocaleString() }}</span>
-      <strong>{{ timerText }}</strong>
+    <header class="sticky-status loot-status">
+      <span>🏚️ {{ game.shelter?.name ?? '避难所待定' }}</span>
+      <strong>{{ lootProgressText }}</strong>
       <span>📦 {{ game.shelter ? `${game.remainingSpace} 格` : '待定' }}</span>
     </header>
 
@@ -44,96 +44,89 @@
     </template>
 
     <template v-else>
-      <h1>采购物资</h1>
-      <p class="subtle">当前避难所：{{ game.shelter.name }} · {{ qualityMeta(game.shelter.quality).label }} · {{ game.shelter.hidden }}</p>
-      <div class="category-tabs">
+      <section class="loot-brief">
+        <div>
+          <p>SAFEHOUSE SEARCH</p>
+          <h1>搜索物资</h1>
+          <span>{{ game.shelter.name }} · {{ qualityMeta(game.shelter.quality).label }} · {{ game.shelter.hidden }}</span>
+        </div>
+        <aside>
+          <strong>{{ game.takenLootCount }}</strong>
+          <span>已带走 / {{ game.lootSlots.length }} 个可疑物资</span>
+        </aside>
+      </section>
+
+      <div class="loot-metrics">
+        <span>未知 {{ hiddenCount }}</span>
+        <span>已搜索 {{ searchedCount }}</span>
+        <span>剩余容量 {{ game.remainingSpace }} 格</span>
+      </div>
+
+      <div class="loot-grid" aria-label="未知物资搜索区">
         <button
-          v-for="category in categories"
-          :key="category.id"
-          :class="{ active: activeCategory === category.id }"
-          @click="activeCategory = category.id"
+          v-for="slot in game.lootSlots"
+          :key="slot.id"
+          :class="lootSlotClass(slot)"
+          :disabled="!canSearch(slot)"
+          @click="searchSlot(slot)"
         >
-          {{ category.icon }} {{ category.label }}
+          <template v-if="slot.status === 'hidden'">
+            <span class="loot-silhouette"></span>
+            <em>{{ slot.space }} 格</em>
+            <strong>未知物资</strong>
+          </template>
+
+          <template v-else-if="slot.status === 'searching'">
+            <span class="search-lens">⌕</span>
+            <strong>搜索中</strong>
+            <em>{{ slot.space }} 格</em>
+          </template>
+
+          <template v-else>
+            <span class="item-icon">
+              <img v-if="lootItem(slot)" :src="itemIconSrc(lootItem(slot))" :alt="lootItem(slot).canonicalName" @error="markIconMissing" />
+              <span>{{ lootItem(slot)?.fallbackIcon ?? '??' }}</span>
+            </span>
+            <strong>{{ lootItem(slot)?.name ?? '未知物资' }}</strong>
+            <small>{{ lootItem(slot)?.canonicalName ?? slot.itemId }}</small>
+            <span class="effect-list">
+              <span v-for="effect in itemEffects(lootItem(slot))" :key="effect">{{ effect }}</span>
+            </span>
+            <em>{{ slot.space }} 格 · {{ slot.status === 'taken' ? '已收入背包' : '背包已满，未带走' }}</em>
+          </template>
         </button>
       </div>
-      <div class="item-grid">
-        <button
-          v-for="item in filteredItems"
-          :key="item.id"
-          :class="['item-card', 'risk-item-card', `quality-${item.tier}`]"
-          :disabled="!canBuy(item)"
-          @click="game.addItem(item)"
-        >
-          <span class="item-icon">
-            <img :src="itemIconSrc(item)" :alt="item.canonicalName" @error="markIconMissing" />
-            <span>{{ item.fallbackIcon }}</span>
-          </span>
-          <strong>{{ item.name }}</strong>
-          <em>{{ item.canonicalName }}</em>
-          <small>{{ item.description }}</small>
-          <span class="effect-list">
-            <span v-for="effect in itemEffects(item)" :key="effect">{{ effect }}</span>
-          </span>
-          <em>¥{{ item.price }} · {{ item.space }}格</em>
-          <b v-if="owned(item.id)">x{{ owned(item.id) }}</b>
-        </button>
-      </div>
-      <button class="primary-action fixed-action" @click="startSurvival">开始生存</button>
+
+      <section class="loot-inventory">
+        <h2>已带走物资</h2>
+        <p v-if="!game.inventory.length">背包还是空的。</p>
+        <span v-for="item in game.inventory" :key="item.id">{{ item.fallbackIcon }} {{ item.name }} x{{ item.count }}</span>
+      </section>
+
+      <button class="primary-action loot-start-action" @click="startSurvival">开始生存</button>
     </template>
   </section>
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { categories, marketItems, shelterQualities } from '../data/zombie.js';
+import { marketItems, shelterQualities } from '../data/zombie.js';
 import { useGameStore } from '../stores/game.js';
 
 const router = useRouter();
 const game = useGameStore();
-const activeCategory = ref('all');
-const countdown = ref(180);
-let timer = null;
 
-const timerText = computed(() => {
-  if (!game.shelter) return '--:--';
-  const min = Math.floor(countdown.value / 60).toString().padStart(2, '0');
-  const sec = (countdown.value % 60).toString().padStart(2, '0');
-  return `${min}:${sec}`;
-});
-
-const filteredItems = computed(() => marketItems.filter((item) => activeCategory.value === 'all' || item.category === activeCategory.value));
 const remainingRolls = computed(() => Math.max(0, game.maxShelterRolls - game.shelterRollsUsed));
-
-function owned(id) {
-  return game.inventory.find((item) => item.id === id)?.count || 0;
-}
-
-function canBuy(item) {
-  return game.money >= item.price && game.remainingSpace >= item.space;
-}
+const hiddenCount = computed(() => game.lootSlots.filter((slot) => slot.status === 'hidden').length);
+const searchedCount = computed(() => game.lootSlots.filter((slot) => slot.status !== 'hidden').length);
+const lootProgressText = computed(() => {
+  if (!game.shelter) return '抽取据点';
+  return `搜索 ${searchedCount.value}/${game.lootSlots.length}`;
+});
 
 function qualityMeta(qualityId) {
   return shelterQualities.find((quality) => quality.id === qualityId) ?? shelterQualities[shelterQualities.length - 1];
-}
-
-function itemIconSrc(item) {
-  return `${import.meta.env.BASE_URL}pz-items/${item.iconFile}`;
-}
-
-function markIconMissing(event) {
-  event.currentTarget.classList.add('missing');
-}
-
-function itemEffects(item) {
-  const entries = Object.entries(item.effects ?? {});
-  if (!entries.length) return item.tags?.slice(0, 2) ?? [];
-  return entries.map(([key, value]) => {
-    if (key === 'skill') return `关联 ${value}`;
-    if (key === 'capacity') return `容量 +${value}`;
-    if (typeof value === 'number') return `${key} ${value > 0 ? '+' : ''}${value}`;
-    return `${key}: ${value}`;
-  }).slice(0, 3);
 }
 
 function defenseText(value) {
@@ -148,32 +141,56 @@ function selectShelter(id) {
   game.selectShelter(id);
 }
 
+function lootItem(slot) {
+  return marketItems.find((item) => item.id === slot.itemId);
+}
+
+function lootSlotClass(slot) {
+  return [
+    'loot-slot',
+    `footprint-${slot.footprint}`,
+    `status-${slot.status}`,
+    slot.status === 'hidden' || slot.status === 'searching' ? 'quality-unknown' : `quality-${slot.tier}`,
+  ];
+}
+
+function canSearch(slot) {
+  return slot.status === 'hidden' && !game.searchingSlotId;
+}
+
+async function searchSlot(slot) {
+  await game.searchLootSlot(slot.id);
+}
+
+function itemIconSrc(item) {
+  return `${import.meta.env.BASE_URL}pz-items/${item.iconFile}`;
+}
+
+function markIconMissing(event) {
+  event.currentTarget.classList.add('missing');
+}
+
+function itemEffects(item) {
+  if (!item) return [];
+  const entries = Object.entries(item.effects ?? {});
+  if (!entries.length) return item.tags?.slice(0, 2) ?? [];
+  return entries.map(([key, value]) => {
+    if (key === 'skill') return `关联 ${value}`;
+    if (key === 'capacity') return `容量 +${value}`;
+    if (typeof value === 'number') return `${key} ${value > 0 ? '+' : ''}${value}`;
+    return `${key}: ${value}`;
+  }).slice(0, 3);
+}
+
 function startSurvival() {
   if (!game.shelter) return;
   game.ensureActiveEvent();
   router.push('/survival');
 }
 
-function startTimer() {
-  if (timer || !game.shelter) return;
-  timer = window.setInterval(() => {
-    countdown.value -= 1;
-    if (countdown.value <= 0) startSurvival();
-  }, 1000);
-}
-
 onMounted(() => {
   if (!game.profession) router.replace('/profession');
   if (!game.shelter && !game.shelterChoices.length) game.rollShelters();
-  startTimer();
-});
-
-watch(
-  () => game.shelter?.id,
-  () => startTimer(),
-);
-
-onUnmounted(() => {
-  if (timer) window.clearInterval(timer);
+  if (game.shelter) game.ensureLootSlots();
 });
 </script>
