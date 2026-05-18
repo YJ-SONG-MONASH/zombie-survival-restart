@@ -1088,8 +1088,9 @@ blockquote {
 
 .shelter-roll-card {
   display: grid;
+  grid-template-rows: auto 1fr auto;
   align-items: stretch;
-  min-height: 340px;
+  min-height: 390px;
   padding: 0;
   overflow: hidden;
   cursor: default;
@@ -1139,8 +1140,40 @@ blockquote {
 
 .shelter-roll-card .secondary {
   align-self: end;
+  justify-self: center;
+  width: min(220px, calc(100% - 32px));
   margin: 0 16px 16px;
   min-height: 48px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.shelter-guarantees {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.shelter-guarantees span {
+  flex-basis: 100%;
+  color: #facc15;
+  font-size: 0.76rem;
+  letter-spacing: 0.04em;
+}
+
+.shelter-guarantees b {
+  max-width: 100%;
+  padding: 4px 7px;
+  border: 1px solid rgba(250, 204, 21, 0.26);
+  border-radius: 6px;
+  background: rgba(250, 204, 21, 0.08);
+  color: #f8fafc;
+  font-size: 0.78rem;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .quality-white {

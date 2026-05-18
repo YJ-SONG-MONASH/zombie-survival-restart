@@ -32,7 +32,7 @@ const defaultState = () => ({
   shelter: null,
   shelterChoices: [],
   shelterRollsUsed: 0,
-  maxShelterRolls: 3,
+  maxShelterRolls: 10,
   lootSlots: [],
   lootSearchStarted: false,
   searchingSlotId: null,
@@ -183,7 +183,7 @@ export const useGameStore = defineStore('game', {
             .map(cloneCatalogRecord)
         : [];
       this.shelterRollsUsed = Number.isFinite(this.shelterRollsUsed) ? Math.max(0, this.shelterRollsUsed) : 0;
-      this.maxShelterRolls = Number.isFinite(this.maxShelterRolls) ? this.maxShelterRolls : 3;
+      this.maxShelterRolls = Number.isFinite(this.maxShelterRolls) ? Math.max(10, this.maxShelterRolls) : 10;
       this.searchingSlotId = null;
       this.vitals = normalizeVitals(this.vitals, this.stats);
       this.skills = normalizeSkills(this.skills);

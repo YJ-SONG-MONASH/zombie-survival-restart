@@ -37,6 +37,10 @@
             <small>{{ shelter.description }}</small>
             <em>📦 {{ shelter.space }} 格　🛡️ {{ defenseText(shelter.defense) }}</em>
             <p>{{ shelter.hidden }}</p>
+            <div class="shelter-guarantees" aria-label="保底物资">
+              <span>保底物资</span>
+              <b v-for="(label, index) in guaranteedLootPreview(shelter)" :key="`${label}-${index}`">{{ label }}</b>
+            </div>
           </div>
           <button class="secondary" @click="selectShelter(shelter.id)">选择这个据点</button>
         </article>
@@ -91,7 +95,7 @@
             </span>
             <strong>{{ lootItem(slot)?.name ?? '未知物资' }}</strong>
             <small>{{ lootItem(slot)?.canonicalName ?? slot.itemId }}</small>
-            <em>{{ slot.space }} 格 · {{ slot.status === 'taken' ? '已收入背包' : '背包已满，未带走' }}</em>
+            <em>{{ lootStatusText(slot) }}</em>
           </template>
         </button>
       </div>
@@ -110,7 +114,7 @@
 <script setup>
 import { computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { itemTiers, marketItems, shelterQualities } from '../data/zombie.js';
+import { itemTiers, marketItems, shelterLootProfiles, shelterQualities } from '../data/zombie.js';
 import { useGameStore } from '../stores/game.js';
 
 const router = useRouter();
@@ -138,6 +142,33 @@ function rollAgain() {
 
 function selectShelter(id) {
   game.selectShelter(id);
+}
+
+function guaranteedLootPreview(shelter) {
+  const profile = shelterLootProfiles[shelter.id] ?? {};
+  return [
+    '水瓶',
+    '食物',
+    '医疗/工具',
+    ...(profile.guaranteed ?? []).map(guaranteeLabel).filter(Boolean),
+  ].slice(0, 7);
+}
+
+function guaranteeLabel(entry) {
+  if (entry.itemId) return itemName(entry.itemId);
+  if (entry.itemIds?.length) {
+    const names = entry.itemIds.map(itemName).filter(Boolean);
+    if (!names.length) return '';
+    return names.length > 2 ? `${names.slice(0, 2).join('/')}等` : names.join('/');
+  }
+  const tier = entry.tier ? tierMeta(entry.tier).shortLabel : '';
+  if (entry.category) return `${tier}${entry.category}`.trim();
+  if (entry.tag) return `${tier}${entry.tag}`.trim();
+  return tier || '';
+}
+
+function itemName(id) {
+  return marketItems.find((item) => item.id === id)?.name ?? '';
 }
 
 function lootItem(slot) {
@@ -185,6 +216,11 @@ function itemEffects(item) {
   }).slice(0, 3);
 }
 
+function lootStatusText(slot) {
+  if (slot.status === 'taken') return `${slot.space} 格`;
+  return `${slot.space} 格 · 背包已满`;
+}
+
 function tierMeta(tierId) {
   return itemTiers.find((tier) => tier.id === tierId) ?? itemTiers[0];
 }
@@ -209,7 +245,9 @@ function lootAriaLabel(slot) {
   if (slot.status === 'searching') return `搜索中，${slot.space} 格`;
   const item = lootItem(slot);
   if (!item) return `未知物资，${slot.space} 格`;
-  return `${item.name}，${item.space} 格，${slot.status === 'taken' ? '已收入背包' : '背包已满，未带走'}`;
+  return slot.status === 'taken'
+    ? `${item.name}，${item.space} 格`
+    : `${item.name}，${item.space} 格，背包已满，未带走`;
 }
 
 function startSurvival() {
