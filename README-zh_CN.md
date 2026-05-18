@@ -1,56 +1,39 @@
-# Life Restart
+# 僵尸毁灭工程模拟器
 
-<a href="https://discord.gg/U3qrf49NMQ"><img src="https://img.shields.io/discord/883382868427014255?color=%23FEE75C&label=Discord&logo=discord&logoColor=white&style=for-the-badge" /></a>
+这是基于 [VickScarlet/lifeRestart](https://github.com/VickScarlet/lifeRestart) 的 MIT 许可证二创项目。原项目的引擎、数据表结构和 LayaAir UI 流程会被保留并逐步改造成丧尸末世文字生存模拟器。
 
-[English](./README.md) | 简体中文
+## 当前目标
 
-## 简介
+- 把“人生重开”的天赋、属性、年龄事件改造成“幸存者特质、初始能力、逐日生存事件”。
+- 首版先保证离线可玩，不依赖后端或 LLM。
+- 后续再加入感染、饥饿、口渴、疲劳、背包、避难所和尸潮压力。
 
-- Game Life Restart
+## 开发计划
+
+详细计划见 [docs/zombie_derivative_plan.md](docs/zombie_derivative_plan.md)。
 
 ## 使用
 
-<details>
-<summary><strong>网页版</strong></summary>
-<br />
-
 ```bash
-# 1. 下载项目代码
-git clone https://github.com/VickScarlet/lifeRestart.git my-project
-
-# 2. 进入目录安装依赖
-cd my-project
 pnpm install
-
-# 3. 转换XLSX表
 pnpm xlsx2json
-
-# 4. 启动本地开发服务器
 pnpm dev
 ```
 
 启动完成后打开浏览器访问 [http://localhost:5173](http://localhost:5173)。
 
-</details>
+## 部署
 
-<details>
-<summary><strong>控制台版本</strong></summary>
-<br />
+本仓库已配置 GitHub Pages 自动部署。推送到 `main` 后，GitHub Actions 会执行：
 
 ```bash
-node repl
+pnpm install --frozen-lockfile
+pnpm xlsx2json
+pnpm build
 ```
 
-</details>
+构建产物位于 `template/public`，随后发布到 GitHub Pages。
 
-## 其他版本
+## 许可证
 
-<details>
-<summary><strong>版本列表</strong></summary>
-<br />
-
-- Cocos版：[gameall3d/LifeRestart_Cocos](https://github.com/gameall3d/LifeRestart_Cocos)
-
-</details>
-
-> 更多信息请参考 [官网文档](https://liferestart.syaro.io/)。
+本项目保留原仓库的 MIT License。二创发布时必须保留 `LICENSE` 中的原版权和许可声明。

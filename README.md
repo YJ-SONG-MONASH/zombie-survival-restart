@@ -1,56 +1,35 @@
-# Life Restart
+# Zombie Survival Restart
 
-<a href="https://discord.gg/U3qrf49NMQ"><img src="https://img.shields.io/discord/883382868427014255?color=%23FEE75C&label=Discord&logo=discord&logoColor=white&style=for-the-badge" /></a>
+This is a derivative project based on [VickScarlet/lifeRestart](https://github.com/VickScarlet/lifeRestart), licensed under MIT.
 
-English | [简体中文](./README-zh_CN.md)
+The goal is to turn the original life-simulation loop into an offline zombie-apocalypse survival simulator with survivor traits, daily events, resource pressure, infection risk, and survival endings.
 
-## Introduction
+## Development Plan
 
-- Game Life Restart
+See [docs/zombie_derivative_plan.md](docs/zombie_derivative_plan.md).
 
 ## Usage
 
-<details>
-<summary><strong>Web Version</strong></summary>
-<br />
-
-
 ```bash
-# 1. Clone project code.
-git clone git@github.com:VickScarlet/lifeRestart.git my-project
-cd my-project
-
-# 2. Installation dependence.
 pnpm install
-
-# 3. Transform XLSX
 pnpm xlsx2json
-
-# 4. Start local dev server.
 pnpm dev
 ```
 
-After the startup is complete, open a browser and visit [http://localhost:5173](http://localhost:5173).
-</details>
+Then open [http://localhost:5173](http://localhost:5173).
 
-<details>
-<summary><strong>Command Line Version</strong></summary>
-<br />
+## Deployment
+
+This repository is configured for GitHub Pages. Each push to `main` runs:
 
 ```bash
-node repl
+pnpm install --frozen-lockfile
+pnpm xlsx2json
+pnpm build
 ```
 
-</details>
+The built site is published from `template/public`.
 
-## Other Version
+## License
 
-<details>
-<summary><strong>Versions</strong></summary>
-<br />
-
-- Cocos Ver: [gameall3d/LifeRestart_Cocos](https://github.com/gameall3d/LifeRestart_Cocos)
-
-</details>
-
-> More instructions at [documentation](https://liferestart.syaro.io/).
+This project keeps the original MIT license and copyright notice.
