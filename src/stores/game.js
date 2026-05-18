@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { hiddenProfessionAliases, marketItems, professions, scenarios, shelters, spawnLocations, traits } from '../data/zombie.js';
+import { hiddenProfessionAliases, marketItems, professions, scenarios, shelterQualities, shelters, spawnLocations, traits } from '../data/zombie.js';
 import { createDayEvent, createEnding, resolveAction } from '../services/engine.js';
 
 const defaultState = () => ({
@@ -14,6 +14,9 @@ const defaultState = () => ({
   profession: null,
   selectedTraits: [],
   shelter: null,
+  shelterChoices: [],
+  shelterRollsUsed: 0,
+  maxShelterRolls: 3,
   inventory: [],
   hiddenTags: [],
   history: [],
@@ -98,6 +101,8 @@ export const useGameStore = defineStore('game', {
       this.selectedTraits = [];
       this.inventory = [];
       this.shelter = null;
+      this.shelterChoices = [];
+      this.shelterRollsUsed = 0;
       this.activeEvent = null;
       this.applyCharacterProfile(true);
       return true;
@@ -106,9 +111,19 @@ export const useGameStore = defineStore('game', {
       const scenario = scenarios.find((item) => item.id === this.scenario?.id) ?? scenarios[0];
       const location = spawnLocations.find((item) => item.id === this.spawnLocation?.id) ?? spawnLocations[0];
       const profession = this.profession ? professions.find((item) => item.id === this.profession.id) : null;
+      const shelter = this.shelter ? shelters.find((item) => item.id === this.shelter.id) : null;
       this.scenario = cloneCatalogRecord(scenario);
       this.spawnLocation = cloneCatalogRecord(location);
       this.profession = profession ? cloneCatalogRecord(profession) : null;
+      this.shelter = shelter ? cloneCatalogRecord(shelter) : null;
+      this.shelterChoices = Array.isArray(this.shelterChoices)
+        ? this.shelterChoices
+            .map((choice) => shelters.find((item) => item.id === choice?.id))
+            .filter(Boolean)
+            .map(cloneCatalogRecord)
+        : [];
+      this.shelterRollsUsed = Number.isFinite(this.shelterRollsUsed) ? Math.max(0, this.shelterRollsUsed) : 0;
+      this.maxShelterRolls = Number.isFinite(this.maxShelterRolls) ? this.maxShelterRolls : 3;
     },
     applyCharacterProfile(includeUnlocks = false) {
       if (!this.profession) return;
@@ -141,11 +156,16 @@ export const useGameStore = defineStore('game', {
       if (this.selectedTraits.some((item) => item.id === id)) return true;
       return !this.selectedTraits.some((item) => item.conflicts?.includes(id) || trait.conflicts?.includes(item.id));
     },
+    rollShelters() {
+      if (this.shelter || this.shelterRollsUsed >= this.maxShelterRolls) return false;
+      this.shelterChoices = drawShelterChoices(3).map(cloneCatalogRecord);
+      this.shelterRollsUsed += 1;
+      return true;
+    },
     selectShelter(id) {
-      const shelter = shelters.find((item) => item.id === id);
-      if (!shelter || this.money < shelter.price) return false;
-      this.shelter = shelter;
-      this.money -= shelter.price;
+      const shelter = this.shelterChoices.find((item) => item.id === id);
+      if (!shelter) return false;
+      this.shelter = cloneCatalogRecord(shelter);
       return true;
     },
     addItem(item, count = 1, free = false) {
@@ -261,4 +281,36 @@ function cloneCatalogRecord(record) {
     tags: record.tags ? [...record.tags] : undefined,
     unlocks: record.unlocks ? [...record.unlocks] : undefined,
   };
+}
+
+export function drawShelterChoices(count = 3) {
+  const choices = [];
+  let attempts = 0;
+  const maxAttempts = count * 80;
+
+  while (choices.length < count && attempts < maxAttempts) {
+    attempts += 1;
+    const quality = pickShelterQuality();
+    const candidates = shelters.filter((shelter) => shelter.quality === quality.id && !choices.some((choice) => choice.id === shelter.id));
+    if (!candidates.length) continue;
+    choices.push(candidates[Math.floor(Math.random() * candidates.length)]);
+  }
+
+  while (choices.length < count) {
+    const candidates = shelters.filter((shelter) => !choices.some((choice) => choice.id === shelter.id));
+    if (!candidates.length) break;
+    choices.push(candidates[Math.floor(Math.random() * candidates.length)]);
+  }
+
+  return choices;
+}
+
+function pickShelterQuality() {
+  const totalWeight = shelterQualities.reduce((sum, quality) => sum + quality.weight, 0);
+  let roll = Math.random() * totalWeight;
+  for (const quality of shelterQualities) {
+    roll -= quality.weight;
+    if (roll < 0) return quality;
+  }
+  return shelterQualities[shelterQualities.length - 1];
 }

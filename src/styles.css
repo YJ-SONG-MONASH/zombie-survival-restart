@@ -427,7 +427,7 @@ blockquote {
 
 .character-screen {
   width: min(1120px, 100%);
-  padding-bottom: 112px;
+  padding-bottom: 48px;
 }
 
 .character-header {
@@ -527,6 +527,29 @@ blockquote {
   font-size: 1.8rem;
 }
 
+.occupation-mark img,
+.profession-card-icon img {
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.occupation-mark img + span,
+.profession-card-icon img + span {
+  display: none;
+}
+
+.occupation-mark img.missing,
+.profession-card-icon img.missing {
+  display: none;
+}
+
+.occupation-mark img.missing + span,
+.profession-card-icon img.missing + span {
+  display: grid;
+}
+
 .character-main {
   display: grid;
   gap: 16px;
@@ -613,7 +636,7 @@ blockquote {
   font-size: 0.82rem;
 }
 
-.profession-card > span {
+.profession-card-icon {
   display: grid;
   place-items: center;
   width: 34px;
@@ -622,6 +645,11 @@ blockquote {
   border-radius: 4px;
   color: #c8b46b;
   background: #090b07;
+}
+
+.profession-card-icon img {
+  width: 26px;
+  height: 26px;
 }
 
 .profession-card b {
@@ -634,6 +662,12 @@ blockquote {
 .profession-card.hidden {
   border-color: #7f5f1a;
   background: linear-gradient(180deg, #171307, #0f130d);
+}
+
+.character-submit {
+  justify-self: center;
+  width: min(680px, 100%);
+  margin-top: 4px;
 }
 
 .view-header {
@@ -926,6 +960,142 @@ blockquote {
   font-style: normal;
 }
 
+.shelter-roll-header {
+  display: grid;
+  grid-template-columns: 1fr minmax(180px, 240px);
+  gap: 14px;
+  align-items: end;
+}
+
+.shelter-roll-header p,
+.shelter-roll-header h1 {
+  margin: 0;
+}
+
+.shelter-roll-header p,
+.shelter-roll-header span {
+  color: #a8b48a;
+}
+
+.shelter-roll-header h1 {
+  margin-top: 4px;
+}
+
+.reroll-button {
+  background: #334029;
+}
+
+.roll-meter {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.roll-meter span {
+  height: 8px;
+  border-radius: 999px;
+  background: #1f2937;
+}
+
+.roll-meter span.used {
+  background: #c8b46b;
+}
+
+.shelter-roll-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.shelter-roll-card {
+  display: grid;
+  align-items: stretch;
+  min-height: 340px;
+  padding: 0;
+  overflow: hidden;
+  cursor: default;
+}
+
+.shelter-quality {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  color: #f8fafc;
+  font-size: 0.78rem;
+}
+
+.shelter-quality span,
+.shelter-quality strong {
+  min-width: 0;
+}
+
+.shelter-quality strong {
+  text-align: right;
+}
+
+.shelter-card-copy {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  padding: 16px;
+}
+
+.shelter-card-copy strong {
+  font-size: 1.24rem;
+}
+
+.shelter-card-copy small,
+.shelter-card-copy p {
+  margin: 0;
+  color: #d1d5db;
+  line-height: 1.48;
+}
+
+.shelter-card-copy p {
+  color: #aeb8c6;
+  font-size: 0.9rem;
+}
+
+.shelter-roll-card .secondary {
+  align-self: end;
+  margin: 0 16px 16px;
+  min-height: 48px;
+}
+
+.quality-white {
+  border-color: #d4d4d8;
+  background: linear-gradient(180deg, rgba(82, 82, 91, 0.95), rgba(24, 24, 27, 0.98));
+}
+
+.quality-green {
+  border-color: #65a30d;
+  background: linear-gradient(180deg, rgba(38, 64, 36, 0.96), rgba(12, 22, 13, 0.98));
+}
+
+.quality-blue {
+  border-color: #3b82f6;
+  background: linear-gradient(180deg, rgba(30, 64, 175, 0.76), rgba(15, 23, 42, 0.98));
+}
+
+.quality-purple {
+  border-color: #a855f7;
+  background: linear-gradient(180deg, rgba(88, 28, 135, 0.84), rgba(30, 16, 48, 0.98));
+}
+
+.quality-gold {
+  border-color: #facc15;
+  background: linear-gradient(180deg, rgba(146, 100, 18, 0.9), rgba(41, 30, 12, 0.98));
+}
+
+.quality-red {
+  border-color: #ef4444;
+  background:
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.05) 0 6px, transparent 6px 14px),
+    linear-gradient(180deg, rgba(127, 29, 29, 0.96), rgba(31, 9, 9, 0.99));
+}
+
 .category-tabs {
   display: flex;
   gap: 10px;
@@ -1199,6 +1369,8 @@ input:focus {
   .trait-header,
   .trait-actions,
   .character-layout,
+  .shelter-roll-header,
+  .shelter-roll-grid,
   .share-form,
   .ending-actions,
   .modal-actions {

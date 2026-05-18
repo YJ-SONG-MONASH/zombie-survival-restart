@@ -17,7 +17,15 @@
           <span v-for="profession in unlockedHidden" :key="profession.id">{{ profession.name }}</span>
         </div>
         <article v-if="game.profession" class="profile-card compact-profile">
-          <div class="occupation-mark">{{ professionGlyph(game.profession.icon) }}</div>
+          <div class="occupation-mark">
+            <img
+              v-if="game.profession.iconFile"
+              :src="professionIconSrc(game.profession)"
+              :alt="`${game.profession.name} 图标`"
+              @error="markIconMissing"
+            />
+            <span>{{ professionGlyph(game.profession.icon) }}</span>
+          </div>
           <h2>{{ game.profession.name }}</h2>
           <p>{{ game.profession.canonicalName }}</p>
           <small>{{ game.profession.summary }}</small>
@@ -62,7 +70,15 @@
               :class="['profession-card', { selected: game.profession?.id === profession.id, hidden: profession.hiddenOnly }]"
               @click="game.selectProfession(profession.id)"
             >
-              <span>{{ professionGlyph(profession.icon) }}</span>
+              <span class="profession-card-icon">
+                <img
+                  v-if="profession.iconFile"
+                  :src="professionIconSrc(profession)"
+                  :alt="`${profession.name} 图标`"
+                  @error="markIconMissing"
+                />
+                <span>{{ professionGlyph(profession.icon) }}</span>
+              </span>
               <strong>{{ profession.name }}</strong>
               <em>{{ profession.canonicalName }}</em>
               <small>{{ profession.summary }}</small>
@@ -73,7 +89,7 @@
       </main>
     </section>
 
-    <button class="primary-action fixed-action" :disabled="!canContinue" @click="continueToTraits">
+    <button class="primary-action character-submit" :disabled="!canContinue" @click="continueToTraits">
       确认角色，选择特性
     </button>
   </section>
@@ -126,6 +142,14 @@ function professionGlyph(icon) {
     prison: '▦',
     circuit: '⌁',
   }[icon] ?? icon;
+}
+
+function professionIconSrc(profession) {
+  return `${import.meta.env.BASE_URL}pz-occupations/${profession.iconFile}`;
+}
+
+function markIconMissing(event) {
+  event.currentTarget.classList.add('missing');
 }
 
 function continueToTraits() {

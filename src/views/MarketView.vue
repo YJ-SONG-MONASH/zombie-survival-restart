@@ -3,33 +3,49 @@
     <header class="sticky-status">
       <span>💰 ¥{{ game.money.toLocaleString() }}</span>
       <strong>{{ timerText }}</strong>
-      <span>📦 {{ game.remainingSpace }} 格</span>
+      <span>📦 {{ game.shelter ? `${game.remainingSpace} 格` : '待定' }}</span>
     </header>
 
     <template v-if="!game.shelter">
-      <h1>选择避难所</h1>
-      <div class="shelter-list">
-        <button
-          v-for="shelter in shelters"
+      <section class="shelter-roll-header">
+        <div>
+          <p>SAFEHOUSE ROLL</p>
+          <h1>随机避难所</h1>
+          <span>第 {{ game.shelterRollsUsed || 1 }} / {{ game.maxShelterRolls }} 次抽样 · 每次出现 3 个不重复地点</span>
+        </div>
+        <button class="secondary reroll-button" :disabled="remainingRolls <= 0" @click="rollAgain">
+          重新抽样 {{ remainingRolls }} 次
+        </button>
+      </section>
+
+      <div class="roll-meter">
+        <span v-for="index in game.maxShelterRolls" :key="index" :class="{ used: index <= game.shelterRollsUsed }"></span>
+      </div>
+
+      <div class="shelter-roll-grid">
+        <article
+          v-for="shelter in game.shelterChoices"
           :key="shelter.id"
-          class="shelter-card"
-          :disabled="game.money < shelter.price"
-          @click="game.selectShelter(shelter.id)"
+          :class="['shelter-card', 'shelter-roll-card', `quality-${shelter.quality}`]"
         >
-          <span class="shelter-icon">{{ shelter.icon }}</span>
-          <span>
+          <div class="shelter-quality">
+            <span>{{ qualityMeta(shelter.quality).label }}</span>
+            <strong>{{ qualityMeta(shelter.quality).tone }}</strong>
+          </div>
+          <div class="shelter-card-copy">
             <strong>{{ shelter.name }}</strong>
             <small>{{ shelter.description }}</small>
-            <em>📦 {{ shelter.space }}格　🛡️ {{ '★'.repeat(shelter.defense) }}</em>
-          </span>
-          <b>¥{{ shelter.price }}</b>
-        </button>
+            <em>📦 {{ shelter.space }} 格　🛡️ {{ defenseText(shelter.defense) }}</em>
+            <p>{{ shelter.hidden }}</p>
+          </div>
+          <button class="secondary" @click="selectShelter(shelter.id)">选择这个据点</button>
+        </article>
       </div>
     </template>
 
     <template v-else>
       <h1>采购物资</h1>
-      <p class="subtle">当前避难所：{{ game.shelter.name }} · {{ game.shelter.hidden }}</p>
+      <p class="subtle">当前避难所：{{ game.shelter.name }} · {{ qualityMeta(game.shelter.quality).label }} · {{ game.shelter.hidden }}</p>
       <div class="category-tabs">
         <button
           v-for="category in categories"
@@ -61,9 +77,9 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { categories, marketItems, shelters } from '../data/zombie.js';
+import { categories, marketItems, shelterQualities } from '../data/zombie.js';
 import { useGameStore } from '../stores/game.js';
 
 const router = useRouter();
@@ -73,12 +89,14 @@ const countdown = ref(180);
 let timer = null;
 
 const timerText = computed(() => {
+  if (!game.shelter) return '--:--';
   const min = Math.floor(countdown.value / 60).toString().padStart(2, '0');
   const sec = (countdown.value % 60).toString().padStart(2, '0');
   return `${min}:${sec}`;
 });
 
 const filteredItems = computed(() => marketItems.filter((item) => activeCategory.value === 'all' || item.category === activeCategory.value));
+const remainingRolls = computed(() => Math.max(0, game.maxShelterRolls - game.shelterRollsUsed));
 
 function owned(id) {
   return game.inventory.find((item) => item.id === id)?.count || 0;
@@ -88,19 +106,48 @@ function canBuy(item) {
   return game.money >= item.price && game.remainingSpace >= item.space;
 }
 
+function qualityMeta(qualityId) {
+  return shelterQualities.find((quality) => quality.id === qualityId) ?? shelterQualities[shelterQualities.length - 1];
+}
+
+function defenseText(value) {
+  return '★'.repeat(Math.max(1, value));
+}
+
+function rollAgain() {
+  game.rollShelters();
+}
+
+function selectShelter(id) {
+  game.selectShelter(id);
+}
+
 function startSurvival() {
-  if (!game.shelter && !game.selectShelter('rental')) return;
+  if (!game.shelter) return;
   game.ensureActiveEvent();
   router.push('/survival');
 }
 
-onMounted(() => {
-  if (!game.profession) router.replace('/profession');
+function startTimer() {
+  if (timer || !game.shelter) return;
   timer = window.setInterval(() => {
     countdown.value -= 1;
     if (countdown.value <= 0) startSurvival();
   }, 1000);
+}
+
+onMounted(() => {
+  if (!game.profession) router.replace('/profession');
+  if (!game.shelter && !game.shelterChoices.length) game.rollShelters();
+  startTimer();
 });
 
-onUnmounted(() => window.clearInterval(timer));
+watch(
+  () => game.shelter?.id,
+  () => startTimer(),
+);
+
+onUnmounted(() => {
+  if (timer) window.clearInterval(timer);
+});
 </script>
