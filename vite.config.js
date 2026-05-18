@@ -1,7 +1,10 @@
-/** @type {import('vite').UserConfig} */
-export default {
-    base: './',
-    build: {
-        outDir: 'template/public',
-    },
-}
+import { defineConfig } from 'vite';
+import vue from '@vitejs/plugin-vue';
+
+export default defineConfig({
+  base: './',
+  plugins: [vue()],
+  build: {
+    outDir: 'template/public',
+  },
+});
