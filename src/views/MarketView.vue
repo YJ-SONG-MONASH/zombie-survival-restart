@@ -282,7 +282,7 @@ function lootAriaLabel(slot) {
 
 function startSurvival() {
   if (!game.shelter) return;
-  game.ensureActiveEvent();
+  game.initializeMapState(true);
   router.push('/survival');
 }
 

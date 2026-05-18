@@ -3,6 +3,10 @@ import {
   hiddenProfessionAliases,
   hiddenSurvivorPresets,
   lootTierWeights,
+  mapEdges,
+  mapNodeActions,
+  mapNodeTypes,
+  mapNodes,
   marketItems,
   professions,
   scenarios,
@@ -17,7 +21,7 @@ import {
   universalShelterLootPools,
   vitalDefinitions,
 } from '../data/zombie.js';
-import { createDayEvent, createEnding, resolveAction } from '../services/engine.js';
+import { createDayEvent, createEnding, resolveAction, resolveMapMove, resolveNodeAction as resolveMapNodeAction } from '../services/engine.js';
 
 const defaultState = () => ({
   scenario: cloneCatalogRecord(scenarios[0]),
@@ -42,6 +46,12 @@ const defaultState = () => ({
   hiddenTags: [],
   history: [],
   activeEvent: null,
+  currentNodeId: null,
+  visitedNodeIds: [],
+  knownNodeIds: [],
+  vehicle: { status: 'none', fuel: 0, name: '徒步', condition: 0 },
+  movesRemaining: 1,
+  mapLog: [],
   ending: null,
   archives: [],
 });
@@ -81,6 +91,19 @@ export const useGameStore = defineStore('game', {
     activeHiddenPreset: (state) => findHiddenSurvivorPreset(state.survivorName),
     isHiddenPresetLocked: (state) => Boolean(findHiddenSurvivorPreset(state.survivorName)?.lockedTraits),
     sortedArchives: (state) => [...state.archives].sort((a, b) => b.createdAt - a.createdAt),
+    currentMapNode: (state) => mapNodes.find((node) => node.id === state.currentNodeId) ?? null,
+    visibleMapNodeList: (state) => buildVisibleMapNodes(state),
+    currentNeighborNodes: (state) => neighborsForNode(state.currentNodeId).map((id) => mapNodes.find((node) => node.id === id)).filter(Boolean),
+    currentNodeActions: (state) => {
+      const node = mapNodes.find((entry) => entry.id === state.currentNodeId);
+      return (node?.actions ?? ['search', 'scout', 'rest'])
+        .map((id) => mapNodeActions.find((action) => action.id === id))
+        .filter(Boolean);
+    },
+    currentNodeType: (state) => {
+      const node = mapNodes.find((entry) => entry.id === state.currentNodeId);
+      return mapNodeTypes.find((type) => type.id === node?.type) ?? null;
+    },
   },
   actions: {
     loadPersistedState() {
@@ -124,12 +147,14 @@ export const useGameStore = defineStore('game', {
         this.selectedTraits = [];
         this.inventory = [];
         this.clearLootSearch();
+        this.clearMapState();
       }
     },
     selectSpawnLocation(id) {
       const location = spawnLocations.find((item) => item.id === id);
       if (!location) return false;
       this.spawnLocation = cloneCatalogRecord(location);
+      this.clearMapState();
       if (this.profession) this.recalculateCharacterState(false);
       return true;
     },
@@ -145,6 +170,7 @@ export const useGameStore = defineStore('game', {
       this.shelterRollsUsed = 0;
       this.clearLootSearch();
       this.activeEvent = null;
+      this.clearMapState();
       this.recalculateCharacterState(true);
       return true;
     },
@@ -166,6 +192,7 @@ export const useGameStore = defineStore('game', {
       this.shelterRollsUsed = 0;
       this.clearLootSearch();
       this.activeEvent = null;
+      this.clearMapState();
       this.recalculateCharacterState(true);
       return true;
     },
@@ -203,6 +230,17 @@ export const useGameStore = defineStore('game', {
         : [];
       this.lootSlots = this.shelter ? normalizeLootSlots(this.lootSlots, this.shelter) : [];
       this.lootSearchStarted = Boolean(this.shelter && this.lootSlots.some((slot) => slot.status !== 'hidden'));
+      const currentNode = mapNodes.find((node) => node.id === this.currentNodeId);
+      this.currentNodeId = currentNode ? currentNode.id : null;
+      this.visitedNodeIds = uniqueValidNodeIds(this.visitedNodeIds);
+      this.knownNodeIds = uniqueValidNodeIds(this.knownNodeIds);
+      if (this.currentNodeId) {
+        this.visitedNodeIds = uniqueValidNodeIds([...this.visitedNodeIds, this.currentNodeId]);
+        this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, this.currentNodeId, ...neighborsForNode(this.currentNodeId)]);
+      }
+      this.vehicle = normalizeVehicle(this.vehicle);
+      this.movesRemaining = Number.isFinite(this.movesRemaining) ? Math.max(0, Math.round(this.movesRemaining)) : 1;
+      this.mapLog = Array.isArray(this.mapLog) ? this.mapLog.slice(0, 80) : [];
     },
     recalculateCharacterState(includeUnlocks = false) {
       if (!this.profession) return;
@@ -267,6 +305,7 @@ export const useGameStore = defineStore('game', {
       this.lootSlots = createLootSlotsForShelter(this.shelter);
       this.lootSearchStarted = false;
       this.searchingSlotId = null;
+      this.clearMapState();
       return true;
     },
     ensureLootSlots() {
@@ -337,6 +376,152 @@ export const useGameStore = defineStore('game', {
       item.count -= count;
       if (item.count <= 0) this.inventory = this.inventory.filter((entry) => entry !== item);
       return true;
+    },
+    clearMapState() {
+      this.currentNodeId = null;
+      this.visitedNodeIds = [];
+      this.knownNodeIds = [];
+      this.vehicle = { status: 'none', fuel: 0, name: '徒步', condition: 0 };
+      this.movesRemaining = 1;
+      this.mapLog = [];
+    },
+    initializeMapState(force = false) {
+      if (this.currentNodeId && !force) {
+        this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, this.currentNodeId, ...neighborsForNode(this.currentNodeId)]);
+        if (!this.movesRemaining) this.movesRemaining = this.movementAllowance();
+        return true;
+      }
+      const spawnNode = mapNodes.find((node) => node.id === this.spawnLocation?.id) ?? mapNodes.find((node) => node.id === 'muldraugh');
+      if (!spawnNode) return false;
+      this.currentNodeId = spawnNode.id;
+      this.visitedNodeIds = [spawnNode.id];
+      this.knownNodeIds = uniqueValidNodeIds([spawnNode.id, ...neighborsForNode(spawnNode.id)]);
+      this.vehicle = normalizeVehicle(this.vehicle);
+      this.movesRemaining = this.movementAllowance();
+      this.activeEvent = null;
+      this.mapLog = [{
+        day: this.day,
+        title: '地图展开',
+        text: `你从${spawnNode.name}开始标记路线，初始避难所是${this.shelter?.name ?? '未知据点'}。`,
+      }];
+      return true;
+    },
+    visibleMapNodes() {
+      return buildVisibleMapNodes(this.$state);
+    },
+    movementAllowance() {
+      if (this.vehicle?.status === 'working' && (this.vehicle.fuel ?? 0) > 0) return 3;
+      if (this.vehicle?.status === 'damaged' && (this.vehicle.fuel ?? 0) > 0) return 2;
+      return 1;
+    },
+    canMoveToNode(nodeId) {
+      return this.movesRemaining > 0 && neighborsForNode(this.currentNodeId).includes(nodeId);
+    },
+    moveToNode(nodeId) {
+      const node = mapNodes.find((entry) => entry.id === nodeId);
+      if (!node || !this.canMoveToNode(nodeId)) return false;
+      const from = mapNodes.find((entry) => entry.id === this.currentNodeId);
+      this.currentNodeId = node.id;
+      this.visitedNodeIds = uniqueValidNodeIds([...this.visitedNodeIds, node.id]);
+      this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, node.id, ...neighborsForNode(node.id)]);
+      const usingVehicle = this.vehicle?.status !== 'none' && (this.vehicle.fuel ?? 0) > 0;
+      if (usingVehicle) {
+        this.vehicle.fuel = Math.max(0, (this.vehicle.fuel ?? 0) - 1);
+        if (this.vehicle.fuel <= 0) this.vehicle.status = this.vehicle.status === 'working' ? 'damaged' : this.vehicle.status;
+      }
+      this.movesRemaining = Math.max(0, this.movesRemaining - 1);
+      this.mapLog.unshift({
+        day: this.day,
+        title: `${from?.name ?? '未知地点'} → ${node.name}`,
+        text: this.movesRemaining > 0
+          ? `你推进到${node.name}。今天还可以继续移动 ${this.movesRemaining} 步。`
+          : `你推进到${node.name}，今天的移动结束。`,
+      });
+
+      if (this.movesRemaining > 0) return true;
+      const outcome = resolveMapMove({
+        day: this.day,
+        node,
+        inventory: this.inventory,
+        tags: this.hiddenTags,
+        traits: this.selectedTraits,
+        vitals: this.vitals,
+        skills: this.skills,
+        vehicle: this.vehicle,
+      });
+      this.applyMapOutcome(outcome, 'move');
+      return true;
+    },
+    resolveNodeAction(actionId) {
+      if (!this.currentNodeId) this.initializeMapState();
+      const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
+      const action = mapNodeActions.find((entry) => entry.id === actionId);
+      if (!node || !action || !(node.actions ?? []).includes(actionId)) return false;
+      const outcome = resolveMapNodeAction({
+        actionId,
+        node,
+        day: this.day,
+        inventory: this.inventory,
+        tags: this.hiddenTags,
+        traits: this.selectedTraits,
+        vitals: this.vitals,
+        skills: this.skills,
+        profession: this.profession,
+        vehicle: this.vehicle,
+      });
+      this.applyMapOutcome(outcome, 'action');
+      return true;
+    },
+    applyMapOutcome(outcome, mode = 'action') {
+      outcome.consume?.forEach((itemId) => this.removeItem(itemId, 1));
+      outcome.add?.forEach((item) => this.addItem(item, item.count ?? 1, true));
+      outcome.removeTags?.forEach((tag) => {
+        this.hiddenTags = this.hiddenTags.filter((entry) => entry !== tag);
+      });
+      outcome.addTags?.forEach((tag) => {
+        if (tag && !this.hiddenTags.includes(tag)) this.hiddenTags.push(tag);
+      });
+      if (outcome.vehicle) this.vehicle = normalizeVehicle(outcome.vehicle);
+      if (outcome.revealNodeIds?.length) this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, ...outcome.revealNodeIds]);
+      if (outcome.scoutDepth) this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, ...nodeNeighborhood(this.currentNodeId, outcome.scoutDepth)]);
+      this.vitals = applyVitalDelta(this.vitals, outcome.vitals);
+      const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
+      this.history.push({
+        day: this.day,
+        title: outcome.title,
+        log: node ? `${node.name} · ${node.resourceHint}` : '地图行动',
+        action: outcome.action ?? outcome.title,
+        result: outcome.result,
+        notes: outcome.notes,
+        score: outcome.score,
+      });
+      this.mapLog.unshift({
+        day: this.day,
+        title: outcome.title,
+        text: outcome.result,
+        mode,
+      });
+      this.mapLog = this.mapLog.slice(0, 80);
+      if (outcome.highlight) this.ending = { ...(this.ending || {}), highlight: outcome.highlight };
+      this.day += 1;
+      this.activeEvent = null;
+      this.movesRemaining = this.movementAllowance();
+      if (this.isGameOver) {
+        this.ending = createEnding({
+          day: this.day - 1,
+          victory: this.isVictory,
+          vitals: this.vitals,
+          skills: this.skills,
+          profession: this.profession,
+          survivorName: this.survivorName,
+          spawnLocation: this.spawnLocation,
+          shelter: this.shelter,
+          inventory: this.inventory,
+          history: this.history,
+          traits: this.selectedTraits,
+          highlight: this.ending?.highlight,
+        });
+      }
     },
     ensureActiveEvent() {
       if (!this.activeEvent) {
@@ -434,6 +619,71 @@ function normalizeName(name) {
 function findHiddenSurvivorPreset(name) {
   const normalized = normalizeName(name);
   return hiddenSurvivorPresets.find((preset) => preset.names.some((entry) => normalizeName(entry) === normalized)) ?? null;
+}
+
+function buildVisibleMapNodes(state) {
+  const visited = new Set(uniqueValidNodeIds(state.visitedNodeIds));
+  const known = new Set(uniqueValidNodeIds(state.knownNodeIds));
+  const adjacent = new Set(neighborsForNode(state.currentNodeId));
+  return mapNodes.map((node) => {
+    const visibility = node.id === state.currentNodeId
+      ? 'current'
+      : visited.has(node.id)
+        ? 'visited'
+        : known.has(node.id) || adjacent.has(node.id)
+          ? 'known'
+          : 'unknown';
+    return {
+      ...node,
+      typeMeta: mapNodeTypes.find((type) => type.id === node.type),
+      visibility,
+      isAdjacent: adjacent.has(node.id),
+      canMove: adjacent.has(node.id) && (state.movesRemaining ?? 0) > 0,
+      displayName: visibility === 'unknown' ? '???' : node.name,
+    };
+  });
+}
+
+function neighborsForNode(nodeId) {
+  if (!nodeId) return [];
+  return mapEdges
+    .filter(([from, to]) => from === nodeId || to === nodeId)
+    .map(([from, to]) => (from === nodeId ? to : from))
+    .filter((id, index, list) => list.indexOf(id) === index);
+}
+
+function nodeNeighborhood(startNodeId, depth = 1) {
+  if (!startNodeId || depth <= 0) return [];
+  const seen = new Set([startNodeId]);
+  let frontier = [startNodeId];
+  for (let layer = 0; layer < depth; layer += 1) {
+    const next = [];
+    frontier.forEach((nodeId) => {
+      neighborsForNode(nodeId).forEach((neighborId) => {
+        if (seen.has(neighborId)) return;
+        seen.add(neighborId);
+        next.push(neighborId);
+      });
+    });
+    frontier = next;
+  }
+  return [...seen];
+}
+
+function uniqueValidNodeIds(ids) {
+  const valid = new Set(mapNodes.map((node) => node.id));
+  return [...new Set((Array.isArray(ids) ? ids : []).filter((id) => valid.has(id)))];
+}
+
+function normalizeVehicle(vehicle) {
+  if (!vehicle || typeof vehicle !== 'object') return { status: 'none', fuel: 0, name: '徒步', condition: 0 };
+  const status = ['none', 'damaged', 'working'].includes(vehicle.status) ? vehicle.status : 'none';
+  return {
+    status,
+    fuel: Math.max(0, Math.min(5, Number.isFinite(vehicle.fuel) ? Math.round(vehicle.fuel) : 0)),
+    name: status === 'none' ? '徒步' : vehicle.name || (status === 'working' ? '可用车辆' : '受损车辆'),
+    condition: Math.max(0, Math.min(100, Number.isFinite(vehicle.condition) ? Math.round(vehicle.condition) : 0)),
+  };
 }
 
 const defaultLootSlotsByQuality = {

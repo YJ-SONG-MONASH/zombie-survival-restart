@@ -1,4 +1,4 @@
-import { eventDeck, marketItems, skillDefinitions, vitalDefinitions } from '../data/zombie.js';
+import { eventDeck, marketItems, skillDefinitions, vehicleEvents, vitalDefinitions } from '../data/zombie.js';
 
 const foodIds = ['canned_soup', 'canned_beans', 'canned_tuna', 'cereal', 'chips', 'peanut_butter'];
 const waterIds = ['water_bottle'];
@@ -131,6 +131,165 @@ export function resolveAction({ day, actionText, optionId, event, profession, sh
   };
 }
 
+export function resolveMapMove({ day, node, inventory, tags = [], traits = [], vitals, skills, vehicle }) {
+  const traitIds = new Set(traits.map((trait) => trait.id));
+  const consume = [];
+  const addTags = [];
+  const notes = [`抵达${node.name}`];
+  const danger = node.danger ?? 3;
+  const vitalDelta = {
+    health: danger >= 5 ? -4 : -1,
+    endurance: -Math.max(5, danger * 4),
+    hunger: 6,
+    thirst: 8,
+    fatigue: traitIds.has('wakeful') ? Math.max(2, danger - 1) : danger + 4,
+    panic: danger * 3,
+    stress: danger * 2,
+  };
+
+  applyDailyNeeds({ day, inventory, traits: traitIds, vitals, consume, vitalDelta, addTags, notes });
+  if (vehicle?.status && vehicle.status !== 'none') {
+    vitalDelta.fatigue -= vehicle.status === 'working' ? 4 : 2;
+    notes.push(`${vehicle.name ?? '车辆'}节省了体力`);
+  }
+  if (tags.includes('受伤')) vitalDelta.health -= 3;
+
+  const score = Math.max(10, Math.min(95, 72 - danger * 7 + mobilityScore(skills, inventory, traits)));
+  const result = `你沿着地图边缘推进到${node.name}。${node.description}今天的路线没有给你太多喘息，但新的位置已经打开。`;
+  return {
+    title: `抵达 ${node.name}`,
+    result,
+    notes: notes.join(' / '),
+    score,
+    vitals: vitalDelta,
+    consume,
+    add: [],
+    addTags,
+    removeTags: [],
+    revealNodeIds: [],
+    vehicle: null,
+    highlight: score >= 86 ? `第${day}天：你抵达${node.name}，路线被重新打开。` : null,
+  };
+}
+
+export function resolveNodeAction({ actionId, node, day, inventory, tags = [], traits = [], vitals, skills, profession, vehicle }) {
+  const traitIds = new Set(traits.map((trait) => trait.id));
+  const danger = node.danger ?? 3;
+  const consume = [];
+  const add = [];
+  const addTags = [];
+  const removeTags = [];
+  const notes = [];
+  const vitalDelta = {
+    health: -Math.max(0, danger - 3),
+    endurance: -Math.max(3, danger * 3),
+    hunger: 5,
+    thirst: 7,
+    fatigue: traitIds.has('wakeful') ? 3 : 5,
+    panic: Math.max(0, danger * 2 - 2),
+    stress: Math.max(0, danger * 2 - 1),
+  };
+
+  applyDailyNeeds({ day, inventory, traits: traitIds, vitals, consume, vitalDelta, addTags, notes });
+
+  if (actionId === 'rest') {
+    vitalDelta.health += 2;
+    vitalDelta.endurance += 12;
+    vitalDelta.fatigue -= 24;
+    vitalDelta.panic -= 16;
+    vitalDelta.stress -= 14;
+    notes.push('临时休整');
+    return mapOutcome({
+      day,
+      title: '临时休整',
+      result: `你在${node.name}找了一处能挡住视线的角落，把呼吸和背包都重新整理了一遍。外面仍然危险，但身体没有继续往下掉。`,
+      notes,
+      score: 72 - danger * 2 + (skills.first_aid ?? 0),
+      vitalDelta,
+      consume,
+      add,
+      addTags,
+      removeTags,
+    });
+  }
+
+  if (actionId === 'scout') {
+    vitalDelta.endurance -= 2;
+    vitalDelta.fatigue += 2;
+    vitalDelta.panic += Math.max(0, danger - 3);
+    vitalDelta.stress += Math.max(0, danger - 2);
+    notes.push('标记路线');
+    return mapOutcome({
+      day,
+      title: '侦察路线',
+      result: `你没有急着进建筑，而是绕着${node.name}走了一圈。路障、尸群和可疑灯光被标在地图边上，远处的问号少了一些。`,
+      notes,
+      score: 62 - danger * 3 + scoutScore(skills, traits),
+      vitalDelta,
+      consume,
+      add,
+      addTags,
+      removeTags,
+      scoutDepth: 2,
+      highlight: danger >= 5 ? `第${day}天：你在${node.name}摸清了一条高危路线。` : null,
+    });
+  }
+
+  if (actionId === 'vehicle') {
+    const vehicleOutcome = resolveVehicleSearch({ node, day, inventory, traits, skills, profession, danger, vehicle });
+    vitalDelta.health += vehicleOutcome.vitalDelta.health;
+    vitalDelta.endurance += vehicleOutcome.vitalDelta.endurance;
+    vitalDelta.fatigue += vehicleOutcome.vitalDelta.fatigue;
+    vitalDelta.panic += vehicleOutcome.vitalDelta.panic;
+    vitalDelta.stress += vehicleOutcome.vitalDelta.stress;
+    notes.push(...vehicleOutcome.notes);
+    vehicleOutcome.consume.forEach((id) => consume.push(id));
+    if (vehicleOutcome.addTag) addTags.push(vehicleOutcome.addTag);
+    return mapOutcome({
+      day,
+      title: '寻找车辆',
+      result: vehicleOutcome.result,
+      notes,
+      score: vehicleOutcome.score,
+      vitalDelta,
+      consume,
+      add,
+      addTags,
+      removeTags,
+      vehicle: vehicleOutcome.vehicle,
+      highlight: vehicleOutcome.vehicle?.status === 'working' ? `第${day}天：你在${node.name}弄到了一辆能开的车。` : null,
+    });
+  }
+
+  const foundItems = nodeLoot({ node, day, skills, traits, inventory });
+  foundItems.forEach((item) => add.push({ ...item, count: 1 }));
+  const searchScore = Math.max(10, Math.min(98, 54 - danger * 4 + scoutScore(skills, traits) + lootToolScore(inventory)));
+  if (searchScore < 42) {
+    vitalDelta.health -= danger >= 5 ? 10 : 5;
+    vitalDelta.panic += 10;
+    addTags.push('受伤');
+    notes.push('搜刮时受伤');
+  } else if (foundItems.length) {
+    notes.push(`找到${foundItems.map((item) => item.name).join('、')}`);
+  } else {
+    notes.push('没有找到有价值物资');
+  }
+
+  return mapOutcome({
+    day,
+    title: '搜索周边',
+    result: `你搜索了${node.name}附近的建筑和路边残骸。${foundItems.length ? `背包里多了${foundItems.map((item) => item.name).join('、')}。` : '能带走的东西比想象中少。'}${danger >= 5 ? '这里的尸群一直在压缩你的退路。' : '这片区域暂时还给你留了撤离空间。'}`,
+    notes,
+    score: searchScore,
+    vitalDelta,
+    consume,
+    add,
+    addTags,
+    removeTags,
+    highlight: searchScore >= 86 ? `第${day}天：你在${node.name}找到关键补给。` : null,
+  });
+}
+
 export function createEnding({ day, victory, vitals, skills, profession, survivorName, spawnLocation, shelter, inventory, history, traits = [], highlight }) {
   const best = [...history].sort((a, b) => b.score - a.score)[0];
   const worst = [...history].sort((a, b) => a.score - b.score)[0];
@@ -172,6 +331,221 @@ export function createEnding({ day, victory, vitals, skills, profession, survivo
     shelterName: shelter?.name ?? '无避难所',
     inventory: inventory.map((item) => ({ name: item.name, count: item.count, icon: item.fallbackIcon ?? item.icon })),
   };
+}
+
+function mapOutcome({ day, title, result, notes, score, vitalDelta, consume, add, addTags, removeTags, scoutDepth = 0, vehicle = null, highlight = null }) {
+  return {
+    title,
+    result,
+    notes: notes.join(' / ') || '地图状态稳定',
+    score: Math.max(5, Math.min(98, Math.round(score))),
+    vitals: vitalDelta,
+    consume,
+    add,
+    addTags,
+    removeTags,
+    scoutDepth,
+    revealNodeIds: [],
+    vehicle,
+    highlight,
+    action: title,
+    day,
+  };
+}
+
+function applyDailyNeeds({ day, inventory, traits, vitals, consume, vitalDelta, addTags, notes }) {
+  const needsFood = !(traits.has('light_eater') && day % 2 === 0);
+  const needsWater = !(traits.has('low_thirst') && day % 2 === 0);
+  const food = needsFood ? consumeOne(inventory, foodIds) : null;
+  const water = needsWater ? consumeOne(inventory, waterIds) : null;
+
+  if (food) {
+    consume.push(food.id);
+    vitalDelta.hunger -= food.effects?.hunger ? Math.abs(food.effects.hunger) : 22;
+  } else if (!needsFood) {
+    notes.push('少食节省了一份食物');
+  } else {
+    vitalDelta.hunger += traits.has('hearty_appetite') ? 20 : 14;
+    vitalDelta.health -= vitals.hunger > 75 ? 10 : 4;
+    addTags.push('饥饿');
+    notes.push('缺少食物');
+  }
+
+  if (water) {
+    consume.push(water.id);
+    vitalDelta.thirst -= water.effects?.thirst ? Math.abs(water.effects.thirst) : 30;
+  } else if (!needsWater) {
+    notes.push('低口渴节省了一瓶水');
+  } else {
+    vitalDelta.thirst += traits.has('high_thirst') ? 28 : 20;
+    vitalDelta.health -= vitals.thirst > 75 ? 16 : 7;
+    vitalDelta.stress += 3;
+    addTags.push('脱水');
+    notes.push('缺少饮水');
+  }
+
+  if (traits.has('high_thirst')) {
+    const consumedWater = consume.filter((id) => id === 'water_bottle').length;
+    const extraWater = inventory.find((item) => waterIds.includes(item.id) && item.count > consumedWater);
+    if (extraWater) {
+      consume.push(extraWater.id);
+      vitalDelta.thirst -= 16;
+      notes.push('高口渴额外消耗饮水');
+    } else {
+      vitalDelta.thirst += 10;
+      vitalDelta.health -= 5;
+      notes.push('高口渴加重脱水压力');
+    }
+  }
+
+  if (traits.has('smoker')) {
+    const consumedCigarettes = consume.filter((id) => id === 'cigarette').length;
+    const cigarette = inventory.find((item) => item.id === 'cigarette' && item.count > consumedCigarettes);
+    if (cigarette) {
+      consume.push(cigarette.id);
+      vitalDelta.stress -= 10;
+      notes.push('烟瘾得到缓解');
+    } else {
+      vitalDelta.stress += 9;
+      addTags.push('焦躁');
+      notes.push('烟瘾发作');
+    }
+  }
+}
+
+function resolveVehicleSearch({ node, day, inventory, traits, skills, profession, danger, vehicle }) {
+  const traitIds = new Set(traits.map((trait) => trait.id));
+  const gasCan = inventory.find((item) => item.id === 'gas_can' && item.count > 0);
+  const candidateEvents = vehicleEvents.filter((entry) => entry.nodeTypes.includes(node.type));
+  const event = candidateEvents[day % Math.max(1, candidateEvents.length)] ?? vehicleEvents[0];
+  let score =
+    34 -
+    danger * 4 +
+    (skills.mechanics ?? 0) * 7 +
+    (skills.electrical ?? 0) * 3 +
+    (traitIds.has('speed_demon') ? 8 : 0) +
+    (profession?.tags?.some((tag) => ['盗车老手', '车辆', '修理', '机械'].includes(tag)) ? 10 : 0) +
+    (gasCan ? 12 : 0) +
+    Math.floor(Math.random() * 21);
+  const notes = [];
+  const consume = [];
+  const vitalDelta = { health: -Math.max(0, danger - 4), endurance: -6, fatigue: 6, panic: danger * 2, stress: danger * 2 };
+
+  if (vehicle?.status === 'working' && gasCan) {
+    consume.push('gas_can');
+    notes.push('用汽油桶补充燃料');
+    return {
+      score: 78,
+      result: `你没有换车，而是把汽油桶倒进${vehicle.name ?? '现有车辆'}。发动机声很粗，但路线选择明显变多了。`,
+      notes,
+      consume,
+      vitalDelta: { ...vitalDelta, stress: -2, fatigue: -4 },
+      vehicle: { ...vehicle, fuel: Math.min(5, (vehicle.fuel ?? 0) + 2), status: 'working' },
+    };
+  }
+
+  if (score >= 58) {
+    const fuelBonus = gasCan ? 1 : 0;
+    if (gasCan && event.status === 'working') consume.push('gas_can');
+    notes.push(`发现${event.name}`);
+    return {
+      score,
+      result: `你在${node.name}附近找到${event.name}。${event.description}${gasCan ? '汽油桶让它多撑了一段路。' : '油量不多，必须谨慎规划下一步。'}`,
+      notes,
+      consume,
+      vitalDelta: { ...vitalDelta, fatigue: Math.max(0, vitalDelta.fatigue - 3), stress: Math.max(-6, vitalDelta.stress - 5) },
+      vehicle: {
+        status: event.status,
+        fuel: Math.max(1, event.fuel + fuelBonus),
+        name: event.name,
+        condition: event.condition,
+      },
+    };
+  }
+
+  notes.push('没有找到可靠车辆');
+  return {
+    score,
+    result: `你翻过${node.name}附近的停车场和路边废车。能打开的车不是没油就是电瓶死透，引擎声只换来远处的回应。`,
+    notes,
+    consume,
+    vitalDelta: { ...vitalDelta, health: vitalDelta.health - (score < 35 ? 5 : 0), panic: vitalDelta.panic + 4 },
+    vehicle: null,
+    addTag: score < 35 ? '精神紧绷' : null,
+  };
+}
+
+function nodeLoot({ node, day, skills, traits, inventory }) {
+  const pool = nodeLootPool(node);
+  const count = node.danger >= 5 ? 1 : node.danger <= 2 ? 2 : day % 3 === 0 ? 2 : 1;
+  const picks = [];
+  let attempts = 0;
+  while (picks.length < count && attempts < 30) {
+    attempts += 1;
+    const id = pool[(day + attempts + Math.floor(Math.random() * pool.length)) % pool.length];
+    if (!picks.includes(id)) picks.push(id);
+  }
+  if ((skills.foraging ?? 0) >= 3 && ['wilds', 'town'].includes(node.type) && !picks.includes('cabbage_seeds')) picks.push('cabbage_seeds');
+  if (traits.some((trait) => trait.id === 'lucky') && !picks.includes('bandage')) picks.push('bandage');
+  if (inventory.some((item) => item.id === 'crowbar') && ['commercial', 'industrial'].includes(node.type) && !picks.includes('nails')) picks.push('nails');
+  return picks
+    .slice(0, 3)
+    .map((id) => marketItems.find((item) => item.id === id))
+    .filter(Boolean);
+}
+
+function nodeLootPool(node) {
+  const common = ['water_bottle', 'canned_beans', 'chips', 'bandage'];
+  const pools = {
+    spawn_town: ['water_bottle', 'canned_soup', 'canned_tuna', 'cereal', 'bandage', 'hammer', 'screwdriver', 'duffel_bag'],
+    town: ['water_bottle', 'canned_beans', 'cereal', 'peanut_butter', 'trowel', 'cabbage_seeds', 'hammer', 'bandage'],
+    road: ['water_bottle', 'chips', 'gas_can', 'wrench', 'lug_wrench', 'jack', 'duffel_bag'],
+    commercial: ['canned_soup', 'canned_beans', 'canned_tuna', 'coffee', 'teabag', 'painkillers', 'beta_blockers', 'baseball_bat'],
+    industrial: ['hammer', 'saw', 'screwdriver', 'wrench', 'pipe_wrench', 'nails', 'duct_tape', 'propane_torch', 'gas_can'],
+    wilds: ['water_bottle', 'chips', 'fishing_tackle', 'trowel', 'cabbage_seeds', 'crafted_spear', 'bandage'],
+    checkpoint: ['first_aid_kit', 'painkillers', '9mm_rounds', 'shotgun_shells', 'm9_pistol', 'gas_can', 'wrench'],
+    major_city: ['canned_tuna', 'peanut_butter', 'antibiotics', 'first_aid_kit', 'hiking_bag', 'machete', '9mm_rounds'],
+  };
+  return pools[node.type] ?? common;
+}
+
+function scoutScore(skills, traits) {
+  const traitIds = new Set(traits.map((trait) => trait.id));
+  return (
+    (skills.sneaking ?? 0) * 3 +
+    (skills.lightfooted ?? 0) * 2 +
+    (skills.nimble ?? 0) * 2 +
+    (skills.foraging ?? 0) * 2 +
+    (traitIds.has('inconspicuous') ? 5 : 0) +
+    (traitIds.has('graceful') ? 5 : 0) +
+    (traitIds.has('lucky') ? 4 : 0) -
+    (traitIds.has('conspicuous') ? 7 : 0) -
+    (traitIds.has('clumsy') ? 7 : 0) -
+    (traitIds.has('unlucky') ? 5 : 0)
+  );
+}
+
+function mobilityScore(skills, inventory, traits) {
+  const traitIds = new Set(traits.map((trait) => trait.id));
+  return (
+    (skills.fitness ?? 0) * 2 +
+    (skills.sprinting ?? 0) * 2 +
+    (skills.nimble ?? 0) +
+    (inventory.some((item) => item.tags?.includes('capacity')) ? 4 : 0) +
+    (traitIds.has('athletic') ? 5 : 0) +
+    (traitIds.has('runner') ? 5 : 0) -
+    (traitIds.has('out_of_shape') ? 5 : 0) -
+    (traitIds.has('unfit') ? 8 : 0)
+  );
+}
+
+function lootToolScore(inventory) {
+  return (
+    (inventory.some((item) => item.id === 'crowbar') ? 8 : 0) +
+    (inventory.some((item) => item.id === 'screwdriver') ? 4 : 0) +
+    (inventory.some((item) => item.id === 'hammer') ? 4 : 0) +
+    (inventory.some((item) => item.id === 'flashlight') ? 3 : 0)
+  );
 }
 
 function scoreProfile({ action, event, inventory, option, profession, shelter, vitals, skills, tags, traits }) {
