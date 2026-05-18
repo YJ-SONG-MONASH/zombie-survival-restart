@@ -117,7 +117,7 @@ export function resolveAction({ day, actionText, optionId, event, profession, sh
   };
 }
 
-export function createEnding({ day, victory, stats, profession, shelter, inventory, history, traits = [], highlight }) {
+export function createEnding({ day, victory, stats, profession, survivorName, spawnLocation, shelter, inventory, history, traits = [], highlight }) {
   const best = [...history].sort((a, b) => b.score - a.score)[0];
   const worst = [...history].sort((a, b) => a.score - b.score)[0];
   const reason = victory
@@ -143,7 +143,9 @@ export function createEnding({ day, victory, stats, profession, shelter, invento
     highlight: highlight || best?.result || '没有特别耀眼的时刻，但每一天都算数。',
     hp: stats.hp,
     san: stats.san,
+    survivorName: survivorName || '无名幸存者',
     professionName: profession?.name ?? '未知身份',
+    spawnName: spawnLocation?.name ?? '未知出生点',
     traits: traits.map((trait) => ({ name: trait.name, canonicalName: trait.canonicalName, points: trait.points, icon: trait.icon })),
     shelterName: shelter?.name ?? '无避难所',
     inventory: inventory.map((item) => ({ name: item.name, count: item.count, icon: item.icon })),
@@ -157,9 +159,11 @@ function scoreProfile({ action, event, inventory, option, profession, shelter, s
   const professionTags = profession?.tags ?? [];
   const traitIds = new Set(traits.map((trait) => trait.id));
 
-  if (option?.stat === 'fight' && professionTags.some((tag) => ['战斗经验', '体能充沛', '警戒'].includes(tag))) score += 18;
-  if (option?.stat === 'scout' && professionTags.some((tag) => ['逻辑分析', '警戒', '野外求生'].includes(tag))) score += 14;
-  if (option?.stat === 'empathy' && ['普通白领', '医生'].includes(profession?.name)) score += 12;
+  if (option?.stat === 'fight' && professionTags.some((tag) => ['战斗经验', '体能充沛', '警戒', '枪械训练', '斧头', '斧头专家', '短钝器', '力量'].includes(tag))) score += 18;
+  if (option?.stat === 'scout' && professionTags.some((tag) => ['警戒', '野外求生', '森林穿行', '潜行', '盗车老手', '车辆', '钓鱼', '户外'].includes(tag))) score += 14;
+  if (option?.stat === 'defense' && professionTags.some((tag) => ['建造', '木工', '维护', '修理', '焊接', '防御', '金属加工', '高级电工'].includes(tag))) score += 12;
+  if (option?.stat === 'empathy' && ['无业者', '医生', '护士'].includes(profession?.name)) score += 12;
+  if (option?.stat === 'scout' && professionTags.some((tag) => ['电工', '发电机知识', '工程', '机械'].includes(tag)) && action.includes('电')) score += 12;
   if (option?.stat === 'san' && stats.san > 60) score += 10;
 
   if (option?.stat === 'fight' && ['strong', 'stout', 'brawler', 'baseball_player', 'hunter', 'axe_man'].some((id) => traitIds.has(id))) score += 14;

@@ -2,8 +2,9 @@
   <section class="screen survival-screen">
     <header class="survival-header">
       <div>
-        <p>距离胜利还需坚持 {{ Math.max(0, game.maxDay - game.day + 1) }} 天</p>
+        <p>{{ game.survivorName || '无名幸存者' }} · {{ game.profession?.name }} · {{ game.spawnLocation?.name }}</p>
         <h1>第 {{ game.day }} 天</h1>
+        <span>距离胜利还需坚持 {{ Math.max(0, game.maxDay - game.day + 1) }} 天</span>
       </div>
       <div class="meter-stack">
         <label>❤️ 生命 <progress :value="game.stats.hp" max="140"></progress><span>{{ game.stats.hp }}</span></label>

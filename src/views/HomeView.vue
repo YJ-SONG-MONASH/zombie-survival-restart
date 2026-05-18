@@ -1,9 +1,11 @@
 <template>
-  <section class="home-screen screen">
+  <section class="home-screen screen pz-home">
     <button class="icon-button settings-button" title="API 设置" @click="showSettings = true">⚙️</button>
 
-    <header class="hero">
-      <h1>末世模拟器</h1>
+    <header class="hero pz-hero">
+      <p class="pz-kicker">KNOX EVENT / SOLO SURVIVAL</p>
+      <h1>PROJECT ZOMBOID<br />生存模拟器</h1>
+      <p class="pz-subtitle">This is how you died.</p>
       <div class="server-switch" role="group" aria-label="运行模式">
         <button :class="{ active: settings.mode === 'offline' }" @click="settings.useOfficial()">离线规则</button>
         <button :class="{ active: settings.mode === 'custom' }" @click="showSettings = true">自定义 API</button>
@@ -14,24 +16,24 @@
       </p>
     </header>
 
-    <div class="scenario-list">
+    <div class="scenario-list pz-scenario-list">
       <button
         v-for="scenario in scenarios"
         :key="scenario.id"
-        class="scenario-card"
+        class="scenario-card pz-scenario-card"
         :class="[{ locked: scenario.locked }, `accent-${scenario.accent || 'muted'}`]"
         @click="start(scenario)"
       >
-        <span class="scenario-icon">{{ scenario.icon }}</span>
+        <span class="scenario-icon">{{ scenarioGlyph(scenario.icon) }}</span>
         <span>
           <strong>{{ scenario.name }}</strong>
           <small>{{ scenario.description }}</small>
         </span>
-        <em v-if="scenario.id === 'ice'">NEXT</em>
+        <em v-if="scenario.locked">LOCKED</em>
       </button>
     </div>
 
-    <p class="hint">点击选择末日场景开始游戏</p>
+    <p class="hint">选择模式后进入角色创建。</p>
 
     <section class="archive-section">
       <h2>🏛️ 末世档案馆</h2>
@@ -50,8 +52,12 @@
               <dd>{{ archive.ending.day }}</dd>
             </div>
             <div>
-              <dt>职业</dt>
-              <dd>{{ archive.profession?.name || '未知' }}</dd>
+              <dt>幸存者</dt>
+              <dd>{{ archive.survivorName || archive.profession?.name || '未知' }}</dd>
+            </div>
+            <div>
+              <dt>出生点</dt>
+              <dd>{{ archive.spawnLocation?.name || '未知' }}</dd>
             </div>
           </dl>
           <blockquote>“{{ archive.ending.comment }}”</blockquote>
@@ -103,7 +109,15 @@ const settingsDraft = reactive({
 });
 
 function start(scenario) {
-  if (game.startScenario(scenario.id)) router.push('/rebirth');
+  if (game.startScenario(scenario.id)) router.push('/profession');
+}
+
+function scenarioGlyph(icon) {
+  return {
+    biohazard: '☣',
+    classified: '§',
+    map: '▦',
+  }[icon] ?? icon;
 }
 
 function saveSettings() {

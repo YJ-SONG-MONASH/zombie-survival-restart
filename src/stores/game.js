@@ -1,13 +1,15 @@
 import { defineStore } from 'pinia';
-import { marketItems, professions, scenarios, shelters, traits } from '../data/zombie.js';
+import { hiddenProfessionAliases, marketItems, professions, scenarios, shelters, spawnLocations, traits } from '../data/zombie.js';
 import { createDayEvent, createEnding, resolveAction } from '../services/engine.js';
 
 const defaultState = () => ({
-  scenario: scenarios[0],
+  scenario: cloneCatalogRecord(scenarios[0]),
   day: 1,
   maxDay: 20,
   stats: { hp: 100, san: 100 },
-  baseTraitPoints: 8,
+  baseTraitPoints: 0,
+  survivorName: '',
+  spawnLocation: cloneCatalogRecord(spawnLocations[0]),
   money: 6500,
   profession: null,
   selectedTraits: [],
@@ -37,6 +39,12 @@ export const useGameStore = defineStore('game', {
     },
     traitPointsRemaining: (state) => state.baseTraitPoints + state.selectedTraits.reduce((sum, trait) => sum + trait.points, 0),
     traitTags: (state) => [...new Set(state.selectedTraits.flatMap((trait) => trait.tags ?? []))],
+    unlockedProfessionIds: (state) => {
+      const normalized = normalizeName(state.survivorName);
+      return hiddenProfessionAliases
+        .filter((entry) => entry.names.some((name) => normalizeName(name) === normalized))
+        .map((entry) => entry.professionId);
+    },
     sortedArchives: (state) => [...state.archives].sort((a, b) => b.createdAt - a.createdAt),
   },
   actions: {
@@ -46,8 +54,11 @@ export const useGameStore = defineStore('game', {
       try {
         const parsed = JSON.parse(raw);
         if (parsed?.game) this.$patch(parsed.game);
+        this.normalizeCatalogReferences();
         if (!Array.isArray(this.selectedTraits)) this.selectedTraits = [];
-        if (!this.baseTraitPoints) this.baseTraitPoints = 8;
+        if (this.baseTraitPoints === undefined || this.baseTraitPoints === null) this.baseTraitPoints = this.profession?.traitPointMod ?? 0;
+        if (!this.spawnLocation) this.spawnLocation = cloneCatalogRecord(spawnLocations[0]);
+        if (!this.survivorName) this.survivorName = '';
       } catch {
         localStorage.removeItem('moshi-survival-state');
       }
@@ -61,19 +72,53 @@ export const useGameStore = defineStore('game', {
       const selected = scenarios.find((scenario) => scenario.id === scenarioId);
       if (!selected || selected.locked) return false;
       this.resetGame();
-      this.scenario = selected;
+      this.scenario = cloneCatalogRecord(selected);
       this.maxDay = selected.maxDay;
+      return true;
+    },
+    setSurvivorName(name) {
+      this.survivorName = name;
+      if (this.profession?.hiddenOnly && !this.unlockedProfessionIds.includes(this.profession.id)) {
+        this.profession = null;
+        this.selectedTraits = [];
+        this.inventory = [];
+      }
+    },
+    selectSpawnLocation(id) {
+      const location = spawnLocations.find((item) => item.id === id);
+      if (!location) return false;
+      this.spawnLocation = cloneCatalogRecord(location);
+      if (this.profession) this.applyCharacterProfile(false);
       return true;
     },
     selectProfession(id) {
       const profession = professions.find((item) => item.id === id);
-      if (!profession) return;
-      this.profession = profession;
+      if (!profession || (profession.hiddenOnly && !this.unlockedProfessionIds.includes(id))) return false;
+      this.profession = cloneCatalogRecord(profession);
       this.selectedTraits = [];
-      this.money = 6500 + profession.money;
-      this.stats.hp = Math.max(1, 100 + profession.hp);
-      this.stats.san = Math.max(1, 100 + profession.san);
-      profession.unlocks?.forEach((itemId) => {
+      this.inventory = [];
+      this.shelter = null;
+      this.activeEvent = null;
+      this.applyCharacterProfile(true);
+      return true;
+    },
+    normalizeCatalogReferences() {
+      const scenario = scenarios.find((item) => item.id === this.scenario?.id) ?? scenarios[0];
+      const location = spawnLocations.find((item) => item.id === this.spawnLocation?.id) ?? spawnLocations[0];
+      const profession = this.profession ? professions.find((item) => item.id === this.profession.id) : null;
+      this.scenario = cloneCatalogRecord(scenario);
+      this.spawnLocation = cloneCatalogRecord(location);
+      this.profession = profession ? cloneCatalogRecord(profession) : null;
+    },
+    applyCharacterProfile(includeUnlocks = false) {
+      if (!this.profession) return;
+      const location = this.spawnLocation ?? spawnLocations[0];
+      this.baseTraitPoints = this.profession.traitPointMod ?? 0;
+      this.money = 6500 + this.profession.money + (location.moneyMod ?? 0);
+      this.stats.hp = Math.max(1, 100 + this.profession.hp + (location.hpMod ?? 0));
+      this.stats.san = Math.max(1, 100 + this.profession.san + (location.sanMod ?? 0));
+      if (!includeUnlocks) return;
+      this.profession.unlocks?.forEach((itemId) => {
         const item = marketItems.find((entry) => entry.id === itemId);
         if (item) this.addItem(item, 1, true);
       });
@@ -175,6 +220,8 @@ export const useGameStore = defineStore('game', {
           victory: this.isVictory,
           stats: this.stats,
           profession: this.profession,
+          survivorName: this.survivorName,
+          spawnLocation: this.spawnLocation,
           shelter: this.shelter,
           inventory: this.inventory,
           history: this.history,
@@ -193,6 +240,8 @@ export const useGameStore = defineStore('game', {
         createdAt: Date.now(),
         ending: this.ending,
         profession: this.profession,
+        survivorName: this.survivorName,
+        spawnLocation: this.spawnLocation,
         traits: this.selectedTraits,
         scenario: this.scenario,
       });
@@ -200,3 +249,16 @@ export const useGameStore = defineStore('game', {
     },
   },
 });
+
+function normalizeName(name) {
+  return `${name ?? ''}`.trim().replace(/\s+/g, '').toLowerCase();
+}
+
+function cloneCatalogRecord(record) {
+  if (!record) return null;
+  return {
+    ...record,
+    tags: record.tags ? [...record.tags] : undefined,
+    unlocks: record.unlocks ? [...record.unlocks] : undefined,
+  };
+}

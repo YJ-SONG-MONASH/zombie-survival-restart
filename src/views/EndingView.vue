@@ -20,6 +20,14 @@
           <dd>{{ game.ending.reason }}</dd>
         </div>
         <div>
+          <dt>姓名</dt>
+          <dd>{{ game.ending.survivorName }}</dd>
+        </div>
+        <div>
+          <dt>出生点</dt>
+          <dd>{{ game.ending.spawnName }}</dd>
+        </div>
+        <div>
           <dt>理智</dt>
           <dd>{{ game.ending.san }}</dd>
         </div>
@@ -67,12 +75,12 @@ const game = useGameStore();
 const nickname = ref('');
 
 function saveArchive() {
-  game.saveArchive(nickname.value.trim() || game.profession?.name || '匿名幸存者');
+  game.saveArchive(nickname.value.trim() || game.survivorName || game.profession?.name || '匿名幸存者');
   router.push('/');
 }
 
 function restart() {
   game.resetGame();
-  router.push('/rebirth');
+  router.push('/profession');
 }
 </script>
