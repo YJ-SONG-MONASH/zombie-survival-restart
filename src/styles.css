@@ -1287,6 +1287,7 @@ blockquote {
 .loot-metrics {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 10px;
 }
 
@@ -1296,6 +1297,13 @@ blockquote {
   border-radius: 6px;
   padding: 7px 10px;
   background: rgba(10, 13, 10, 0.7);
+}
+
+.search-all-button {
+  margin-left: auto;
+  min-height: 38px;
+  padding: 7px 14px;
+  white-space: nowrap;
 }
 
 .loot-grid {
@@ -1796,6 +1804,11 @@ input:focus {
 
   .loot-brief aside {
     justify-items: start;
+  }
+
+  .search-all-button {
+    width: 100%;
+    margin-left: 0;
   }
 
   .loot-grid {

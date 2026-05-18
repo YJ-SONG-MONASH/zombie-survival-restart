@@ -65,6 +65,9 @@
         <span>未知 {{ hiddenCount }}</span>
         <span>已搜索 {{ searchedCount }}</span>
         <span>剩余容量 {{ game.remainingSpace }} 格</span>
+        <button class="secondary search-all-button" :disabled="!canSearchAll" @click="searchAllSlots">
+          {{ searchAllButtonText }}
+        </button>
       </div>
 
       <div class="loot-grid" aria-label="未知物资搜索区">
@@ -123,6 +126,12 @@ const game = useGameStore();
 const remainingRolls = computed(() => Math.max(0, game.maxShelterRolls - game.shelterRollsUsed));
 const hiddenCount = computed(() => game.lootSlots.filter((slot) => slot.status === 'hidden').length);
 const searchedCount = computed(() => game.lootSlots.filter((slot) => slot.status !== 'hidden').length);
+const canSearchAll = computed(() => hiddenCount.value > 0 && !game.searchingSlotId);
+const searchAllButtonText = computed(() => {
+  if (game.searchingSlotId) return '搜索中';
+  if (!hiddenCount.value) return '已全部搜索';
+  return `一键搜索物资 ${hiddenCount.value}`;
+});
 const lootProgressText = computed(() => {
   if (!game.shelter) return '抽取据点';
   return `搜索 ${searchedCount.value}/${game.lootSlots.length}`;
@@ -201,6 +210,10 @@ function isSlotDisabled(slot) {
 
 async function searchSlot(slot) {
   await game.searchLootSlot(slot.id);
+}
+
+async function searchAllSlots() {
+  await game.searchAllLootSlots();
 }
 
 function itemIconSrc(item) {

@@ -297,6 +297,25 @@ export const useGameStore = defineStore('game', {
       this.searchingSlotId = null;
       return collected;
     },
+    async searchAllLootSlots() {
+      if (this.searchingSlotId) return false;
+      const slots = this.lootSlots.filter((entry) => entry.status === 'hidden');
+      if (!slots.length) return false;
+      slots.forEach((slot) => {
+        slot.status = 'searching';
+      });
+      this.searchingSlotId = 'bulk';
+      this.lootSearchStarted = true;
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 800));
+      slots.forEach((slot) => {
+        if (slot.status !== 'searching') return;
+        const item = marketItems.find((entry) => entry.id === slot.itemId);
+        const collected = item ? this.collectLootItem(item) : false;
+        slot.status = collected ? 'taken' : 'revealed';
+      });
+      this.searchingSlotId = null;
+      return true;
+    },
     collectLootItem(item, count = 1) {
       if (!item || this.remainingSpace < item.space * count) return false;
       const existing = this.inventory.find((entry) => entry.id === item.id);
