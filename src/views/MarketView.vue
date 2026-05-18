@@ -67,7 +67,9 @@
           v-for="slot in game.lootSlots"
           :key="slot.id"
           :class="lootSlotClass(slot)"
-          :disabled="!canSearch(slot)"
+          :disabled="isSlotDisabled(slot)"
+          :title="lootTooltip(slot)"
+          :aria-label="lootAriaLabel(slot)"
           @click="searchSlot(slot)"
         >
           <template v-if="slot.status === 'hidden'">
@@ -89,9 +91,6 @@
             </span>
             <strong>{{ lootItem(slot)?.name ?? '未知物资' }}</strong>
             <small>{{ lootItem(slot)?.canonicalName ?? slot.itemId }}</small>
-            <span class="effect-list">
-              <span v-for="effect in itemEffects(lootItem(slot))" :key="effect">{{ effect }}</span>
-            </span>
             <em>{{ slot.space }} 格 · {{ slot.status === 'taken' ? '已收入背包' : '背包已满，未带走' }}</em>
           </template>
         </button>
@@ -111,7 +110,7 @@
 <script setup>
 import { computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { marketItems, shelterQualities } from '../data/zombie.js';
+import { itemTiers, marketItems, shelterQualities } from '../data/zombie.js';
 import { useGameStore } from '../stores/game.js';
 
 const router = useRouter();
@@ -158,6 +157,10 @@ function canSearch(slot) {
   return slot.status === 'hidden' && !game.searchingSlotId;
 }
 
+function isSlotDisabled(slot) {
+  return slot.status === 'hidden' && Boolean(game.searchingSlotId);
+}
+
 async function searchSlot(slot) {
   await game.searchLootSlot(slot.id);
 }
@@ -180,6 +183,33 @@ function itemEffects(item) {
     if (typeof value === 'number') return `${key} ${value > 0 ? '+' : ''}${value}`;
     return `${key}: ${value}`;
   }).slice(0, 3);
+}
+
+function tierMeta(tierId) {
+  return itemTiers.find((tier) => tier.id === tierId) ?? itemTiers[0];
+}
+
+function lootTooltip(slot) {
+  if (slot.status === 'hidden') return `未知物资\n占用：${slot.space} 格\n点击搜索。`;
+  if (slot.status === 'searching') return `搜索中\n占用：${slot.space} 格`;
+  const item = lootItem(slot);
+  if (!item) return '未知物资';
+  const effects = itemEffects(item);
+  return [
+    `${item.name} (${item.canonicalName})`,
+    `品质：${tierMeta(item.tier).shortLabel}`,
+    `占用：${item.space} 格`,
+    effects.length ? `属性：${effects.join(' / ')}` : '',
+    item.description,
+  ].filter(Boolean).join('\n');
+}
+
+function lootAriaLabel(slot) {
+  if (slot.status === 'hidden') return `未知物资，${slot.space} 格`;
+  if (slot.status === 'searching') return `搜索中，${slot.space} 格`;
+  const item = lootItem(slot);
+  if (!item) return `未知物资，${slot.space} 格`;
+  return `${item.name}，${item.space} 格，${slot.status === 'taken' ? '已收入背包' : '背包已满，未带走'}`;
 }
 
 function startSurvival() {

@@ -1282,6 +1282,52 @@ blockquote {
   cursor: default;
 }
 
+.loot-slot.status-taken,
+.loot-slot.status-revealed {
+  grid-template-columns: 42px minmax(0, 1fr);
+  grid-template-rows: auto auto 1fr;
+  align-content: start;
+  column-gap: 10px;
+  row-gap: 3px;
+  cursor: help;
+}
+
+.loot-slot.status-taken .item-icon,
+.loot-slot.status-revealed .item-icon {
+  grid-row: 1 / 4;
+}
+
+.loot-slot.status-taken strong,
+.loot-slot.status-revealed strong,
+.loot-slot.status-taken small,
+.loot-slot.status-revealed small,
+.loot-slot.status-taken em,
+.loot-slot.status-revealed em {
+  min-width: 0;
+}
+
+.loot-slot.status-taken strong,
+.loot-slot.status-revealed strong {
+  overflow-wrap: anywhere;
+  line-height: 1.18;
+}
+
+.loot-slot.status-taken small,
+.loot-slot.status-revealed small {
+  overflow: hidden;
+  color: #d1d5db;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.loot-slot.status-taken em,
+.loot-slot.status-revealed em {
+  align-self: end;
+  font-size: 0.82rem;
+  font-style: normal;
+  line-height: 1.2;
+}
+
 .loot-slot.footprint-2x1 {
   grid-column: span 2;
 }
