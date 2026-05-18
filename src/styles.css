@@ -668,6 +668,16 @@ blockquote {
   background: linear-gradient(180deg, #171307, #0f130d);
 }
 
+.profession-card.blocked,
+.trait-card.locked:not(.selected) {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.trait-card.locked.selected {
+  cursor: default;
+}
+
 .skill-chip-list,
 .effect-list,
 .skill-grid {

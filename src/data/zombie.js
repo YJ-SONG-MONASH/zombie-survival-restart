@@ -11,7 +11,7 @@ export const scenarios = [
     id: 'special',
     icon: 'classified',
     name: '特殊剧情',
-    description: '特殊名字和隐藏职业会改变开局。',
+    description: 'CT,OLD CITY,JHM? 背后的神秘符号代表着什么?',
     maxDay: 40,
     accent: 'amber',
     locked: true,
@@ -87,6 +87,16 @@ export const spawnLocations = [
 export const hiddenProfessionAliases = [
   { names: ['黑哥', '刘太荣'], professionId: 'prison_guard' },
   { names: ['师一钒', '师哥'], professionId: 'senior_electrical_engineer' },
+];
+
+export const hiddenSurvivorPresets = [
+  {
+    id: 'heige',
+    names: ['黑哥', '刘太荣'],
+    professionId: 'prison_guard',
+    traitIds: ['brave', 'fast_learner', 'speed_demon', 'wakeful', 'out_of_shape', 'smoker', 'unlucky', 'weak_stomach'],
+    lockedTraits: true,
+  },
 ];
 
 export const vitalDefinitions = [

@@ -13,7 +13,7 @@
           <input v-model="survivorName" maxlength="16" placeholder="输入幸存者姓名" />
         </label>
         <div v-if="unlockedHidden.length" class="hidden-unlock">
-          <strong>隐藏职业已解锁</strong>
+          <strong>{{ game.isHiddenPresetLocked ? '隐藏开局已启用' : '隐藏职业已解锁' }}</strong>
           <span v-for="profession in unlockedHidden" :key="profession.id">{{ profession.name }}</span>
         </div>
         <article v-if="game.profession" class="profile-card compact-profile">
@@ -77,7 +77,8 @@
             <button
               v-for="profession in visibleProfessions"
               :key="profession.id"
-              :class="['profession-card', { selected: game.profession?.id === profession.id, hidden: profession.hiddenOnly }]"
+              :class="['profession-card', { selected: game.profession?.id === profession.id, hidden: profession.hiddenOnly, blocked: isProfessionBlocked(profession) }]"
+              :disabled="isProfessionBlocked(profession)"
               @click="game.selectProfession(profession.id)"
             >
               <span class="profession-card-icon">
@@ -134,9 +135,13 @@ function signed(value) {
   return value > 0 ? `+${value}` : `${value}`;
 }
 
+function isProfessionBlocked(profession) {
+  return game.isHiddenPresetLocked && profession.id !== game.activeHiddenPreset?.professionId;
+}
+
 function professionGlyph(icon) {
   return {
-    civilian: '□',
+    civilian: 'FW',
     fire: '🪓',
     badge: '★',
     forest: '♣',

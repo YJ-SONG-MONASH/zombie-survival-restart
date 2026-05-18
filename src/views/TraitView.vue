@@ -4,7 +4,7 @@
       <div>
         <p>人物特性</p>
         <h1>Build 41 特性表</h1>
-        <span>{{ game.profession?.name }} · 剩余点数必须不小于 0</span>
+        <span>{{ game.profession?.name }} · {{ game.isHiddenPresetLocked ? '隐藏角色固定特性' : '剩余点数必须不小于 0' }}</span>
       </div>
       <aside :class="['points-panel', { negative: game.traitPointsRemaining < 0 }]">
         <small>剩余点数</small>
@@ -27,8 +27,8 @@
       <button
         v-for="trait in visibleTraits"
         :key="trait.id"
-        :class="['trait-card', trait.type, { selected: isSelected(trait.id), blocked: isBlocked(trait) }]"
-        :disabled="isBlocked(trait)"
+        :class="['trait-card', trait.type, { selected: isSelected(trait.id), blocked: isBlocked(trait), locked: game.isHiddenPresetLocked }]"
+        :disabled="isBlocked(trait) || game.isHiddenPresetLocked"
         @click="game.toggleTrait(trait.id)"
       >
         <span class="trait-icon">
@@ -55,8 +55,8 @@
     </section>
 
     <div class="trait-actions">
-      <button class="secondary" @click="clearTraits">清空</button>
-      <button class="primary-action" :disabled="game.traitPointsRemaining < 0" @click="router.push('/market')">
+      <button class="secondary" :disabled="game.isHiddenPresetLocked" @click="clearTraits">清空</button>
+      <button class="primary-action" :disabled="game.traitPointsRemaining < 0 && !game.isHiddenPresetLocked" @click="router.push('/market')">
         确认特性，开始囤货
       </button>
     </div>

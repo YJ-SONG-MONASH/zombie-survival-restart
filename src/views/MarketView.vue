@@ -68,7 +68,6 @@
             <img :src="itemIconSrc(item)" :alt="item.canonicalName" @error="markIconMissing" />
             <span>{{ item.fallbackIcon }}</span>
           </span>
-          <i>{{ tierMeta(item.tier).label }}</i>
           <strong>{{ item.name }}</strong>
           <em>{{ item.canonicalName }}</em>
           <small>{{ item.description }}</small>
@@ -87,7 +86,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { categories, itemTiers, marketItems, shelterQualities } from '../data/zombie.js';
+import { categories, marketItems, shelterQualities } from '../data/zombie.js';
 import { useGameStore } from '../stores/game.js';
 
 const router = useRouter();
@@ -116,10 +115,6 @@ function canBuy(item) {
 
 function qualityMeta(qualityId) {
   return shelterQualities.find((quality) => quality.id === qualityId) ?? shelterQualities[shelterQualities.length - 1];
-}
-
-function tierMeta(tierId) {
-  return itemTiers.find((tier) => tier.id === tierId) ?? itemTiers[0];
 }
 
 function itemIconSrc(item) {

@@ -37,4 +37,4 @@ pnpm build
 当前版本默认使用本地规则引擎，不需要后端。首页保留了自定义 API 设置入口，后续可以接入 OpenAI-compatible/DeepSeek 等模型，让每日叙事和行动判定改为 LLM 生成。
 
 `public/pz-traits/` 支持本地私有特性图标，`public/pz-occupations/` 支持本地私有职业图标。
-`public/pz-skills/` 和 `public/pz-items/` 用于本地私有技能/物资图标，PNG 文件已被 `.gitignore` 忽略，不会上传到 GitHub；线上缺图时会显示卡片 fallback。
+`public/pz-items/` 用于物资图标，并会随构建部署；`public/pz-skills/` 用于本地私有技能图标，PNG 文件会被 `.gitignore` 忽略。缺图时会显示卡片 fallback。

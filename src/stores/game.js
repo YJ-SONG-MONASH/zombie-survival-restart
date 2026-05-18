@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import {
   hiddenProfessionAliases,
+  hiddenSurvivorPresets,
   marketItems,
   professions,
   scenarios,
@@ -68,6 +69,8 @@ export const useGameStore = defineStore('game', {
         .filter((entry) => entry.names.some((name) => normalizeName(name) === normalized))
         .map((entry) => entry.professionId);
     },
+    activeHiddenPreset: (state) => findHiddenSurvivorPreset(state.survivorName),
+    isHiddenPresetLocked: (state) => Boolean(findHiddenSurvivorPreset(state.survivorName)?.lockedTraits),
     sortedArchives: (state) => [...state.archives].sort((a, b) => b.createdAt - a.createdAt),
   },
   actions: {
@@ -102,6 +105,11 @@ export const useGameStore = defineStore('game', {
     },
     setSurvivorName(name) {
       this.survivorName = name;
+      const preset = findHiddenSurvivorPreset(name);
+      if (preset) {
+        this.applyHiddenSurvivorPreset(preset);
+        return;
+      }
       if (this.profession?.hiddenOnly && !this.unlockedProfessionIds.includes(this.profession.id)) {
         this.profession = null;
         this.selectedTraits = [];
@@ -116,10 +124,31 @@ export const useGameStore = defineStore('game', {
       return true;
     },
     selectProfession(id) {
+      if (this.isHiddenPresetLocked && id !== this.activeHiddenPreset.professionId) return false;
       const profession = professions.find((item) => item.id === id);
       if (!profession || (profession.hiddenOnly && !this.unlockedProfessionIds.includes(id))) return false;
       this.profession = cloneCatalogRecord(profession);
       this.selectedTraits = [];
+      this.inventory = [];
+      this.shelter = null;
+      this.shelterChoices = [];
+      this.shelterRollsUsed = 0;
+      this.activeEvent = null;
+      this.recalculateCharacterState(true);
+      return true;
+    },
+    applyHiddenSurvivorPreset(preset) {
+      const profession = professions.find((item) => item.id === preset.professionId);
+      if (!profession) return false;
+      const presetTraits = preset.traitIds
+        .map((traitId) => traits.find((trait) => trait.id === traitId))
+        .filter(Boolean)
+        .map(cloneCatalogRecord);
+      const currentTraitIds = this.selectedTraits.map((trait) => trait.id).join('|');
+      const presetTraitIds = preset.traitIds.join('|');
+      if (this.profession?.id === preset.professionId && currentTraitIds === presetTraitIds) return true;
+      this.profession = cloneCatalogRecord(profession);
+      this.selectedTraits = presetTraits;
       this.inventory = [];
       this.shelter = null;
       this.shelterChoices = [];
@@ -188,6 +217,7 @@ export const useGameStore = defineStore('game', {
       });
     },
     toggleTrait(id) {
+      if (this.isHiddenPresetLocked) return false;
       const trait = traits.find((item) => item.id === id);
       if (!trait) return false;
       const selected = this.selectedTraits.find((item) => item.id === id);
@@ -202,6 +232,7 @@ export const useGameStore = defineStore('game', {
       return true;
     },
     canSelectTrait(id) {
+      if (this.isHiddenPresetLocked) return this.selectedTraits.some((item) => item.id === id);
       const trait = traits.find((item) => item.id === id);
       if (!trait) return false;
       if (this.selectedTraits.some((item) => item.id === id)) return true;
@@ -325,6 +356,11 @@ export const useGameStore = defineStore('game', {
 
 function normalizeName(name) {
   return `${name ?? ''}`.trim().replace(/\s+/g, '').toLowerCase();
+}
+
+function findHiddenSurvivorPreset(name) {
+  const normalized = normalizeName(name);
+  return hiddenSurvivorPresets.find((preset) => preset.names.some((entry) => normalizeName(entry) === normalized)) ?? null;
 }
 
 function cloneCatalogRecord(record) {
