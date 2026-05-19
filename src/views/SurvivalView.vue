@@ -150,51 +150,105 @@
 
             <h3>标志性地区</h3>
             <div class="scene-card-grid">
-              <article v-for="entry in inspectedDetail?.landmarks ?? []" :key="entry.id" class="scene-card" :title="assetTooltip(entry.assetId)">
+              <button
+                v-for="entry in landmarksForDisplay"
+                :key="entry.id"
+                :class="['scene-card', { active: selectedSceneElement?.id === entry.id && selectedSceneElement?.section === 'landmark' }]"
+                :title="assetTooltip(entry.assetId)"
+                @click="selectSceneElement('landmark', entry)"
+              >
                 <span class="scene-card-icon">
                   <img :src="assetSrc(assetById(entry.assetId))" :alt="entry.name" @error="markDetailAssetMissing" />
                   <b>{{ assetById(entry.assetId)?.fallback ?? '地' }}</b>
                 </span>
                 <strong>{{ entry.name }}</strong>
                 <small>{{ entry.description }}</small>
-              </article>
+              </button>
             </div>
 
             <h3>建筑</h3>
             <div class="scene-card-grid">
-              <article v-for="entry in inspectedDetail?.buildings ?? []" :key="entry.id" class="scene-card" :title="assetTooltip(entry.assetId)">
+              <button
+                v-for="entry in inspectedDetail?.buildings ?? []"
+                :key="entry.id"
+                :class="['scene-card', { active: selectedSceneElement?.id === entry.id && selectedSceneElement?.section === 'building' }]"
+                :title="assetTooltip(entry.assetId)"
+                @click="selectSceneElement('building', entry)"
+              >
                 <span class="scene-card-icon">
                   <img :src="assetSrc(assetById(entry.assetId))" :alt="entry.name" @error="markDetailAssetMissing" />
                   <b>{{ assetById(entry.assetId)?.fallback ?? '建' }}</b>
                 </span>
                 <strong>{{ entry.name }}</strong>
                 <small>风险 {{ entry.risk }} · {{ entry.description }}</small>
-              </article>
+              </button>
             </div>
 
             <h3>人物</h3>
             <div class="scene-card-grid">
-              <article v-for="entry in inspectedDetail?.characters ?? []" :key="entry.id" class="scene-card" :title="assetTooltip(entry.assetId)">
+              <button
+                v-for="entry in inspectedDetail?.characters ?? []"
+                :key="entry.id"
+                :class="['scene-card', { active: selectedSceneElement?.id === entry.id && selectedSceneElement?.section === 'character' }]"
+                :title="assetTooltip(entry.assetId)"
+                @click="selectSceneElement('character', entry)"
+              >
                 <span class="scene-card-icon npc">
                   <img :src="assetSrc(assetById(entry.assetId))" :alt="entry.name" @error="markDetailAssetMissing" />
                   <b>{{ assetById(entry.assetId)?.fallback ?? '人' }}</b>
                 </span>
                 <strong>{{ entry.name }}</strong>
                 <small>{{ entry.role }} · {{ entry.attitude }} · {{ entry.description }}</small>
-              </article>
+              </button>
             </div>
 
             <h3>可搜索对象</h3>
             <div class="scene-card-grid">
-              <article v-for="entry in inspectedDetail?.searchables ?? []" :key="entry.id" class="scene-card" :title="assetTooltip(entry.assetId)">
+              <button
+                v-for="entry in inspectedDetail?.searchables ?? []"
+                :key="entry.id"
+                :class="['scene-card', { active: selectedSceneElement?.id === entry.id && selectedSceneElement?.section === 'searchable' }]"
+                :title="assetTooltip(entry.assetId)"
+                @click="selectSceneElement('searchable', entry)"
+              >
                 <span :class="['scene-card-icon', `quality-${entry.quality}`]">
                   <img :src="assetSrc(assetById(entry.assetId))" :alt="entry.name" @error="markDetailAssetMissing" />
                   <b>{{ assetById(entry.assetId)?.fallback ?? '搜' }}</b>
                 </span>
                 <strong>{{ entry.name }}</strong>
                 <small>{{ entry.description }}</small>
-              </article>
+              </button>
             </div>
+
+            <article v-if="selectedSceneElement" class="scene-inspection-panel">
+              <p class="panel-kicker">{{ selectedSceneLabel }}</p>
+              <h3>{{ selectedSceneElement.name }}</h3>
+              <p>{{ selectedSceneDescription }}</p>
+              <dl class="scene-inspection-meta">
+                <div>
+                  <dt>来源素材</dt>
+                  <dd>{{ assetById(selectedSceneElement.assetId)?.name ?? '本地标记' }}</dd>
+                </div>
+                <div>
+                  <dt>当前状态</dt>
+                  <dd>{{ selectedSceneState }}</dd>
+                </div>
+              </dl>
+              <div class="scene-inspection-actions">
+                <button class="secondary" @click="sceneInspectFeedback = selectedScenePassiveResult">
+                  {{ selectedScenePassiveAction }}
+                </button>
+                <button
+                  v-if="selectedSceneElement.section === 'searchable'"
+                  class="primary-action"
+                  :disabled="inspectedNode?.id !== currentNode?.id"
+                  @click="searchSelectedScene"
+                >
+                  {{ inspectedNode?.id === currentNode?.id ? '搜索这里' : '到达后搜索' }}
+                </button>
+              </div>
+              <p v-if="sceneInspectFeedback" class="scene-feedback">{{ sceneInspectFeedback }}</p>
+            </article>
 
             <h3>地区线索</h3>
             <ul class="scene-clue-list">
@@ -315,6 +369,8 @@ const router = useRouter();
 const game = useGameStore();
 const activeDrawer = ref('');
 const pendingMoveNode = ref(null);
+const selectedSceneElement = ref(null);
+const sceneInspectFeedback = ref('');
 const vitalsForDisplay = computed(() => vitalDefinitions.map((vital) => {
   const value = game.vitals[vital.id] ?? 0;
   return {
@@ -348,6 +404,60 @@ const inspectedDetail = computed(() => game.inspectedNodeDetail);
 const inspectedNodeType = computed(() => mapNodeTypes.find((type) => type.id === inspectedNode.value?.type) ?? null);
 const canShowInspectedDetail = computed(() => Boolean(inspectedNode.value && inspectedNode.value.visibility !== 'unknown' && inspectedDetail.value));
 const sceneAsset = computed(() => assetById(inspectedDetail.value?.sceneImage));
+const shelterLandmark = computed(() => {
+  if (!game.shelter || inspectedNode.value?.id !== game.spawnLocation?.id) return null;
+  return {
+    id: `home_shelter_${game.shelter.id}`,
+    section: 'landmark',
+    name: `生存据点：${game.shelter.name}`,
+    assetId: 'tile_house',
+    quality: game.shelter.quality,
+    description: `你的开局避难所，容量 ${game.shelter.space}，防御 ${game.shelter.defense}。${game.shelter.hidden}`,
+  };
+});
+const landmarksForDisplay = computed(() => [
+  ...(shelterLandmark.value ? [shelterLandmark.value] : []),
+  ...(inspectedDetail.value?.landmarks ?? []),
+]);
+const selectedSceneLabel = computed(() => {
+  const labels = {
+    landmark: 'LANDMARK',
+    building: 'BUILDING',
+    character: 'SURVIVOR',
+    searchable: 'SEARCHABLE',
+  };
+  return labels[selectedSceneElement.value?.section] ?? 'INSPECTION';
+});
+const selectedSceneDescription = computed(() => {
+  const entry = selectedSceneElement.value;
+  if (!entry) return '';
+  if (entry.section === 'building') return `风险 ${entry.risk ?? '未知'}。${entry.description}`;
+  if (entry.section === 'character') return `${entry.role ?? '幸存者'}，态度 ${entry.attitude ?? '不明'}。${entry.description}`;
+  return entry.description ?? '';
+});
+const selectedSceneState = computed(() => {
+  const entry = selectedSceneElement.value;
+  if (!entry) return '未选择';
+  if (entry.section === 'searchable') return inspectedNode.value?.id === currentNode.value?.id ? '可立即搜索' : '需要先到达此地';
+  if (entry.section === 'character') return '可尝试交谈';
+  if (entry.section === 'building') return '可评估风险';
+  return '已标记';
+});
+const selectedScenePassiveAction = computed(() => {
+  const section = selectedSceneElement.value?.section;
+  if (section === 'character') return '交谈';
+  if (section === 'building') return '评估风险';
+  if (section === 'searchable') return '检查容器';
+  return '标记路线';
+});
+const selectedScenePassiveResult = computed(() => {
+  const entry = selectedSceneElement.value;
+  if (!entry) return '';
+  if (entry.section === 'character') return `${entry.name}给出了一条线索：${entry.description}`;
+  if (entry.section === 'building') return `${entry.name}已纳入风险评估，进入前建议确认体力和撤退路线。`;
+  if (entry.section === 'searchable') return `${entry.name}可以翻找；真正结算需要在当前节点执行搜索。`;
+  return `${entry.name}已标记为当前区域的参考点。`;
+});
 const recentMapLog = computed(() => game.mapLog.slice(0, 5));
 const vehicleLabel = computed(() => game.vehicle?.name ?? '徒步');
 const vehicleStatusLabel = computed(() => {
@@ -387,6 +497,14 @@ watch(
   }
 );
 
+watch(
+  () => game.inspectedNodeId,
+  () => {
+    selectedSceneElement.value = null;
+    sceneInspectFeedback.value = '';
+  }
+);
+
 function toggleDrawer(drawer) {
   activeDrawer.value = activeDrawer.value === drawer ? '' : drawer;
 }
@@ -395,6 +513,21 @@ function inspectNode(node) {
   if (!node?.id) return;
   if (!game.inspectMapNode(node.id)) return;
   activeDrawer.value = 'location';
+}
+
+function selectSceneElement(section, entry) {
+  selectedSceneElement.value = { ...entry, section };
+  sceneInspectFeedback.value = '';
+}
+
+function searchSelectedScene() {
+  if (selectedSceneElement.value?.section !== 'searchable') return;
+  if (inspectedNode.value?.id !== currentNode.value?.id) {
+    sceneInspectFeedback.value = '需要先移动到这个节点，才能搜索这里。';
+    return;
+  }
+  sceneInspectFeedback.value = `你开始搜索${selectedSceneElement.value.name}。`;
+  runNodeAction('search');
 }
 
 function queueMoveToNode(node) {

@@ -1,5 +1,5 @@
-Local-only survivor silhouette images.
+Survivor and NPC marker images.
 
-This folder is for private NPC fallback art only. The current UI reads filenames
-from `wikiAssetManifest` in `src/data/zombie.js`; PNG/WebP files here are ignored
-by git and are not required for the public Pages build.
+The current UI reads filenames from `wikiAssetManifest` in `src/data/zombie.js`.
+PNG files in this folder are tracked and deployed so character cards do not
+fall back to text-only markers.

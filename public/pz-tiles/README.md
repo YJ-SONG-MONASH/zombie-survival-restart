@@ -1,5 +1,5 @@
-Local-only Project Zomboid tile images.
+Project Zomboid tile images.
 
-Put private PZwiki tile images here using the filenames from `wikiAssetManifest`
-in `src/data/zombie.js`. PNG/WebP files in this folder are ignored by git so the
-public GitHub Pages build falls back to compact text markers.
+The UI reads these filenames from `wikiAssetManifest` in `src/data/zombie.js`.
+PNG files in this folder are tracked and deployed so node detail cards render
+with visible icons.
