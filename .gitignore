@@ -112,3 +112,17 @@ __localStorage.json
 # Local-only Project Zomboid skill icon assets.
 public/pz-skills/*.png
 template/public/pz-skills/*.png
+
+# Local-only Project Zomboid scene/tile/NPC assets.
+public/pz-scenes/*.png
+public/pz-scenes/*.webp
+public/pz-tiles/*.png
+public/pz-tiles/*.webp
+public/pz-npcs/*.png
+public/pz-npcs/*.webp
+template/public/pz-scenes/*.png
+template/public/pz-scenes/*.webp
+template/public/pz-tiles/*.png
+template/public/pz-tiles/*.webp
+template/public/pz-npcs/*.png
+template/public/pz-npcs/*.webp

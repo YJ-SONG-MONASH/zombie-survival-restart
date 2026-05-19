@@ -33,11 +33,16 @@
         <button
           v-for="node in visibleNodes"
           :key="node.id"
-          :class="['map-node', node.visibility, { adjacent: node.isAdjacent, movable: node.canMove }]"
+          :class="[
+            'map-node',
+            node.visibility,
+            `scale-${node.displayScale}`,
+            { adjacent: node.isAdjacent, movable: node.canMove, inspected: inspectedNode?.id === node.id },
+          ]"
           :style="{ left: `${node.x}%`, top: `${node.y}%` }"
-          :disabled="!node.canMove"
+          :aria-pressed="inspectedNode?.id === node.id"
           :title="nodeTooltip(node)"
-          @click="queueMoveToNode(node)"
+          @click="inspectNode(node)"
         >
           <span class="map-node-icon">{{ node.typeMeta?.icon ?? '□' }}</span>
           <strong>{{ node.displayName }}</strong>
@@ -63,6 +68,9 @@
           >
             {{ action.label }}
           </button>
+          <button class="map-action-chip inspect-chip" @click="inspectNode(currentNode)">
+            查看地点
+          </button>
         </div>
       </aside>
 
@@ -82,34 +90,128 @@
           <button class="drawer-close" @click="activeDrawer = ''">关闭</button>
         </header>
 
-        <section v-if="activeDrawer === 'location'" class="drawer-section">
-          <p>{{ currentNode?.description }}</p>
-          <dl class="node-detail-list">
-            <div>
-              <dt>资源倾向</dt>
-              <dd>{{ currentNode?.resourceHint ?? '未知' }}</dd>
-            </div>
-            <div>
-              <dt>地区</dt>
-              <dd>{{ currentNode?.region ?? '未知' }}</dd>
-            </div>
-            <div>
-              <dt>可挂载庇护所</dt>
-              <dd>{{ shelterNames(currentNode?.shelterIds).join(' / ') || '暂无记录' }}</dd>
-            </div>
-          </dl>
+        <section v-if="activeDrawer === 'location'" class="drawer-section node-scene-section">
+          <article v-if="!canShowInspectedDetail" class="unknown-detail-panel">
+            <p class="panel-kicker">UNSCOUTED AREA</p>
+            <h3>???</h3>
+            <p>距离太远，只能确认这里还有一处区域轮廓。接近或侦察后才会显示建筑、人物和可搜索对象。</p>
+            <dl class="node-detail-list">
+              <div>
+                <dt>可见信息</dt>
+                <dd>{{ inspectedNodeType?.label ?? '未知区域' }}</dd>
+              </div>
+              <div>
+                <dt>行动建议</dt>
+                <dd>先移动到相邻节点，或在当前位置执行侦察路线。</dd>
+              </div>
+            </dl>
+          </article>
 
-          <h3>相邻区域</h3>
-          <button
-            v-for="node in neighborNodes"
-            :key="node.id"
-            class="secondary movement-button"
-            :disabled="!canMove(node.id)"
-            @click="queueMoveToNode(node)"
-          >
-            <span>{{ node.name }}</span>
-            <small>{{ nodeTypeLabel(node.type) }} · 风险 {{ node.danger }} · {{ node.resourceHint }}</small>
-          </button>
+          <template v-else>
+            <article class="scene-hero">
+              <div class="scene-image-frame">
+                <img
+                  v-if="sceneAsset"
+                  :src="assetSrc(sceneAsset)"
+                  :alt="sceneAsset.name"
+                  @error="markSceneAssetMissing"
+                />
+                <span>{{ sceneAsset?.fallback ?? inspectedNode?.region ?? 'MAP' }}</span>
+              </div>
+              <div>
+                <p class="panel-kicker">{{ inspectedNodeType?.label ?? 'NODE' }}</p>
+                <h3>{{ inspectedDetail?.headline ?? inspectedNode?.name }}</h3>
+                <p>{{ inspectedDetail?.mood ?? inspectedNode?.description }}</p>
+              </div>
+            </article>
+
+            <dl class="node-detail-list">
+              <div>
+                <dt>资源倾向</dt>
+                <dd>{{ inspectedNode?.resourceHint ?? '未知' }}</dd>
+              </div>
+              <div>
+                <dt>地区</dt>
+                <dd>{{ inspectedNode?.region ?? '未知' }}</dd>
+              </div>
+              <div>
+                <dt>可挂载庇护所</dt>
+                <dd>{{ shelterNames(inspectedNode?.shelterIds).join(' / ') || '暂无记录' }}</dd>
+              </div>
+            </dl>
+
+            <div class="node-detail-actions">
+              <button v-if="inspectedNode?.id === currentNode?.id" class="secondary" disabled>当前位置</button>
+              <button v-else-if="canMove(inspectedNode?.id)" class="primary-action" @click="queueMoveToNode(inspectedNode)">
+                前往这里
+              </button>
+              <span v-else>需要接近后才能移动到这里。</span>
+            </div>
+
+            <h3>标志性地区</h3>
+            <div class="scene-card-grid">
+              <article v-for="entry in inspectedDetail?.landmarks ?? []" :key="entry.id" class="scene-card" :title="assetTooltip(entry.assetId)">
+                <span class="scene-card-icon">
+                  <img :src="assetSrc(assetById(entry.assetId))" :alt="entry.name" @error="markDetailAssetMissing" />
+                  <b>{{ assetById(entry.assetId)?.fallback ?? '地' }}</b>
+                </span>
+                <strong>{{ entry.name }}</strong>
+                <small>{{ entry.description }}</small>
+              </article>
+            </div>
+
+            <h3>建筑</h3>
+            <div class="scene-card-grid">
+              <article v-for="entry in inspectedDetail?.buildings ?? []" :key="entry.id" class="scene-card" :title="assetTooltip(entry.assetId)">
+                <span class="scene-card-icon">
+                  <img :src="assetSrc(assetById(entry.assetId))" :alt="entry.name" @error="markDetailAssetMissing" />
+                  <b>{{ assetById(entry.assetId)?.fallback ?? '建' }}</b>
+                </span>
+                <strong>{{ entry.name }}</strong>
+                <small>风险 {{ entry.risk }} · {{ entry.description }}</small>
+              </article>
+            </div>
+
+            <h3>人物</h3>
+            <div class="scene-card-grid">
+              <article v-for="entry in inspectedDetail?.characters ?? []" :key="entry.id" class="scene-card" :title="assetTooltip(entry.assetId)">
+                <span class="scene-card-icon npc">
+                  <img :src="assetSrc(assetById(entry.assetId))" :alt="entry.name" @error="markDetailAssetMissing" />
+                  <b>{{ assetById(entry.assetId)?.fallback ?? '人' }}</b>
+                </span>
+                <strong>{{ entry.name }}</strong>
+                <small>{{ entry.role }} · {{ entry.attitude }} · {{ entry.description }}</small>
+              </article>
+            </div>
+
+            <h3>可搜索对象</h3>
+            <div class="scene-card-grid">
+              <article v-for="entry in inspectedDetail?.searchables ?? []" :key="entry.id" class="scene-card" :title="assetTooltip(entry.assetId)">
+                <span :class="['scene-card-icon', `quality-${entry.quality}`]">
+                  <img :src="assetSrc(assetById(entry.assetId))" :alt="entry.name" @error="markDetailAssetMissing" />
+                  <b>{{ assetById(entry.assetId)?.fallback ?? '搜' }}</b>
+                </span>
+                <strong>{{ entry.name }}</strong>
+                <small>{{ entry.description }}</small>
+              </article>
+            </div>
+
+            <h3>地区线索</h3>
+            <ul class="scene-clue-list">
+              <li v-for="clue in inspectedDetail?.clues ?? []" :key="clue">{{ clue }}</li>
+            </ul>
+
+            <h3>周边节点</h3>
+            <button
+              v-for="node in neighborVisibleNodes"
+              :key="node.id"
+              class="secondary movement-button inspect-target-button"
+              @click="inspectNode(node)"
+            >
+              <span>{{ node.displayName ?? node.name }}</span>
+              <small>{{ nodeTypeLabel(node.type) }} · 风险 {{ node.visibility === 'unknown' ? '未知' : node.danger }} · {{ node.visibility === 'unknown' ? '尚未侦察' : node.resourceHint }}</small>
+            </button>
+          </template>
         </section>
 
         <section v-else-if="activeDrawer === 'inventory'" class="drawer-section">
@@ -206,7 +308,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { mapEdges, mapNodeTypes, marketItems, shelters, skillDefinitions, vitalDefinitions } from '../data/zombie.js';
+import { mapEdges, mapNodeTypes, marketItems, shelters, skillDefinitions, vitalDefinitions, wikiAssetManifest } from '../data/zombie.js';
 import { useGameStore } from '../stores/game.js';
 
 const router = useRouter();
@@ -240,6 +342,12 @@ const visibleEdges = computed(() => mapEdges.map(([fromId, toId]) => {
 const currentNode = computed(() => game.currentMapNode);
 const currentNodeType = computed(() => game.currentNodeType);
 const neighborNodes = computed(() => game.currentNeighborNodes);
+const neighborVisibleNodes = computed(() => neighborNodes.value.map((node) => nodeById.value[node.id] ?? node));
+const inspectedNode = computed(() => nodeById.value[game.inspectedNodeId] ?? game.inspectedMapNode ?? currentNode.value);
+const inspectedDetail = computed(() => game.inspectedNodeDetail);
+const inspectedNodeType = computed(() => mapNodeTypes.find((type) => type.id === inspectedNode.value?.type) ?? null);
+const canShowInspectedDetail = computed(() => Boolean(inspectedNode.value && inspectedNode.value.visibility !== 'unknown' && inspectedDetail.value));
+const sceneAsset = computed(() => assetById(inspectedDetail.value?.sceneImage));
 const recentMapLog = computed(() => game.mapLog.slice(0, 5));
 const vehicleLabel = computed(() => game.vehicle?.name ?? '徒步');
 const vehicleStatusLabel = computed(() => {
@@ -251,7 +359,10 @@ const drawerTitle = computed(() => {
   if (activeDrawer.value === 'inventory') return { kicker: 'BAG / STATUS', title: '背包与状态' };
   if (activeDrawer.value === 'skills') return { kicker: 'SKILLS / TRAITS', title: '技能与特性' };
   if (activeDrawer.value === 'log') return { kicker: 'MAP LOG', title: '记录' };
-  return { kicker: 'CURRENT NODE', title: currentNode.value?.name ?? '地点详情' };
+  return {
+    kicker: 'NODE DETAIL',
+    title: canShowInspectedDetail.value ? inspectedNode.value?.name ?? '地点详情' : '???',
+  };
 });
 const moveConsequenceText = computed(() => {
   const vehicleText = game.vehicle?.status !== 'none' && (game.vehicle?.fuel ?? 0) > 0
@@ -266,6 +377,7 @@ onMounted(() => {
     return;
   }
   if (!game.currentNodeId) game.initializeMapState();
+  if (!game.inspectedNodeId && game.currentNodeId) game.inspectMapNode(game.currentNodeId);
 });
 
 watch(
@@ -277,6 +389,12 @@ watch(
 
 function toggleDrawer(drawer) {
   activeDrawer.value = activeDrawer.value === drawer ? '' : drawer;
+}
+
+function inspectNode(node) {
+  if (!node?.id) return;
+  if (!game.inspectMapNode(node.id)) return;
+  activeDrawer.value = 'location';
 }
 
 function queueMoveToNode(node) {
@@ -303,7 +421,7 @@ function canMove(nodeId) {
 
 function nodeTooltip(node) {
   if (node.visibility === 'unknown') return '远处区域尚未侦察';
-  const moveHint = node.canMove ? '\n点击查看移动风险' : '';
+  const moveHint = node.canMove ? '\n详情内可选择前往这里' : '';
   return `${node.name}\n${node.typeMeta?.label ?? '未知类型'}\n风险：${node.danger}\n资源：${node.resourceHint}${moveHint}`;
 }
 
@@ -338,11 +456,41 @@ function itemIconSrc(item) {
   return `${import.meta.env.BASE_URL}pz-items/${catalogItem.iconFile}`;
 }
 
+function assetById(assetId) {
+  return wikiAssetManifest.find((asset) => asset.id === assetId) ?? null;
+}
+
+function assetSrc(asset) {
+  if (!asset?.fileName) return '';
+  const folderByType = {
+    scene: 'pz-scenes',
+    tile: 'pz-tiles',
+    npc: 'pz-npcs',
+  };
+  return `${import.meta.env.BASE_URL}${folderByType[asset.type] ?? 'pz-scenes'}/${asset.fileName}`;
+}
+
+function assetTooltip(assetId) {
+  const asset = assetById(assetId);
+  if (!asset) return '本地素材缺失时使用文字剪影';
+  return `${asset.name}\n来源：${asset.sourceUrl}`;
+}
+
 function markIconMissing(event) {
   event.currentTarget.classList.add('missing');
 }
 
 function markInventoryIconMissing(event) {
   event.currentTarget.closest('.inventory-icon')?.classList.add('missing');
+}
+
+function markSceneAssetMissing(event) {
+  event.currentTarget.classList.add('missing');
+  event.currentTarget.closest('.scene-image-frame')?.classList.add('missing');
+}
+
+function markDetailAssetMissing(event) {
+  event.currentTarget.classList.add('missing');
+  event.currentTarget.closest('.scene-card-icon')?.classList.add('missing');
 }
 </script>

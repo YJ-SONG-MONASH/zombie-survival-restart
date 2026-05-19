@@ -1818,7 +1818,7 @@ input:focus {
   color: #d9d7bd;
   background: rgba(13, 17, 10, 0.94);
   text-align: left;
-  cursor: default;
+  cursor: pointer;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.42);
 }
 
@@ -1871,13 +1871,48 @@ input:focus {
   opacity: 0.72;
 }
 
+.map-node.scale-major {
+  width: clamp(108px, 8.6vw, 136px);
+  min-height: 68px;
+  border-width: 2px;
+}
+
+.map-node.scale-major strong {
+  font-size: 0.92rem;
+}
+
+.map-node.scale-minor {
+  width: clamp(58px, 4.8vw, 76px);
+  min-height: 42px;
+  padding: 5px;
+}
+
+.map-node.scale-minor strong {
+  font-size: 0.68rem;
+}
+
+.map-node.scale-minor small {
+  display: none;
+}
+
+.map-node.scale-minor .map-node-icon {
+  width: 18px;
+  height: 18px;
+  font-size: 0.68rem;
+}
+
 .map-node.movable {
   cursor: pointer;
 }
 
-.map-node.movable:hover {
+.map-node:hover,
+.map-node.inspected {
   border-color: #f87171;
   background: #1b160f;
+}
+
+.map-node.inspected {
+  box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.28), 0 16px 34px rgba(0, 0, 0, 0.5);
 }
 
 .map-detail-panel,
@@ -2097,8 +2132,31 @@ input:focus {
   padding: 7px;
 }
 
+.map-playfield .map-node.scale-major {
+  width: clamp(112px, 8.6vw, 140px);
+  min-height: 70px;
+}
+
+.map-playfield .map-node.scale-normal {
+  width: clamp(82px, 6.2vw, 104px);
+}
+
+.map-playfield .map-node.scale-minor {
+  width: clamp(58px, 4.4vw, 76px);
+  min-height: 42px;
+  padding: 5px;
+}
+
 .map-playfield .map-node strong {
   font-size: 0.8rem;
+}
+
+.map-playfield .map-node.scale-major strong {
+  font-size: 0.92rem;
+}
+
+.map-playfield .map-node.scale-minor strong {
+  font-size: 0.68rem;
 }
 
 .map-playfield .map-node small {
@@ -2192,7 +2250,7 @@ input:focus {
   display: grid;
   grid-template-rows: auto 1fr;
   gap: 12px;
-  width: min(420px, calc(100% - 92px));
+  width: min(540px, calc(100% - 92px));
   height: 100%;
   padding: 18px 104px 18px 18px;
   border-left: 1px solid rgba(122, 143, 92, 0.36);
@@ -2244,6 +2302,202 @@ input:focus {
   margin: 0;
   color: #cbd5e1;
   line-height: 1.55;
+}
+
+.node-scene-section {
+  gap: 14px;
+}
+
+.unknown-detail-panel,
+.scene-hero,
+.scene-card,
+.node-detail-actions,
+.scene-clue-list {
+  border: 1px solid rgba(122, 143, 92, 0.28);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.24);
+}
+
+.unknown-detail-panel {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.unknown-detail-panel h3 {
+  margin: 0;
+  color: #94a3b8;
+  font-size: 2rem;
+  letter-spacing: 0;
+}
+
+.scene-hero {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  background:
+    linear-gradient(180deg, rgba(37, 44, 26, 0.78), rgba(4, 6, 4, 0.95)),
+    repeating-linear-gradient(8deg, transparent 0 14px, rgba(255, 255, 255, 0.03) 14px 15px);
+}
+
+.scene-hero h3,
+.scene-hero p {
+  margin: 0;
+}
+
+.scene-hero h3 {
+  color: #fffbe1;
+  font-size: 1.05rem;
+}
+
+.scene-image-frame {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 168px;
+  overflow: hidden;
+  border: 1px solid rgba(200, 180, 107, 0.24);
+  border-radius: 6px;
+  background:
+    linear-gradient(135deg, rgba(122, 143, 92, 0.16), transparent 48%),
+    radial-gradient(circle at 50% 38%, rgba(127, 29, 29, 0.24), transparent 42%),
+    #070905;
+}
+
+.scene-image-frame img {
+  width: 100%;
+  height: 100%;
+  min-height: 168px;
+  object-fit: cover;
+  image-rendering: auto;
+}
+
+.scene-image-frame span {
+  position: absolute;
+  inset: auto 12px 12px;
+  display: grid;
+  place-items: center;
+  min-height: 46px;
+  border: 1px dashed rgba(200, 180, 107, 0.32);
+  border-radius: 5px;
+  color: #c8b46b;
+  background: rgba(0, 0, 0, 0.46);
+  font-weight: 800;
+}
+
+.scene-image-frame img + span {
+  display: none;
+}
+
+.scene-image-frame.missing img {
+  display: none;
+}
+
+.scene-image-frame.missing span {
+  display: grid;
+}
+
+.node-detail-actions {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.node-detail-actions button {
+  min-height: 42px;
+}
+
+.node-detail-actions span {
+  color: #94a3b8;
+  line-height: 1.45;
+}
+
+.scene-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.scene-card {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  min-height: 82px;
+  padding: 9px;
+}
+
+.scene-card strong,
+.scene-card small {
+  grid-column: 2;
+  min-width: 0;
+}
+
+.scene-card strong {
+  color: #fffbe1;
+  font-size: 0.86rem;
+}
+
+.scene-card small {
+  color: #a8b48a;
+  font-size: 0.74rem;
+  line-height: 1.42;
+}
+
+.scene-card-icon {
+  grid-row: 1 / span 2;
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(122, 143, 92, 0.32);
+  border-radius: 6px;
+  color: #e0dfc4;
+  background: #090c07;
+  overflow: hidden;
+}
+
+.scene-card-icon.npc {
+  border-color: rgba(248, 113, 113, 0.34);
+}
+
+.scene-card-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.scene-card-icon b {
+  display: none;
+  font-size: 0.8rem;
+}
+
+.scene-card-icon.missing img,
+.scene-card-icon img.missing {
+  display: none;
+}
+
+.scene-card-icon.missing b,
+.scene-card-icon img.missing + b {
+  display: grid;
+}
+
+.scene-clue-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 10px 10px 28px;
+}
+
+.scene-clue-list li {
+  color: #d9d7bd;
+  line-height: 1.45;
+}
+
+.inspect-target-button {
+  cursor: pointer;
 }
 
 .drawer-section .movement-button {
@@ -2539,6 +2793,16 @@ input:focus {
     min-height: 52px;
   }
 
+  .map-playfield .map-node.scale-major {
+    width: 88px;
+    min-height: 58px;
+  }
+
+  .map-playfield .map-node.scale-minor {
+    width: 50px;
+    min-height: 38px;
+  }
+
   .map-quick-panel {
     left: 10px;
     top: auto;
@@ -2560,6 +2824,18 @@ input:focus {
   .map-side-drawer {
     width: calc(100% - 76px);
     padding: 14px 78px 14px 14px;
+  }
+
+  .scene-card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .scene-image-frame {
+    min-height: 132px;
+  }
+
+  .scene-image-frame img {
+    min-height: 132px;
   }
 
   .move-risk-grid,

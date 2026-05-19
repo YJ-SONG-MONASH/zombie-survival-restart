@@ -4,6 +4,8 @@ import {
   hiddenSurvivorPresets,
   lootTierWeights,
   mapEdges,
+  mapNodeDetails,
+  mapNodeScaleById,
   mapNodeActions,
   mapNodeTypes,
   mapNodes,
@@ -47,6 +49,7 @@ const defaultState = () => ({
   history: [],
   activeEvent: null,
   currentNodeId: null,
+  inspectedNodeId: null,
   visitedNodeIds: [],
   knownNodeIds: [],
   vehicle: { status: 'none', fuel: 0, name: '徒步', condition: 0 },
@@ -92,6 +95,8 @@ export const useGameStore = defineStore('game', {
     isHiddenPresetLocked: (state) => Boolean(findHiddenSurvivorPreset(state.survivorName)?.lockedTraits),
     sortedArchives: (state) => [...state.archives].sort((a, b) => b.createdAt - a.createdAt),
     currentMapNode: (state) => mapNodes.find((node) => node.id === state.currentNodeId) ?? null,
+    inspectedMapNode: (state) => mapNodes.find((node) => node.id === state.inspectedNodeId) ?? null,
+    inspectedNodeDetail: (state) => mapNodeDetails[state.inspectedNodeId] ?? null,
     visibleMapNodeList: (state) => buildVisibleMapNodes(state),
     currentNeighborNodes: (state) => neighborsForNode(state.currentNodeId).map((id) => mapNodes.find((node) => node.id === id)).filter(Boolean),
     currentNodeActions: (state) => {
@@ -232,11 +237,14 @@ export const useGameStore = defineStore('game', {
       this.lootSearchStarted = Boolean(this.shelter && this.lootSlots.some((slot) => slot.status !== 'hidden'));
       const currentNode = mapNodes.find((node) => node.id === this.currentNodeId);
       this.currentNodeId = currentNode ? currentNode.id : null;
+      const inspectedNode = mapNodes.find((node) => node.id === this.inspectedNodeId);
+      this.inspectedNodeId = inspectedNode ? inspectedNode.id : this.currentNodeId;
       this.visitedNodeIds = uniqueValidNodeIds(this.visitedNodeIds);
       this.knownNodeIds = uniqueValidNodeIds(this.knownNodeIds);
       if (this.currentNodeId) {
         this.visitedNodeIds = uniqueValidNodeIds([...this.visitedNodeIds, this.currentNodeId]);
         this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, this.currentNodeId, ...neighborsForNode(this.currentNodeId)]);
+        if (!this.inspectedNodeId) this.inspectedNodeId = this.currentNodeId;
       }
       this.vehicle = normalizeVehicle(this.vehicle);
       this.movesRemaining = Number.isFinite(this.movesRemaining) ? Math.max(0, Math.round(this.movesRemaining)) : 1;
@@ -379,6 +387,7 @@ export const useGameStore = defineStore('game', {
     },
     clearMapState() {
       this.currentNodeId = null;
+      this.inspectedNodeId = null;
       this.visitedNodeIds = [];
       this.knownNodeIds = [];
       this.vehicle = { status: 'none', fuel: 0, name: '徒步', condition: 0 };
@@ -388,12 +397,14 @@ export const useGameStore = defineStore('game', {
     initializeMapState(force = false) {
       if (this.currentNodeId && !force) {
         this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, this.currentNodeId, ...neighborsForNode(this.currentNodeId)]);
+        if (!this.inspectedNodeId) this.inspectedNodeId = this.currentNodeId;
         if (!this.movesRemaining) this.movesRemaining = this.movementAllowance();
         return true;
       }
       const spawnNode = mapNodes.find((node) => node.id === this.spawnLocation?.id) ?? mapNodes.find((node) => node.id === 'muldraugh');
       if (!spawnNode) return false;
       this.currentNodeId = spawnNode.id;
+      this.inspectedNodeId = spawnNode.id;
       this.visitedNodeIds = [spawnNode.id];
       this.knownNodeIds = uniqueValidNodeIds([spawnNode.id, ...neighborsForNode(spawnNode.id)]);
       this.vehicle = normalizeVehicle(this.vehicle);
@@ -417,11 +428,18 @@ export const useGameStore = defineStore('game', {
     canMoveToNode(nodeId) {
       return this.movesRemaining > 0 && neighborsForNode(this.currentNodeId).includes(nodeId);
     },
+    inspectMapNode(nodeId) {
+      const node = mapNodes.find((entry) => entry.id === nodeId);
+      if (!node) return false;
+      this.inspectedNodeId = node.id;
+      return true;
+    },
     moveToNode(nodeId) {
       const node = mapNodes.find((entry) => entry.id === nodeId);
       if (!node || !this.canMoveToNode(nodeId)) return false;
       const from = mapNodes.find((entry) => entry.id === this.currentNodeId);
       this.currentNodeId = node.id;
+      this.inspectedNodeId = node.id;
       this.visitedNodeIds = uniqueValidNodeIds([...this.visitedNodeIds, node.id]);
       this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, node.id, ...neighborsForNode(node.id)]);
       const usingVehicle = this.vehicle?.status !== 'none' && (this.vehicle.fuel ?? 0) > 0;
@@ -636,6 +654,7 @@ function buildVisibleMapNodes(state) {
     return {
       ...node,
       typeMeta: mapNodeTypes.find((type) => type.id === node.type),
+      displayScale: mapNodeScaleById[node.id] ?? 'normal',
       visibility,
       isAdjacent: adjacent.has(node.id),
       canMove: adjacent.has(node.id) && (state.movesRemaining ?? 0) > 0,
