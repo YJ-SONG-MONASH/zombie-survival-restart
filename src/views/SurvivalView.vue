@@ -202,24 +202,6 @@
               </button>
             </div>
 
-            <h3>可搜索对象</h3>
-            <div class="scene-card-grid">
-              <button
-                v-for="entry in inspectedDetail?.searchables ?? []"
-                :key="entry.id"
-                :class="['scene-card', { active: selectedSceneElement?.id === entry.id && selectedSceneElement?.section === 'searchable' }]"
-                :title="assetTooltip(entry.assetId)"
-                @click="selectSceneElement('searchable', entry)"
-              >
-                <span :class="['scene-card-icon', `quality-${entry.quality}`]">
-                  <img :src="assetSrc(assetById(entry.assetId))" :alt="entry.name" @error="markDetailAssetMissing" />
-                  <b>{{ assetById(entry.assetId)?.fallback ?? '搜' }}</b>
-                </span>
-                <strong>{{ entry.name }}</strong>
-                <small>{{ entry.description }}</small>
-              </button>
-            </div>
-
             <article v-if="selectedSceneElement" class="scene-inspection-panel">
               <p class="panel-kicker">{{ selectedSceneLabel }}</p>
               <h3>{{ selectedSceneElement.name }}</h3>
@@ -238,16 +220,45 @@
                 <button class="secondary" @click="sceneInspectFeedback = selectedScenePassiveResult">
                   {{ selectedScenePassiveAction }}
                 </button>
-                <button
-                  v-if="selectedSceneElement.section === 'searchable'"
-                  class="primary-action"
-                  :disabled="inspectedNode?.id !== currentNode?.id || isSelectedSearchableSpent"
-                  @click="openLocationSearch"
-                >
-                  {{ selectedSearchButtonText }}
-                </button>
               </div>
               <p v-if="sceneInspectFeedback" class="scene-feedback">{{ sceneInspectFeedback }}</p>
+
+              <template v-if="selectedNestedSearchables.length">
+                <h4>可搜索对象</h4>
+                <div class="scene-card-grid nested-search-grid">
+                  <button
+                    v-for="entry in selectedNestedSearchables"
+                    :key="entry.id"
+                    :class="[
+                      'scene-card',
+                      'nested-search-card',
+                      {
+                        active: selectedSearchTarget?.id === entry.id,
+                        searched: isSearchableSpent(entry),
+                      },
+                    ]"
+                    :title="assetTooltip(entry.assetId)"
+                    @click="selectSearchTarget(entry)"
+                  >
+                    <span :class="['scene-card-icon', `quality-${entry.quality}`]">
+                      <img :src="assetSrc(assetById(entry.assetId))" :alt="entry.name" @error="markDetailAssetMissing" />
+                      <b>{{ assetById(entry.assetId)?.fallback ?? '搜' }}</b>
+                    </span>
+                    <strong>{{ entry.name }}</strong>
+                    <small>{{ entry.description }}</small>
+                    <em>{{ searchButtonTextFor(entry) }}</em>
+                  </button>
+                </div>
+                <div class="scene-inspection-actions">
+                  <button
+                    class="primary-action"
+                    :disabled="!selectedSearchTarget || inspectedNode?.id !== currentNode?.id || isSearchableSpent(selectedSearchTarget)"
+                    @click="openLocationSearch(selectedSearchTarget)"
+                  >
+                    {{ selectedSearchTarget ? searchButtonTextFor(selectedSearchTarget) : '选择一个对象' }}
+                  </button>
+                </div>
+              </template>
             </article>
 
             <h3>地区线索</h3>
@@ -487,6 +498,7 @@ const game = useGameStore();
 const activeDrawer = ref('');
 const pendingMoveNode = ref(null);
 const selectedSceneElement = ref(null);
+const selectedSearchTarget = ref(null);
 const sceneInspectFeedback = ref('');
 const locationSearch = ref(null);
 const resolutionReport = ref(null);
@@ -551,7 +563,6 @@ const selectedSceneLabel = computed(() => {
     landmark: 'LANDMARK',
     building: 'BUILDING',
     character: 'SURVIVOR',
-    searchable: 'SEARCHABLE',
   };
   return labels[selectedSceneElement.value?.section] ?? 'INSPECTION';
 });
@@ -565,36 +576,25 @@ const selectedSceneDescription = computed(() => {
 const selectedSceneState = computed(() => {
   const entry = selectedSceneElement.value;
   if (!entry) return '未选择';
-  if (entry.section === 'searchable') return inspectedNode.value?.id === currentNode.value?.id ? '可立即搜索' : '需要先到达此地';
   if (entry.section === 'character') return '可尝试交谈';
-  if (entry.section === 'building') return '可评估风险';
+  if (entry.section === 'building') return selectedNestedSearchables.value.length ? '可展开搜索对象' : '可评估风险';
+  if (entry.section === 'landmark') return selectedNestedSearchables.value.length ? '可展开搜索对象' : '已标记';
   return '已标记';
 });
 const selectedScenePassiveAction = computed(() => {
   const section = selectedSceneElement.value?.section;
   if (section === 'character') return '交谈';
   if (section === 'building') return '评估风险';
-  if (section === 'searchable') return '检查容器';
-  return '标记路线';
+  return '评估入口';
 });
 const selectedScenePassiveResult = computed(() => {
   const entry = selectedSceneElement.value;
   if (!entry) return '';
   if (entry.section === 'character') return `${entry.name}给出了一条线索：${entry.description}`;
   if (entry.section === 'building') return `${entry.name}已纳入风险评估，进入前建议确认体力和撤退路线。`;
-  if (entry.section === 'searchable') return `${entry.name}可以翻找；真正结算需要在当前节点执行搜索。`;
-  return `${entry.name}已标记为当前区域的参考点。`;
+  return `${entry.name}已标记为当前区域的参考点，下方对象可以逐个翻找。`;
 });
-const selectedSearchKey = computed(() => {
-  if (selectedSceneElement.value?.section !== 'searchable' || !currentNode.value?.id) return '';
-  return `${currentNode.value.id}:${selectedSceneElement.value.id}`;
-});
-const isSelectedSearchableSpent = computed(() => Boolean(selectedSearchKey.value && game.searchedSceneObjectIds?.includes(selectedSearchKey.value)));
-const selectedSearchButtonText = computed(() => {
-  if (inspectedNode.value?.id !== currentNode.value?.id) return '到达后搜索';
-  if (isSelectedSearchableSpent.value) return '已经搜过';
-  return '搜索这里';
-});
+const selectedNestedSearchables = computed(() => nestedSearchablesForSceneElement(selectedSceneElement.value, inspectedDetail.value));
 const locationHiddenSlots = computed(() => locationSearch.value?.slots.filter((slot) => slot.status === 'hidden') ?? []);
 const locationSearchedSlots = computed(() => locationSearch.value?.slots.filter((slot) => slot.status !== 'hidden') ?? []);
 const locationSearchProgressText = computed(() => {
@@ -645,6 +645,7 @@ watch(
   () => game.inspectedNodeId,
   () => {
     selectedSceneElement.value = null;
+    selectedSearchTarget.value = null;
     sceneInspectFeedback.value = '';
   }
 );
@@ -661,24 +662,30 @@ function inspectNode(node) {
 
 function selectSceneElement(section, entry) {
   selectedSceneElement.value = { ...entry, section };
+  selectedSearchTarget.value = null;
   sceneInspectFeedback.value = '';
 }
 
-function openLocationSearch() {
-  if (selectedSceneElement.value?.section !== 'searchable') return;
+function selectSearchTarget(entry) {
+  selectedSearchTarget.value = { ...entry };
+  sceneInspectFeedback.value = '';
+}
+
+function openLocationSearch(searchable = selectedSearchTarget.value) {
+  if (!searchable) return;
   if (inspectedNode.value?.id !== currentNode.value?.id) {
     sceneInspectFeedback.value = '需要先移动到这个节点，才能搜索这里。';
     return;
   }
-  if (isSelectedSearchableSpent.value) {
+  if (isSearchableSpent(searchable)) {
     sceneInspectFeedback.value = '这里已经被你翻过一遍，继续搜只会浪费时间。';
     return;
   }
   locationSearch.value = {
-    searchKey: selectedSearchKey.value,
-    searchable: { ...selectedSceneElement.value },
+    searchKey: searchKeyFor(searchable),
+    searchable: { ...searchable },
     nodeId: currentNode.value.id,
-    slots: createLocationSearchSlots(selectedSceneElement.value, currentNode.value),
+    slots: createLocationSearchSlots(searchable, currentNode.value),
     searchingSlotId: null,
     started: false,
     initialSnapshot: captureGameSnapshot(),
@@ -752,8 +759,155 @@ function finishLocationSearch() {
   game.markSceneSearchableSearched(search.searchKey);
   game.resolveSceneSearch(search.searchable, collectedItems);
   locationSearch.value = null;
-  selectedSceneElement.value = null;
+  selectedSearchTarget.value = null;
   showResolutionReport(search.initialSnapshot, { title: `搜索 ${search.searchable.name}` });
+}
+
+function nestedSearchablesForSceneElement(parent, detail) {
+  if (!parent || !['landmark', 'building'].includes(parent.section)) return [];
+  if (Array.isArray(parent.searchables) && parent.searchables.length) {
+    return parent.searchables.map((entry) => normalizeNestedSearchable(entry, parent));
+  }
+
+  const directMatches = (detail?.searchables ?? [])
+    .filter((entry) => searchableMatchesParent(entry, parent))
+    .map((entry) => normalizeNestedSearchable(entry, parent));
+  const generated = generatedSearchablesForParent(parent);
+  const merged = [...directMatches, ...generated];
+  const seen = new Set();
+  return merged.filter((entry) => {
+    if (seen.has(entry.id)) return false;
+    seen.add(entry.id);
+    return true;
+  }).slice(0, parent.section === 'landmark' ? 3 : 2);
+}
+
+function normalizeNestedSearchable(entry, parent) {
+  return {
+    id: entry.id || `${parent.id}_${slugify(entry.name)}`,
+    name: entry.name,
+    assetId: entry.assetId || parent.assetId || 'tile_locker',
+    quality: entry.quality || qualityForSceneParent(parent),
+    description: entry.description || `${parent.name}里还有一处可以翻找的角落。`,
+    parentId: parent.id,
+    parentName: parent.name,
+  };
+}
+
+function searchableMatchesParent(searchable, parent) {
+  const text = `${parent.name} ${parent.description ?? ''} ${parent.assetId ?? ''}`.toLowerCase();
+  const target = `${searchable.name} ${searchable.description ?? ''} ${searchable.assetId ?? ''}`.toLowerCase();
+  return text.split(/\s+/).some((part) => part.length >= 3 && target.includes(part))
+    || parent.assetId === searchable.assetId
+    || target.includes(parent.name.toLowerCase().slice(0, 2));
+}
+
+function generatedSearchablesForParent(parent) {
+  const text = `${parent.name} ${parent.description ?? ''} ${parent.assetId ?? ''}`.toLowerCase();
+  const quality = qualityForSceneParent(parent);
+  const make = (suffix, name, assetId, description, tierShift = 0) => ({
+    id: `${parent.id}_${suffix}`,
+    name,
+    assetId,
+    quality: shiftedQuality(quality, tierShift),
+    description,
+    parentId: parent.id,
+    parentName: parent.name,
+  });
+
+  if (/药|医|诊|hospital|clinic|medical|med/.test(text)) {
+    return [
+      make('medicine_cabinet', '药柜', 'tile_medical', '药品、绷带和消毒用品集中。', 1),
+      make('first_aid_case', '急救箱', 'tile_medical', '急救包、止痛药和β受体阻滞剂。'),
+    ];
+  }
+  if (/警|枪|弹|gun|police|ammo|cruiser/.test(text)) {
+    return [
+      make('duty_locker', '值班储物柜', 'tile_locker', '弹药、手电和钥匙线索。', 1),
+      make('desk_drawer', '办公桌抽屉', 'tile_police', '文件、地图碎片和少量警用补给。'),
+    ];
+  }
+  if (/消防|斧|fire/.test(text)) {
+    return [
+      make('axe_locker', '斧头柜', 'tile_fire', '消防斧、手斧和防护装备。', 1),
+      make('tool_wall', '工具墙', 'tile_locker', '喷灯、胶带和维修工具。'),
+    ];
+  }
+  if (/餐|厨|食|饮|罐头|冰柜|杂货|store|restaurant|kitchen|pantry|shelf|shop/.test(text)) {
+    return [
+      make('shelf', '货架', 'tile_store', '罐头、饮料、零食和香烟。'),
+      make('counter', '柜台抽屉', 'tile_store', '电池、胶带和轻量补给。'),
+      make('freezer', '后厨冰柜', 'tile_restaurant', '短期食物和饮料。', 1),
+    ];
+  }
+  if (/加油|燃油|车辆|后备箱|车|gas|fuel|trunk|wreck|vehicle/.test(text)) {
+    return [
+      make('pump', '加油泵', 'tile_gas', '汽油桶、车钥匙和电池线索。', 1),
+      make('trunk', '后备箱', 'tile_wreck', '工具、背包和散装食物。'),
+    ];
+  }
+  if (/仓|工具|车库|柜|箱|托盘|warehouse|locker|crate|storage|garage|shed/.test(text)) {
+    return [
+      make('rack', '工具架', 'tile_locker', '锤子、锯子、扳手和胶带。'),
+      make('crate', '木箱', 'tile_warehouse', '木板、钉子和基地材料。'),
+      make('pallet', '托盘堆', 'tile_warehouse', '大件工具和维修材料。', 1),
+    ];
+  }
+  if (/学校|教室|school|book/.test(text)) {
+    return [
+      make('locker', '储物柜', 'tile_school', '背包、书本和基础药品。'),
+      make('office', '办公室柜', 'tile_locker', '地图、文具和电池。'),
+    ];
+  }
+  if (/农|种子|园艺|钓|河|farm|seed|fishing|camp|river/.test(text)) {
+    return [
+      make('supply_box', '补给箱', 'tile_camp', '水瓶、手电和野外工具。'),
+      make('tool_bin', '农具箱', 'tile_farm', '种子、小铲子和钓具。'),
+    ];
+  }
+  if (/公寓|民宅|旅馆|拖车|住宅|house|apartment|motel|trailer|home/.test(text)) {
+    return [
+      make('kitchen', '厨房柜', 'tile_house', '食物、饮水和轻药品。'),
+      make('bedroom', '卧室抽屉', 'tile_apartment', '背包、衣物和电池。'),
+    ];
+  }
+  return [
+    make('container', `${parent.name}储物箱`, parent.assetId || 'tile_locker', '能翻到少量通用补给。'),
+    make('drawer', `${parent.name}抽屉`, 'tile_locker', '小件工具、食物或药品。'),
+  ];
+}
+
+function qualityForSceneParent(parent) {
+  if (parent.quality) return parent.quality;
+  if (parent.risk === '极高') return 'red';
+  if (parent.risk === '高') return 'purple';
+  if (parent.risk === '中') return 'blue';
+  if (parent.risk === '低') return 'green';
+  return parent.section === 'landmark' ? 'blue' : 'green';
+}
+
+function shiftedQuality(quality, shift = 0) {
+  const order = ['white', 'green', 'blue', 'purple', 'gold', 'red'];
+  const index = Math.max(0, order.indexOf(quality));
+  return order[Math.max(0, Math.min(order.length - 1, index + shift))];
+}
+
+function searchKeyFor(searchable) {
+  return `${currentNode.value?.id ?? 'unknown'}:${searchable.id}`;
+}
+
+function isSearchableSpent(searchable) {
+  return Boolean(searchable && game.searchedSceneObjectIds?.includes(searchKeyFor(searchable)));
+}
+
+function searchButtonTextFor(searchable) {
+  if (inspectedNode.value?.id !== currentNode.value?.id) return '到达后搜索';
+  if (isSearchableSpent(searchable)) return '已经搜过';
+  return '搜索这里';
+}
+
+function slugify(value = '') {
+  return `${value}`.trim().toLowerCase().replace(/[^\w\u4e00-\u9fff]+/g, '_').replace(/^_+|_+$/g, '') || 'searchable';
 }
 
 function locationLootSlotClass(slot) {
