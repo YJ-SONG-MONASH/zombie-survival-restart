@@ -55,6 +55,7 @@ const defaultState = () => ({
   vehicle: { status: 'none', fuel: 0, name: '徒步', condition: 0 },
   movesRemaining: 1,
   mapLog: [],
+  searchedSceneObjectIds: [],
   ending: null,
   archives: [],
 });
@@ -249,6 +250,9 @@ export const useGameStore = defineStore('game', {
       this.vehicle = normalizeVehicle(this.vehicle);
       this.movesRemaining = Number.isFinite(this.movesRemaining) ? Math.max(0, Math.round(this.movesRemaining)) : 1;
       this.mapLog = Array.isArray(this.mapLog) ? this.mapLog.slice(0, 80) : [];
+      this.searchedSceneObjectIds = Array.isArray(this.searchedSceneObjectIds)
+        ? [...new Set(this.searchedSceneObjectIds.filter(Boolean))].slice(0, 240)
+        : [];
     },
     recalculateCharacterState(includeUnlocks = false) {
       if (!this.profession) return;
@@ -488,6 +492,34 @@ export const useGameStore = defineStore('game', {
         vehicle: this.vehicle,
       });
       this.applyMapOutcome(outcome, 'action');
+      return true;
+    },
+    resolveSceneSearch(searchable, collectedItems = []) {
+      if (!this.currentNodeId) this.initializeMapState();
+      const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
+      if (!node || !(node.actions ?? []).includes('search')) return false;
+      const outcome = resolveMapNodeAction({
+        actionId: 'search',
+        node,
+        day: this.day,
+        inventory: this.inventory,
+        tags: this.hiddenTags,
+        traits: this.selectedTraits,
+        vitals: this.vitals,
+        skills: this.skills,
+        profession: this.profession,
+        vehicle: this.vehicle,
+        manualLoot: {
+          sourceName: searchable?.name ?? node.name,
+          collectedItems,
+        },
+      });
+      this.applyMapOutcome(outcome, 'search');
+      return true;
+    },
+    markSceneSearchableSearched(searchKey) {
+      if (!searchKey || this.searchedSceneObjectIds.includes(searchKey)) return false;
+      this.searchedSceneObjectIds = [...this.searchedSceneObjectIds, searchKey].slice(-240);
       return true;
     },
     applyMapOutcome(outcome, mode = 'action') {

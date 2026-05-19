@@ -172,7 +172,7 @@ export function resolveMapMove({ day, node, inventory, tags = [], traits = [], v
   };
 }
 
-export function resolveNodeAction({ actionId, node, day, inventory, tags = [], traits = [], vitals, skills, profession, vehicle }) {
+export function resolveNodeAction({ actionId, node, day, inventory, tags = [], traits = [], vitals, skills, profession, vehicle, manualLoot = null }) {
   const traitIds = new Set(traits.map((trait) => trait.id));
   const danger = node.danger ?? 3;
   const consume = [];
@@ -261,8 +261,10 @@ export function resolveNodeAction({ actionId, node, day, inventory, tags = [], t
     });
   }
 
-  const foundItems = nodeLoot({ node, day, skills, traits, inventory });
-  foundItems.forEach((item) => add.push({ ...item, count: 1 }));
+  const foundItems = manualLoot
+    ? normalizeManualLootItems(manualLoot.collectedItems)
+    : nodeLoot({ node, day, skills, traits, inventory });
+  if (!manualLoot) foundItems.forEach((item) => add.push({ ...item, count: 1 }));
   const searchScore = Math.max(10, Math.min(98, 54 - danger * 4 + scoutScore(skills, traits) + lootToolScore(inventory)));
   if (searchScore < 42) {
     vitalDelta.health -= danger >= 5 ? 10 : 5;
@@ -270,15 +272,15 @@ export function resolveNodeAction({ actionId, node, day, inventory, tags = [], t
     addTags.push('受伤');
     notes.push('搜刮时受伤');
   } else if (foundItems.length) {
-    notes.push(`找到${foundItems.map((item) => item.name).join('、')}`);
+    notes.push(`${manualLoot ? '带走' : '找到'}${foundItems.map((item) => item.name).join('、')}`);
   } else {
-    notes.push('没有找到有价值物资');
+    notes.push(manualLoot ? '没有带走有价值物资' : '没有找到有价值物资');
   }
 
   return mapOutcome({
     day,
-    title: '搜索周边',
-    result: `你搜索了${node.name}附近的建筑和路边残骸。${foundItems.length ? `背包里多了${foundItems.map((item) => item.name).join('、')}。` : '能带走的东西比想象中少。'}${danger >= 5 ? '这里的尸群一直在压缩你的退路。' : '这片区域暂时还给你留了撤离空间。'}`,
+    title: manualLoot ? `搜索 ${manualLoot.sourceName}` : '搜索周边',
+    result: `你搜索了${manualLoot?.sourceName ?? `${node.name}附近的建筑和路边残骸`}。${foundItems.length ? `背包里多了${foundItems.map((item) => item.name).join('、')}。` : '能带走的东西比想象中少。'}${danger >= 5 ? '这里的尸群一直在压缩你的退路。' : '这片区域暂时还给你留了撤离空间。'}`,
     notes,
     score: searchScore,
     vitalDelta,
@@ -288,6 +290,14 @@ export function resolveNodeAction({ actionId, node, day, inventory, tags = [], t
     removeTags,
     highlight: searchScore >= 86 ? `第${day}天：你在${node.name}找到关键补给。` : null,
   });
+}
+
+function normalizeManualLootItems(items = []) {
+  const byId = new Map();
+  items.filter(Boolean).forEach((item) => {
+    if (!byId.has(item.id)) byId.set(item.id, item);
+  });
+  return [...byId.values()];
 }
 
 export function createEnding({ day, victory, vitals, skills, profession, survivorName, spawnLocation, shelter, inventory, history, traits = [], highlight }) {
