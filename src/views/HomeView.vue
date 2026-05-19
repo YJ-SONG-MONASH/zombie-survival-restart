@@ -35,6 +35,127 @@
 
     <p class="hint">选择模式后进入角色创建。</p>
 
+    <section class="home-codex-section" aria-labelledby="home-codex-title">
+      <div class="codex-heading">
+        <div>
+          <p class="panel-kicker">IMPLEMENTED CATALOG</p>
+          <h2 id="home-codex-title">末世图鉴</h2>
+        </div>
+        <dl>
+          <div>
+            <dt>道具</dt>
+            <dd>{{ marketItems.length }}</dd>
+          </div>
+          <div>
+            <dt>避难所</dt>
+            <dd>{{ shelters.length }}</dd>
+          </div>
+        </dl>
+      </div>
+
+      <div class="codex-tabs" role="tablist" aria-label="图鉴类型">
+        <button :class="{ active: compendiumTab === 'items' }" type="button" @click="compendiumTab = 'items'">
+          道具图鉴
+        </button>
+        <button :class="{ active: compendiumTab === 'shelters' }" type="button" @click="compendiumTab = 'shelters'">
+          避难所图鉴
+        </button>
+      </div>
+
+      <div v-if="compendiumTab === 'items'" class="home-codex-panel">
+        <div class="codex-filter-row" aria-label="道具分类筛选">
+          <button
+            v-for="category in itemCategoryOptions"
+            :key="category.id"
+            type="button"
+            :class="{ active: activeItemCategory === category.id }"
+            @click="activeItemCategory = category.id"
+          >
+            {{ category.label }}
+            <span>{{ category.count }}</span>
+          </button>
+        </div>
+
+        <div class="codex-grid item-codex-grid">
+          <article
+            v-for="item in visibleItems"
+            :key="item.id"
+            class="codex-card codex-item-card"
+            :class="`quality-${item.tier}`"
+            :title="itemTooltip(item)"
+          >
+            <div class="codex-icon item-icon">
+              <img :src="itemIconSrc(item)" :alt="item.name" @error="markIconMissing" />
+              <span>{{ item.fallbackIcon }}</span>
+            </div>
+            <div class="codex-card-copy">
+              <div class="codex-title-line">
+                <strong>{{ item.name }}</strong>
+                <b>{{ tierMeta(item.tier).shortLabel }}</b>
+              </div>
+              <small>{{ categoryLabel(item.category) }} · {{ item.space }} 格</small>
+              <p>{{ item.description }}</p>
+              <div class="codex-effect-list">
+                <span v-for="effect in itemEffects(item)" :key="effect">{{ effect }}</span>
+              </div>
+              <div class="codex-tags">
+                <span v-for="tag in item.tags.slice(0, 4)" :key="tag">{{ tag }}</span>
+              </div>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <div v-else class="home-codex-panel">
+        <div class="codex-filter-row" aria-label="避难所品质筛选">
+          <button
+            v-for="quality in shelterQualityOptions"
+            :key="quality.id"
+            type="button"
+            :class="{ active: activeShelterQuality === quality.id }"
+            @click="activeShelterQuality = quality.id"
+          >
+            {{ quality.label }}
+            <span>{{ quality.count }}</span>
+          </button>
+        </div>
+
+        <div class="codex-grid shelter-codex-grid">
+          <article
+            v-for="shelter in visibleShelters"
+            :key="shelter.id"
+            class="codex-card codex-shelter-card"
+            :class="`quality-${shelter.quality}`"
+          >
+            <div class="codex-title-line">
+              <strong>{{ shelter.name }}</strong>
+              <b>{{ qualityMeta(shelter.quality).shortLabel }}</b>
+            </div>
+            <small>{{ shelterLocationText(shelter) }}</small>
+            <dl class="codex-metrics">
+              <div>
+                <dt>容量</dt>
+                <dd>{{ shelter.space }}</dd>
+              </div>
+              <div>
+                <dt>防御</dt>
+                <dd>{{ defenseText(shelter.defense) }}</dd>
+              </div>
+              <div>
+                <dt>定位</dt>
+                <dd>{{ qualityMeta(shelter.quality).tone }}</dd>
+              </div>
+            </dl>
+            <p>{{ shelter.description }}</p>
+            <em>{{ shelter.hidden }}</em>
+            <div class="codex-tags">
+              <span v-for="tag in shelter.tags.slice(0, 5)" :key="tag">{{ tag }}</span>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
     <section class="archive-section">
       <h2>🏛️ 末世档案馆</h2>
       <p>见证其他幸存者的末日传奇</p>
@@ -92,9 +213,9 @@
 </template>
 
 <script setup>
-import { reactive, ref } from 'vue';
+import { computed, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { scenarios } from '../data/zombie.js';
+import { itemTiers, marketItems, scenarios, shelterQualities, shelters, spawnLocations } from '../data/zombie.js';
 import { useGameStore } from '../stores/game.js';
 import { useSettingsStore } from '../stores/settings.js';
 
@@ -102,11 +223,81 @@ const router = useRouter();
 const game = useGameStore();
 const settings = useSettingsStore();
 const showSettings = ref(false);
+const compendiumTab = ref('items');
+const activeItemCategory = ref('all');
+const activeShelterQuality = ref('all');
 const settingsDraft = reactive({
   apiBase: settings.apiBase,
   model: settings.model,
   apiKey: settings.apiKey,
 });
+
+const itemCategoryLabels = {
+  all: '全部',
+  food: '食物/饮品',
+  morale: '心态消耗',
+  medical: '医疗',
+  weapon: '武器',
+  ammo: '弹药',
+  tool: '工具',
+  base: '基地',
+  bag: '背包',
+  survival: '求生',
+  vehicle: '车辆',
+};
+const effectLabels = {
+  thirst: '口渴',
+  hunger: '饥饿',
+  stress: '压力',
+  fatigue: '疲劳',
+  health: '生命',
+  panic: '恐慌',
+  skill: '技能',
+  ammo: '弹药',
+  capacity: '容量',
+  barricade: '封堵',
+  repair: '维修',
+  demolition: '破拆',
+  power: '供电',
+  knowledge: '知识',
+  night: '夜行',
+  fishing: '钓鱼',
+  fuel: '燃料',
+};
+
+const itemCategoryOptions = computed(() => {
+  const categoryCounts = marketItems.reduce((counts, item) => {
+    counts[item.category] = (counts[item.category] ?? 0) + 1;
+    return counts;
+  }, {});
+  return [
+    { id: 'all', label: '全部', count: marketItems.length },
+    ...Object.entries(categoryCounts)
+      .map(([id, count]) => ({ id, label: categoryLabel(id), count }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'zh-CN')),
+  ];
+});
+
+const visibleItems = computed(() => marketItems
+  .filter((item) => activeItemCategory.value === 'all' || item.category === activeItemCategory.value)
+  .sort((a, b) => {
+    const categoryCompare = categoryLabel(a.category).localeCompare(categoryLabel(b.category), 'zh-CN');
+    if (categoryCompare) return categoryCompare;
+    return tierMeta(b.tier).rank - tierMeta(a.tier).rank || a.name.localeCompare(b.name, 'zh-CN');
+  }));
+
+const shelterQualityOptions = computed(() => [
+  { id: 'all', label: '全部', count: shelters.length },
+  ...shelterQualities.map((quality) => ({
+    id: quality.id,
+    label: `${quality.shortLabel}色`,
+    count: shelters.filter((shelter) => shelter.quality === quality.id).length,
+  })),
+]);
+
+const visibleShelters = computed(() => shelters
+  .filter((shelter) => activeShelterQuality.value === 'all' || shelter.quality === activeShelterQuality.value)
+  .sort((a, b) => qualityMeta(b.quality).rank - qualityMeta(a.quality).rank || a.name.localeCompare(b.name, 'zh-CN')));
 
 function start(scenario) {
   if (game.startScenario(scenario.id)) router.push('/profession');
@@ -123,6 +314,58 @@ function scenarioGlyph(icon) {
 function saveSettings() {
   settings.useCustom(settingsDraft);
   showSettings.value = false;
+}
+
+function categoryLabel(categoryId) {
+  return itemCategoryLabels[categoryId] ?? categoryId;
+}
+
+function tierMeta(tierId) {
+  return itemTiers.find((tier) => tier.id === tierId) ?? itemTiers[0];
+}
+
+function qualityMeta(qualityId) {
+  return shelterQualities.find((quality) => quality.id === qualityId) ?? shelterQualities[shelterQualities.length - 1];
+}
+
+function itemIconSrc(item) {
+  return `${import.meta.env.BASE_URL}pz-items/${item.iconFile}`;
+}
+
+function markIconMissing(event) {
+  event.currentTarget.classList.add('missing');
+}
+
+function itemEffects(item) {
+  return Object.entries(item.effects ?? {})
+    .map(([key, value]) => {
+      const label = effectLabels[key] ?? key;
+      if (typeof value === 'number') return `${label} ${value > 0 ? '+' : ''}${value}`;
+      if (key === 'capacity') return `${label} +${value}`;
+      return `${label}: ${value}`;
+    })
+    .slice(0, 3);
+}
+
+function itemTooltip(item) {
+  const effects = itemEffects(item);
+  return [
+    `${item.name} / ${item.canonicalName}`,
+    `${categoryLabel(item.category)} · ${tierMeta(item.tier).tone}`,
+    `占用 ${item.space} 格`,
+    effects.length ? effects.join(' / ') : '',
+    item.description,
+  ].filter(Boolean).join('\n');
+}
+
+function shelterLocationText(shelter) {
+  if (!shelter.locations?.length) return '通用避难所';
+  const names = shelter.locations.map((id) => spawnLocations.find((location) => location.id === id)?.name ?? id);
+  return `${names.join(' / ')} 独有`;
+}
+
+function defenseText(value) {
+  return '★'.repeat(Math.max(1, value));
 }
 
 function formatDate(value) {
