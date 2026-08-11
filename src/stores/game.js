@@ -22,6 +22,7 @@ import {
   traitAttributeMods,
   traits,
   universalShelterLootPools,
+  vehicleEvents,
   vitalDefinitions,
 } from '../data/zombie.js';
 import { createDayEvent, createEnding, resolveAction, resolveMapMove, resolveNodeAction as resolveMapNodeAction } from '../services/engine.js';
@@ -39,6 +40,26 @@ import {
   grantSkillExperience as applySkillExperience,
   normalizeSkillExperience,
 } from '../services/progression.js';
+import {
+  advanceFoodSpoilage,
+  applyWeaponWear,
+  canMergeItemConditionStates,
+  createItemConditionState,
+  getFoodConsumptionModifiers,
+  getItemConditionDisplay,
+  isWeaponBroken,
+  normalizeItemConditionState,
+} from '../services/item-condition.js';
+import {
+  STORAGE_CONTAINERS,
+  baseStorageCapacity,
+  carryStorageCapacity,
+  normalizeStorageInventory,
+  previewStorageTransfer,
+  projectStorageTransfer,
+  storageUsedSpace,
+  trunkStorageCapacity,
+} from '../services/storage.js';
 import {
   START_MINUTE,
   advanceSurvivalState,
@@ -58,7 +79,7 @@ import {
   woundTypeLabels,
 } from '../services/survival.js';
 
-export const SAVE_VERSION = 3;
+export const SAVE_VERSION = 4;
 
 const defaultState = () => ({
   saveVersion: SAVE_VERSION,
@@ -84,6 +105,9 @@ const defaultState = () => ({
   lootSearchStarted: false,
   searchingSlotId: null,
   inventory: [],
+  baseInventory: [],
+  vehicleInventory: [],
+  nextItemSequence: 1,
   hiddenTags: [],
   history: [],
   activeEvent: null,
@@ -91,7 +115,7 @@ const defaultState = () => ({
   inspectedNodeId: null,
   visitedNodeIds: [],
   knownNodeIds: [],
-  vehicle: { status: 'none', fuel: 0, name: '徒步', condition: 0 },
+  vehicle: emptyVehicleState(),
   movesRemaining: 1,
   mapLog: [],
   searchedSceneObjectIds: [],
@@ -101,6 +125,8 @@ const defaultState = () => ({
   body: createBodyState(),
   base: createBaseState(),
   equippedWeaponId: null,
+  equippedWeaponStackId: null,
+  equippedBagStackId: null,
   survivalStats: createSurvivalStats(),
   ending: null,
   archives: [],
@@ -125,7 +151,7 @@ export const useGameStore = defineStore('game', {
     },
     evacuationWindowOpen: (state) => state.day >= state.maxDay && state.day <= state.maxDay + 5,
     evacuationDeadline: (state) => state.maxDay + 5,
-    usedSpace: (state) => state.inventory.reduce((sum, item) => sum + item.space * item.count, 0),
+    usedSpace: (state) => storageUsedSpace(state.inventory),
     maxSpace: (state) => inventoryCapacityForState(state, state.inventory),
     remainingSpace() {
       return this.maxSpace - this.usedSpace;
@@ -152,7 +178,24 @@ export const useGameStore = defineStore('game', {
     clockLabel: (state) => formatClock(state.clockMinutes),
     activeWeather: (state) => weatherDefinitions.find((weather) => weather.id === state.world?.weatherId) ?? weatherDefinitions[0],
     isAtHome: (state) => Boolean(state.currentNodeId && state.currentNodeId === state.spawnLocation?.id),
-    equippedWeapon: (state) => state.inventory.find((item) => item.id === state.equippedWeaponId && item.count > 0) ?? null,
+    equippedWeapon: (state) => state.inventory.find((item) => (
+      item.count > 0
+      && item.tags?.includes('weapon')
+      && !isWeaponBroken(item.conditionState)
+      && (item.stackId === state.equippedWeaponStackId || (!state.equippedWeaponStackId && item.id === state.equippedWeaponId))
+    )) ?? null,
+    equippedBag: (state) => state.inventory.find((item) => (
+      item.count > 0
+      && item.tags?.includes('bag')
+      && item.stackId === state.equippedBagStackId
+    )) ?? null,
+    storageContainers: (state) => buildStorageContainers(state),
+    storageWarningCount: (state) => [state.inventory, state.baseInventory, state.vehicleInventory]
+      .flatMap((entries) => Array.isArray(entries) ? entries : [])
+      .filter((item) => {
+        const display = getItemConditionDisplay(item.conditionState);
+        return display.tone === 'danger';
+      }).length,
     woundList: (state) => (state.body?.wounds ?? []).map((wound) => ({
       ...wound,
       bodyPartLabel: bodyPartLabels[wound.bodyPart] ?? wound.bodyPart,
@@ -221,13 +264,19 @@ export const useGameStore = defineStore('game', {
           }
           if (id === 'combat_firearm') {
             const hasUsableFirearm = state.inventory
-              .filter((item) => item.count > 0 && item.tags?.includes('firearm'))
+              .filter((item) => item.count > 0 && item.tags?.includes('firearm') && !isWeaponBroken(item.conditionState))
               .some((firearm) => state.inventory.some((item) => item.id === (firearm.id === 'shotgun' ? 'shotgun_shells' : '9mm_rounds') && item.count > 0));
             if (!hasUsableFirearm && !disabledReason) disabledReason = '需要枪械和对应弹药';
           }
           if (id === 'fortify') {
             const has = (itemId) => state.inventory.some((item) => item.id === itemId && item.count > 0);
             if ((!has('hammer') || !has('plank') || !has('nails')) && !disabledReason) disabledReason = '需要锤子、木板和钉子';
+          }
+          if (id === 'vehicle' && storageUsedSpace(state.vehicleInventory) > 0 && !disabledReason) {
+            const localVehicle = vehicleAtCurrentNodeForState(state);
+            const canRefuelCurrentVehicle = localVehicle.status === 'working'
+              && state.inventory.some((item) => item.id === 'gas_can' && item.count > 0);
+            if (!canRefuelCurrentVehicle) disabledReason = '后备箱还有物资，先回到原车卸货再更换车辆';
           }
           if (id === 'search' && (state.nodeSearchCounts?.[node?.id] ?? 0) >= 3 && !disabledReason) disabledReason = '周边已被搜空，请检查具体建筑容器';
           return {
@@ -301,8 +350,16 @@ export const useGameStore = defineStore('game', {
         });
       }
       if (!hasOwn('base')) this.base = createBaseState(shelter);
+      if (this.base?.generatorOn && !Object.prototype.hasOwnProperty.call(rawState.base ?? {}, 'installedGeneratorStackId')) {
+        this.base = { ...this.base, installedGeneratorStackId: '__legacy_auto__' };
+      }
       if (!hasOwn('survivalStats')) this.survivalStats = createSurvivalStats();
       if (!hasOwn('equippedWeaponId')) this.equippedWeaponId = null;
+      if (!hasOwn('baseInventory')) this.baseInventory = [];
+      if (!hasOwn('vehicleInventory')) this.vehicleInventory = [];
+      if (!hasOwn('nextItemSequence')) this.nextItemSequence = 1;
+      if (!hasOwn('equippedWeaponStackId')) this.equippedWeaponStackId = null;
+      if (!hasOwn('equippedBagStackId')) this.equippedBagStackId = '__legacy_auto__';
       if (!hasOwn('nodeSearchCounts')) this.nodeSearchCounts = {};
       if (!hasOwn('skillXp')) this.skillXp = createSkillExperience(normalizeSkills(this.skills));
       if (!hasOwn('lastSkillGains')) this.lastSkillGains = {};
@@ -382,6 +439,11 @@ export const useGameStore = defineStore('game', {
       this.profession = cloneCatalogRecord(profession);
       this.selectedTraits = [];
       this.inventory = [];
+      this.baseInventory = [];
+      this.vehicleInventory = [];
+      this.equippedWeaponId = null;
+      this.equippedWeaponStackId = null;
+      this.equippedBagStackId = null;
       this.shelter = null;
       this.shelterChoices = [];
       this.shelterRollsUsed = 0;
@@ -405,6 +467,11 @@ export const useGameStore = defineStore('game', {
       this.profession = cloneCatalogRecord(profession);
       this.selectedTraits = presetTraits;
       this.inventory = [];
+      this.baseInventory = [];
+      this.vehicleInventory = [];
+      this.equippedWeaponId = null;
+      this.equippedWeaponStackId = null;
+      this.equippedBagStackId = null;
       this.shelter = null;
       this.shelterChoices = [];
       this.shelterRollsUsed = 0;
@@ -444,7 +511,18 @@ export const useGameStore = defineStore('game', {
       this.skillXp = normalizeSkillExperience(this.skillXp, this.skills, skillDefinitions.map((skill) => skill.id));
       this.lastSkillGains = normalizeSkillGains(this.lastSkillGains);
       const rawInventory = Array.isArray(this.inventory) ? this.inventory : [];
-      this.inventory = normalizeInventory(rawInventory);
+      const rawBaseInventory = Array.isArray(this.baseInventory) ? this.baseInventory : [];
+      const rawVehicleInventory = Array.isArray(this.vehicleInventory) ? this.vehicleInventory : [];
+      this.inventory = normalizeStorageInventory(rawInventory, marketItems, { containerId: STORAGE_CONTAINERS.CARRY });
+      this.baseInventory = normalizeStorageInventory(rawBaseInventory, marketItems, { containerId: STORAGE_CONTAINERS.BASE });
+      this.vehicleInventory = normalizeStorageInventory(rawVehicleInventory, marketItems, { containerId: STORAGE_CONTAINERS.TRUNK });
+      const inventoryUnitCount = [this.inventory, this.baseInventory, this.vehicleInventory]
+        .flat()
+        .reduce((sum, item) => sum + Math.max(1, Number(item.count) || 1), 0);
+      this.nextItemSequence = Math.max(
+        clampInteger(this.nextItemSequence, 1, 1_000_000_000, inventoryUnitCount + 1),
+        inventoryUnitCount + 1,
+      );
       this.selectedTraits = Array.isArray(this.selectedTraits)
         ? this.selectedTraits
             .map((trait) => traits.find((entry) => entry.id === trait?.id))
@@ -465,7 +543,7 @@ export const useGameStore = defineStore('game', {
         this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, this.currentNodeId, ...neighborsForNode(this.currentNodeId)]);
         if (!this.inspectedNodeId) this.inspectedNodeId = this.currentNodeId;
       }
-      this.vehicle = normalizeVehicle(this.vehicle);
+      this.vehicle = normalizeVehicle(this.vehicle, this.currentNodeId ?? this.spawnLocation?.id);
       this.movesRemaining = Number.isFinite(this.movesRemaining) ? Math.max(0, Math.round(this.movesRemaining)) : 1;
       this.mapLog = Array.isArray(this.mapLog) ? this.mapLog.slice(0, 80) : [];
       this.history = normalizeHistory(this.history);
@@ -491,13 +569,61 @@ export const useGameStore = defineStore('game', {
         day: this.day,
       });
       this.body = normalizeBodyState(this.body);
+      const migrateLegacyGenerator = this.base?.installedGeneratorStackId === '__legacy_auto__';
       this.base = normalizeBaseState(this.base, this.shelter);
+      if (migrateLegacyGenerator && this.base.generatorOn && !this.baseInventory.some((item) => item.id === 'generator' && item.count > 0)) {
+        const carriedGenerator = this.inventory.find((item) => item.id === 'generator' && item.count > 0);
+        if (carriedGenerator) {
+          const installation = projectStorageTransfer({
+            containers: { carry: this.inventory, base: this.baseInventory, trunk: this.vehicleInventory },
+            access: { base: true, trunk: true },
+            skills: this.skills,
+            selectedTraits: this.selectedTraits,
+            shelter: this.shelter,
+            vehicle: this.vehicle,
+            equippedBagStackId: this.equippedBagStackId,
+          }, {
+            from: STORAGE_CONTAINERS.CARRY,
+            to: STORAGE_CONTAINERS.BASE,
+            stackId: carriedGenerator.stackId,
+            count: 1,
+          });
+          if (installation.ok) {
+            this.inventory = installation.containers.carry;
+            this.baseInventory = installation.containers.base;
+            this.equippedBagStackId = installation.nextEquippedBagStackId;
+          }
+        }
+      }
+      const installedGenerator = this.baseInventory.find((item) => (
+        item.id === 'generator'
+        && item.count > 0
+        && (item.stackId === this.base.installedGeneratorStackId || migrateLegacyGenerator)
+      ));
+      if (this.base.generatorOn && installedGenerator) {
+        this.base.installedGeneratorStackId = installedGenerator.stackId;
+      } else if (this.base.generatorOn) {
+        this.base.generatorOn = false;
+        this.base.installedGeneratorStackId = null;
+      } else if (!this.baseInventory.some((item) => item.stackId === this.base.installedGeneratorStackId && item.id === 'generator')) {
+        this.base.installedGeneratorStackId = null;
+      }
       this.world.powerOn = this.day < this.world.powerShutoffDay || (this.base.generatorOn && this.base.generatorFuel > 0);
       this.world.waterOn = this.day < this.world.waterShutoffDay;
       this.survivalStats = normalizeSurvivalStats(this.survivalStats);
-      this.equippedWeaponId = this.inventory.some((item) => item.id === this.equippedWeaponId && item.tags?.includes('weapon'))
-        ? this.equippedWeaponId
-        : null;
+      const validEquippedWeapon = this.inventory.find((item) => (
+        item.tags?.includes('weapon')
+        && !isWeaponBroken(item.conditionState)
+        && (item.stackId === this.equippedWeaponStackId || item.id === this.equippedWeaponId)
+      ));
+      this.equippedWeaponStackId = validEquippedWeapon?.stackId ?? null;
+      this.equippedWeaponId = validEquippedWeapon?.id ?? null;
+      const migrateLegacyBag = this.equippedBagStackId === '__legacy_auto__';
+      const validEquippedBag = this.inventory.find((item) => item.stackId === this.equippedBagStackId && item.tags?.includes('bag'));
+      const bestLegacyBag = [...this.inventory]
+        .filter((item) => item.tags?.includes('bag'))
+        .sort((left, right) => (right.effects?.capacity ?? 0) - (left.effects?.capacity ?? 0))[0];
+      this.equippedBagStackId = validEquippedBag?.stackId ?? (migrateLegacyBag ? bestLegacyBag?.stackId ?? null : null);
     },
     recalculateCharacterState(includeUnlocks = false) {
       if (!this.profession) return;
@@ -601,9 +727,13 @@ export const useGameStore = defineStore('game', {
       this.searchingSlotId = slot.id;
       this.lootSearchStarted = true;
       await new Promise((resolve) => globalThis.setTimeout(resolve, 800));
-      if (this.runPhase !== 'setup') {
-        slot.status = 'hidden';
-        this.searchingSlotId = null;
+      const liveSlot = this.lootSlots.find((entry) => entry.id === slotId);
+      const ownsSearch = this.searchingSlotId === slot.id && liveSlot === slot && slot.status === 'searching';
+      if (this.runPhase !== 'setup' || !ownsSearch) {
+        if (ownsSearch) {
+          slot.status = 'hidden';
+          this.searchingSlotId = null;
+        }
         return false;
       }
       const item = marketItems.find((entry) => entry.id === slot.itemId);
@@ -623,11 +753,17 @@ export const useGameStore = defineStore('game', {
       this.searchingSlotId = 'bulk';
       this.lootSearchStarted = true;
       await new Promise((resolve) => globalThis.setTimeout(resolve, 800));
-      if (this.runPhase !== 'setup') {
-        slots.forEach((slot) => {
-          if (slot.status === 'searching') slot.status = 'hidden';
-        });
-        this.searchingSlotId = null;
+      const ownsSearch = this.searchingSlotId === 'bulk' && slots.every((slot) => (
+        slot.status === 'searching'
+        && this.lootSlots.find((entry) => entry.id === slot.id) === slot
+      ));
+      if (this.runPhase !== 'setup' || !ownsSearch) {
+        if (ownsSearch) {
+          slots.forEach((slot) => {
+            slot.status = 'hidden';
+          });
+          this.searchingSlotId = null;
+        }
         return false;
       }
       slots.forEach((slot) => {
@@ -641,43 +777,129 @@ export const useGameStore = defineStore('game', {
     },
     collectLootItem(item, count = 1) {
       const quantity = positiveInteger(count);
-      if (!item || !quantity || this.remainingSpace < item.space * quantity) return false;
-      const existing = this.inventory.find((entry) => entry.id === item.id);
-      if (existing) existing.count += quantity;
-      else this.inventory.push({ ...cloneCatalogRecord(item), count: quantity });
+      if (!item || !quantity) return false;
+      const projection = projectInventoryAddition(this.inventory, item, quantity, {
+        acquiredMinutes: this.totalWorldMinutes,
+        sequence: this.nextItemSequence,
+        sourceId: 'loot',
+      });
+      if (!projection.ok || storageUsedSpace(projection.inventory) > inventoryCapacityForState(this.$state, projection.inventory)) return false;
+      this.inventory = projection.inventory;
+      this.nextItemSequence = projection.nextSequence;
       return true;
     },
     addItem(item, count = 1, free = false) {
       const quantity = positiveInteger(count);
       if (!item || !quantity) return false;
-      if (this.remainingSpace < item.space * quantity) return false;
       if (!free && this.money < item.price * quantity) return false;
-      const existing = this.inventory.find((entry) => entry.id === item.id);
-      if (existing) existing.count += quantity;
-      else this.inventory.push({ ...cloneCatalogRecord(item), count: quantity });
+      const projection = projectInventoryAddition(this.inventory, item, quantity, {
+        acquiredMinutes: this.totalWorldMinutes,
+        sequence: this.nextItemSequence,
+        sourceId: free ? 'grant' : 'market',
+      });
+      if (!projection.ok || storageUsedSpace(projection.inventory) > inventoryCapacityForState(this.$state, projection.inventory)) return false;
+      this.inventory = projection.inventory;
+      this.nextItemSequence = projection.nextSequence;
       if (!free) this.money -= item.price * quantity;
       return true;
     },
     removeItem(id, count = 1) {
       const quantity = positiveInteger(count);
       if (!quantity) return false;
-      const item = this.inventory.find((entry) => entry.id === id || entry.name === id);
-      if (!item || item.count < quantity) return false;
-      item.count -= quantity;
-      if (item.count <= 0) this.inventory = this.inventory.filter((entry) => entry !== item);
-      if (this.equippedWeaponId === item.id && !this.inventory.some((entry) => entry.id === item.id)) this.equippedWeaponId = null;
+      const projection = projectInventoryRemoval(this.inventory, id, quantity);
+      if (!projection.ok) return false;
+      this.inventory = projection.inventory;
+      this.reconcileEquipment();
       return true;
     },
     equipWeapon(id) {
       if (this.isGameOver) return false;
-      const weapon = this.inventory.find((item) => item.id === id && item.count > 0 && item.tags?.includes('weapon'));
+      if (!this.canPerformWorldAction('equip', 0, false)) return false;
+      const weapon = findInventoryStack(this.inventory, id, (item) => item.tags?.includes('weapon'));
+      if (weapon && isWeaponBroken(weapon.conditionState)) return false;
       if (!weapon) return false;
-      this.equippedWeaponId = this.equippedWeaponId === id ? null : id;
+      if (this.equippedWeaponStackId === weapon.stackId) {
+        this.equippedWeaponStackId = null;
+        this.equippedWeaponId = null;
+      } else {
+        this.equippedWeaponStackId = weapon.stackId;
+        this.equippedWeaponId = weapon.id;
+      }
       return true;
+    },
+    equipBag(id) {
+      if (this.isGameOver || !this.canPerformWorldAction('equip', 0, false)) return false;
+      const bag = findInventoryStack(this.inventory, id, (item) => item.tags?.includes('bag'));
+      if (!bag) return false;
+      const nextStackId = this.equippedBagStackId === bag.stackId ? null : bag.stackId;
+      const nextCapacity = carryStorageCapacity({
+        skills: this.skills,
+        selectedTraits: this.selectedTraits,
+        inventory: this.inventory,
+        equippedBagStackId: nextStackId,
+      });
+      if (storageUsedSpace(this.inventory) > nextCapacity) return false;
+      this.equippedBagStackId = nextStackId;
+      return true;
+    },
+    reconcileEquipment() {
+      const weapon = this.inventory.find((item) => (
+        item.stackId === this.equippedWeaponStackId
+        && item.tags?.includes('weapon')
+        && !isWeaponBroken(item.conditionState)
+      )) ?? this.inventory.find((item) => (
+        !this.equippedWeaponStackId
+        && item.id === this.equippedWeaponId
+        && item.tags?.includes('weapon')
+        && !isWeaponBroken(item.conditionState)
+      ));
+      this.equippedWeaponStackId = weapon?.stackId ?? null;
+      this.equippedWeaponId = weapon?.id ?? null;
+      if (!this.inventory.some((item) => item.stackId === this.equippedBagStackId && item.tags?.includes('bag'))) {
+        this.equippedBagStackId = null;
+      }
+    },
+    previewTransfer(request = {}) {
+      return createTransferQuote(this.$state, request, false);
+    },
+    transferItem(request = {}) {
+      const quote = createTransferQuote(this.$state, request, true);
+      if (!quote.ok) return { ...quote, committed: false };
+      const duration = transferDurationMinutes(quote.item, quote.quantity);
+      if (!this.canPerformWorldAction('storage', duration)) {
+        return { ...quote, ok: false, committed: false, disabledReason: '当前安全窗口不足，无法整理物资' };
+      }
+      const result = projectStorageTransfer(storageContextForState(this.$state), {
+        from: quote.fromId,
+        to: quote.toId,
+        stackId: quote.stackId,
+        count: quote.quantity,
+      });
+      if (!result.ok) return transferFailureResult(result, quote.maxQuantity);
+      this.inventory = result.containers.carry;
+      this.baseInventory = result.containers.base;
+      this.vehicleInventory = result.containers.trunk;
+      this.equippedBagStackId = result.nextEquippedBagStackId;
+      if (!this.baseInventory.some((item) => item.stackId === this.base.installedGeneratorStackId && item.id === 'generator')) {
+        this.base.installedGeneratorStackId = null;
+      }
+      this.reconcileEquipment();
+      this.survivalStats.actions += 1;
+      this.mapLog.unshift({
+        day: this.day,
+        time: this.clockLabel,
+        title: '整理物资',
+        text: `${quote.item.name} ×${quote.quantity} 已从${storageName(quote.fromId)}转移到${storageName(quote.toId)}。`,
+        mode: 'storage',
+      });
+      this.mapLog = this.mapLog.slice(0, 80);
+      this.advanceSimulation({ minutes: duration, mode: 'rest', noiseDelta: -1 });
+      this.finishIfGameOver();
+      return { ...quote, committed: true };
     },
     useItem(id) {
       if (this.isGameOver) return false;
-      const item = this.inventory.find((entry) => entry.id === id && entry.count > 0);
+      const item = findInventoryStack(this.inventory, id);
       if (!item || !['food', 'medical', 'morale'].includes(item.category)) return false;
       const useMinutes = item.category === 'medical' ? 30 : item.tags?.includes('water') ? 10 : item.category === 'food' ? 20 : 10;
       if (!this.canPerformWorldAction('item', useMinutes)) return false;
@@ -710,12 +932,27 @@ export const useGameStore = defineStore('game', {
         if (!hasKnoxInfection && this.body.infectionLevel < 1) this.body.infectionLevel = 0;
       }
       if (item.id === 'painkillers') this.body.pain = Math.max(0, this.body.pain - 28);
-      applyVitalMods(this.vitals, item.effects ?? {});
+      const foodModifiers = item.category === 'food'
+        ? getFoodConsumptionModifiers(item.conditionState)
+        : { edible: true, freshnessState: null, effectMultiplier: 1, foodPoisoningRisk: false };
+      const adjustedEffects = Object.fromEntries(Object.entries(item.effects ?? {}).map(([key, value]) => [
+        key,
+        typeof value === 'number' && item.category === 'food' && isBeneficialVitalEffect(key, value)
+          ? value * foodModifiers.effectMultiplier
+          : value,
+      ]));
+      applyVitalMods(this.vitals, adjustedEffects);
+      if (foodModifiers.foodPoisoningRisk) {
+        const traitIds = new Set(this.selectedTraits.map((trait) => trait.id));
+        const sickness = traitIds.has('iron_gut') ? 6 : traitIds.has('weak_stomach') ? 18 : 12;
+        applyVitalMods(this.vitals, { health: -sickness, stress: 12, hunger: 4 });
+        if (!this.hiddenTags.includes('食物中毒')) this.hiddenTags.push('食物中毒');
+      }
       if (item.id === 'foraged_mushrooms' && !this.selectedTraits.some((trait) => trait.id === 'herbalist') && (this.world.seed + this.day) % 5 === 0) {
         applyVitalMods(this.vitals, { health: -8, stress: 10 });
         if (!this.hiddenTags.includes('食物中毒')) this.hiddenTags.push('食物中毒');
       }
-      this.removeItem(item.id, 1);
+      this.removeItem(item.stackId, 1);
       const progression = this.grantSkillXp(treatsWound
         ? { first_aid: item.id === 'first_aid_kit' ? 18 : 10 }
         : {});
@@ -724,7 +961,12 @@ export const useGameStore = defineStore('game', {
         day: this.day,
         time: this.clockLabel,
         title: `使用 ${item.name}`,
-        text: [treatsWound ? `你处理了${bodyPartLabels[wound.bodyPart] ?? wound.bodyPart}的${woundTypeLabels[wound.type] ?? wound.type}。` : `${item.name}已经消耗。`, levelUpText].filter(Boolean).join(' '),
+        text: [
+          treatsWound
+            ? `你处理了${bodyPartLabels[wound.bodyPart] ?? wound.bodyPart}的${woundTypeLabels[wound.type] ?? wound.type}。`
+            : `${item.name}已经消耗。${foodModifiers.freshnessState === 'stale' ? '味道已经不对，恢复效果有限。' : foodModifiers.foodPoisoningRisk ? '腐败气味很快变成胃里的绞痛。' : ''}`,
+          levelUpText,
+        ].filter(Boolean).join(' '),
         mode: 'item',
       });
       this.mapLog = this.mapLog.slice(0, 80);
@@ -746,9 +988,19 @@ export const useGameStore = defineStore('game', {
       if (!this.canPerformWorldAction('craft', craftMinutes)) return false;
       const status = recipeStatus(recipe, this.$state);
       if (!status.canCraft) return false;
-      recipe.ingredients.forEach((ingredient) => this.removeItem(ingredient.itemId, ingredient.count));
       const result = marketItems.find((item) => item.id === recipe.resultId);
-      if (!result || !this.collectLootItem(result, recipe.resultCount ?? 1)) return false;
+      if (!result) return false;
+      const projection = projectInventoryTransaction(this.inventory, {
+        consume: recipe.ingredients.map((ingredient) => ({ id: ingredient.itemId, count: ingredient.count })),
+        add: [{ item: result, count: recipe.resultCount ?? 1 }],
+        acquiredMinutes: this.totalWorldMinutes,
+        sequence: this.nextItemSequence,
+        sourceId: `craft:${recipe.id}`,
+      });
+      if (!projection.ok || storageUsedSpace(projection.inventory) > inventoryCapacityForState(this.$state, projection.inventory)) return false;
+      this.inventory = projection.inventory;
+      this.nextItemSequence = projection.nextSequence;
+      this.reconcileEquipment();
       this.survivalStats.crafted += 1;
       this.survivalStats.actions += 1;
       const progression = this.grantSkillXp({ [recipe.skillId]: 18 + (recipe.minSkill ?? 0) * 3 });
@@ -775,23 +1027,77 @@ export const useGameStore = defineStore('game', {
       this.finishIfGameOver();
       return true;
     },
+    repairWeapon(stackId, materialId) {
+      if (this.isGameOver) return { ok: false, disabledReason: '本局已经结束' };
+      const repairMinutes = 45;
+      if (!this.canPerformWorldAction('repair', repairMinutes)) return { ok: false, disabledReason: '当前环境不允许维修' };
+      const weapon = findInventoryStack(this.inventory, stackId, (entry) => entry.tags?.includes('weapon'));
+      const material = findInventoryStack(this.inventory, materialId, (entry) => (entry.effects?.repair ?? 0) > 0);
+      if (!weapon) return { ok: false, disabledReason: '武器不在随身物资中' };
+      if (!weapon.conditionState?.condition) return { ok: false, disabledReason: '该物品没有可维修耐久' };
+      if (!material) return { ok: false, disabledReason: '缺少胶带或木工胶' };
+      if (weapon.conditionState.condition.current >= weapon.conditionState.condition.maximum) {
+        return { ok: false, disabledReason: '武器耐久已经完好' };
+      }
+      const projected = cloneInventory(this.inventory);
+      const removal = projectInventoryRemoval(projected, material.stackId, 1);
+      if (!removal.ok) return { ok: false, disabledReason: '维修材料不足' };
+      const projectedWeapon = removal.inventory.find((entry) => entry.stackId === weapon.stackId);
+      const repairCount = clampInteger(projectedWeapon.repairCount, 0, 50, 0);
+      const skillBonus = (this.skills.maintenance ?? 0) * 1.5;
+      const baseRepair = material.effects.repair >= 2 ? 38 : 24;
+      const restored = Math.max(5, Math.round((baseRepair + skillBonus) * (0.72 ** repairCount)));
+      const oldMaximum = projectedWeapon.conditionState.condition.maximum;
+      const nextMaximum = Math.max(20, oldMaximum - Math.max(0, repairCount * 2));
+      projectedWeapon.conditionState = normalizeItemConditionState({
+        ...projectedWeapon.conditionState,
+        condition: {
+          ...projectedWeapon.conditionState.condition,
+          maximum: nextMaximum,
+          current: Math.min(nextMaximum, projectedWeapon.conditionState.condition.current + restored),
+          broken: false,
+        },
+      }, projectedWeapon);
+      projectedWeapon.repairCount = repairCount + 1;
+      this.inventory = removal.inventory;
+      this.survivalStats.actions += 1;
+      const progression = this.grantSkillXp({ maintenance: 14 + material.effects.repair * 4 });
+      this.mapLog.unshift({
+        day: this.day,
+        time: this.clockLabel,
+        title: `维修 ${weapon.name}`,
+        text: `${material.name}恢复了 ${restored} 点耐久。${levelUpSummary(progression)}`,
+        mode: 'repair',
+      });
+      this.advanceSimulation({ minutes: repairMinutes, mode: 'active', noiseDelta: 3, threatDelta: 1 });
+      this.finishIfGameOver();
+      return { ok: true, restored, stackId: weapon.stackId };
+    },
     toggleGenerator() {
       if (this.isGameOver || !this.isAtHome) return false;
       if (!this.canPerformWorldAction('base', 20)) return false;
-      const generator = this.inventory.find((item) => item.id === 'generator' && item.count > 0);
-      const knowsGenerator = this.inventory.some((item) => item.id === 'how_to_use_generators' && item.count > 0) || (this.skills.electrical ?? 0) >= 3;
-      if (!generator || !knowsGenerator) return false;
+      const homeItems = [...this.inventory, ...this.baseInventory];
+      const generator = this.baseInventory.find((item) => item.id === 'generator' && item.count > 0);
+      const knowsGenerator = homeItems.some((item) => item.id === 'how_to_use_generators' && item.count > 0) || (this.skills.electrical ?? 0) >= 3;
       if (this.base.generatorOn) {
         this.base.generatorOn = false;
         this.world.powerOn = this.day < this.world.powerShutoffDay;
         this.grantSkillXp({});
         return true;
       }
+      if (!generator || !knowsGenerator) return false;
       if (this.base.generatorFuel <= 0) {
-        if (!this.removeItem('gas_can', 1)) return false;
+        const gasCan = this.inventory.find((item) => item.id === 'gas_can' && item.count > 0)
+          ?? this.baseInventory.find((item) => item.id === 'gas_can' && item.count > 0);
+        if (!gasCan) return false;
+        const container = this.inventory.includes(gasCan) ? 'inventory' : 'baseInventory';
+        const removal = projectInventoryRemoval(this[container], gasCan.stackId, 1);
+        if (!removal.ok) return false;
+        this[container] = removal.inventory;
         this.base.generatorFuel = 3;
       }
       this.base.generatorOn = true;
+      this.base.installedGeneratorStackId = generator.stackId;
       this.world.powerOn = true;
       this.world.noise = Math.min(100, this.world.noise + 18);
       this.world.threat = Math.min(100, this.world.threat + 8);
@@ -818,7 +1124,8 @@ export const useGameStore = defineStore('game', {
       this.inspectedNodeId = null;
       this.visitedNodeIds = [];
       this.knownNodeIds = [];
-      this.vehicle = { status: 'none', fuel: 0, name: '徒步', condition: 0 };
+      this.vehicle = emptyVehicleState();
+      this.vehicleInventory = [];
       this.movesRemaining = 1;
       this.mapLog = [];
       this.searchedSceneObjectIds = [];
@@ -909,11 +1216,17 @@ export const useGameStore = defineStore('game', {
       }
       const spawnNode = mapNodes.find((node) => node.id === this.spawnLocation?.id) ?? mapNodes.find((node) => node.id === 'muldraugh');
       if (!spawnNode) return false;
+      const startingStorage = splitStartingStorage(this.$state);
+      this.inventory = startingStorage.inventory;
+      this.baseInventory = startingStorage.baseInventory;
+      this.equippedBagStackId = startingStorage.equippedBagStackId;
+      this.equippedWeaponStackId = startingStorage.equippedWeaponStackId;
+      this.equippedWeaponId = startingStorage.equippedWeaponId;
       this.currentNodeId = spawnNode.id;
       this.inspectedNodeId = spawnNode.id;
       this.visitedNodeIds = [spawnNode.id];
       this.knownNodeIds = uniqueValidNodeIds([spawnNode.id, ...neighborsForNode(spawnNode.id)]);
-      this.vehicle = normalizeVehicle(this.vehicle);
+      this.vehicle = normalizeVehicle(this.vehicle, spawnNode.id);
       this.movesRemaining = this.movementAllowance();
       this.world = normalizeWorldState(this.world, {
         day: this.day,
@@ -946,12 +1259,13 @@ export const useGameStore = defineStore('game', {
       return buildVisibleMapNodes(this.$state);
     },
     movementAllowance() {
-      if (this.vehicle?.status === 'working' && (this.vehicle.fuel ?? 0) > 0) return 3;
-      if (this.vehicle?.status === 'damaged' && (this.vehicle.fuel ?? 0) > 0) return 2;
+      const availableVehicle = activeTravelVehicleForState(this.$state);
+      if (availableVehicle?.status === 'working' && (availableVehicle.fuel ?? 0) > 0) return 3;
+      if (availableVehicle?.status === 'damaged' && (availableVehicle.fuel ?? 0) > 0) return 2;
       return 1;
     },
     canMoveToNode(nodeId) {
-      const travelMinutes = durationForAction('move', { vehicle: this.vehicle });
+      const travelMinutes = durationForAction('move', { vehicle: activeTravelVehicleForState(this.$state) });
       return this.vitals.endurance > 4 &&
         neighborsForNode(this.currentNodeId).includes(nodeId) &&
         this.canPerformWorldAction('move', travelMinutes, false);
@@ -967,7 +1281,7 @@ export const useGameStore = defineStore('game', {
       const node = mapNodes.find((entry) => entry.id === nodeId);
       if (!node || !this.canMoveToNode(nodeId)) return false;
       const from = mapNodes.find((entry) => entry.id === this.currentNodeId);
-      const travelVehicle = normalizeVehicle(this.vehicle);
+      const travelVehicle = activeTravelVehicleForState(this.$state);
       this.ensureNodeZombieState(node.id);
       const previousMapState = {
         currentNodeId: this.currentNodeId,
@@ -993,7 +1307,7 @@ export const useGameStore = defineStore('game', {
         actionId: 'move',
         outcome,
         inventory: this.inventory,
-        equippedWeaponId: this.equippedWeaponId,
+        equippedWeaponId: this.equippedWeaponStackId ?? this.equippedWeaponId,
         node,
         vehicle: travelVehicle,
       });
@@ -1001,9 +1315,13 @@ export const useGameStore = defineStore('game', {
       this.inspectedNodeId = node.id;
       this.visitedNodeIds = uniqueValidNodeIds([...this.visitedNodeIds, node.id]);
       this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, node.id, ...neighborsForNode(node.id)]);
-      const usingVehicle = this.vehicle?.status !== 'none' && (this.vehicle.fuel ?? 0) > 0;
+      const usingVehicle = travelVehicle?.status !== 'none' && (travelVehicle.fuel ?? 0) > 0;
       if (usingVehicle) {
-        this.vehicle.fuel = Math.max(0, (this.vehicle.fuel ?? 0) - 1);
+        this.vehicle = {
+          ...travelVehicle,
+          fuel: Math.max(0, (travelVehicle.fuel ?? 0) - 1),
+          nodeId: node.id,
+        };
       }
       this.movesRemaining = this.movementAllowance();
       if (this.applyMapOutcome(outcome, 'move', true)) return true;
@@ -1036,24 +1354,38 @@ export const useGameStore = defineStore('game', {
         vitals: this.vitals,
         skills: this.skills,
         profession: this.profession,
-        vehicle: this.vehicle,
+        vehicle: vehicleAtCurrentNodeForState(this.$state),
         world: this.world,
         body: this.body,
         base: this.base,
-        equippedWeaponId: this.equippedWeaponId,
+        equippedWeaponId: this.equippedWeaponStackId ?? this.equippedWeaponId,
         searchCount: this.nodeSearchCounts[node.id] ?? 0,
         zombiePopulation: this.nodeZombieStates[node.id]?.count ?? 0,
       });
       if (!outcome || !(outcome.minutes > 0)) return false;
-      if (['combat_melee', 'combat_firearm'].includes(actionId)) outcome.zombieKills = outcome.kills;
+      if (['combat_melee', 'combat_firearm'].includes(actionId)) {
+        outcome.zombieKills = outcome.kills;
+        const usedWeapon = selectCombatInventoryWeapon(
+          this.inventory,
+          this.equippedWeaponStackId ?? this.equippedWeaponId,
+          actionId === 'combat_firearm',
+        );
+        if (usedWeapon) {
+          outcome.weaponWear = {
+            stackId: usedWeapon.stackId,
+            attacks: Math.max(1, Math.max(0, Number(outcome.kills) || 0) * 2 + (outcome.score >= 52 ? 1 : 3)),
+            kills: Math.max(0, Number(outcome.kills) || 0),
+          };
+        }
+      }
       if (actionId === 'evade' && outcome.score >= 55) outcome.encounterEvasionMinutes = 180;
       outcome.skillXpGains = skillGainsForMapAction({
         actionId,
         outcome,
         inventory: this.inventory,
-        equippedWeaponId: this.equippedWeaponId,
+        equippedWeaponId: this.equippedWeaponStackId ?? this.equippedWeaponId,
         node,
-        vehicle: this.vehicle,
+        vehicle: vehicleAtCurrentNodeForState(this.$state),
       });
       if (!this.applyMapOutcome(outcome, 'action')) return false;
       if (actionId === 'search') this.nodeSearchCounts[node.id] = (this.nodeSearchCounts[node.id] ?? 0) + 1;
@@ -1077,11 +1409,11 @@ export const useGameStore = defineStore('game', {
         vitals: this.vitals,
         skills: this.skills,
         profession: this.profession,
-        vehicle: this.vehicle,
+        vehicle: vehicleAtCurrentNodeForState(this.$state),
         world: this.world,
         body: this.body,
         base: this.base,
-        equippedWeaponId: this.equippedWeaponId,
+        equippedWeaponId: this.equippedWeaponStackId ?? this.equippedWeaponId,
         manualLoot: {
           sourceName: searchable?.name ?? node.name,
           collectedItems,
@@ -1092,9 +1424,9 @@ export const useGameStore = defineStore('game', {
         actionId: 'search',
         outcome,
         inventory: this.inventory,
-        equippedWeaponId: this.equippedWeaponId,
+        equippedWeaponId: this.equippedWeaponStackId ?? this.equippedWeaponId,
         node,
-        vehicle: this.vehicle,
+        vehicle: vehicleAtCurrentNodeForState(this.$state),
       });
       if (!this.applyMapOutcome(outcome, 'search')) return false;
       if (searchKey) this.markSceneSearchableSearched(searchKey);
@@ -1107,22 +1439,31 @@ export const useGameStore = defineStore('game', {
     },
     applyMapOutcome(outcome, mode = 'action', allowTerminalCommit = false) {
       if (!outcome || (this.isGameOver && !allowTerminalCommit)) return false;
-      const projectedInventory = this.inventory.map((item) => ({ ...cloneCatalogRecord(item), count: item.count }));
-      for (const itemId of outcome.consume ?? []) {
-        const item = projectedInventory.find((entry) => entry.id === itemId || entry.name === itemId);
-        if (!item || item.count < 1) return false;
-        item.count -= 1;
+      const transaction = projectInventoryTransaction(this.inventory, {
+        consume: (outcome.consume ?? []).map((id) => ({ id, count: 1 })),
+        add: (outcome.add ?? []).map((item) => ({ item, count: item?.count ?? 1 })),
+        acquiredMinutes: this.totalWorldMinutes,
+        sequence: this.nextItemSequence,
+        sourceId: `action:${mode}`,
+      });
+      if (!transaction.ok || storageUsedSpace(transaction.inventory) > inventoryCapacityForState(this.$state, transaction.inventory)) return false;
+      const committedInventory = transaction.inventory;
+      if (outcome.weaponWear?.stackId) {
+        const weapon = committedInventory.find((item) => item.stackId === outcome.weaponWear.stackId);
+        if (weapon?.conditionState) {
+          weapon.conditionState = applyWeaponWear(weapon.conditionState, {
+            attacks: outcome.weaponWear.attacks,
+            kills: outcome.weaponWear.kills,
+          });
+        }
       }
-      for (const item of outcome.add ?? []) {
-        const quantity = positiveInteger(item?.count ?? 1);
-        if (!item || !quantity || !Number.isFinite(Number(item.space)) || Number(item.space) < 0) return false;
-        const existing = projectedInventory.find((entry) => entry.id === item.id);
-        if (existing) existing.count += quantity;
-        else projectedInventory.push({ ...cloneCatalogRecord(item), count: quantity });
-      }
-      const committedInventory = projectedInventory.filter((item) => item.count > 0);
-      const projectedUsedSpace = committedInventory.reduce((sum, item) => sum + item.space * item.count, 0);
-      if (projectedUsedSpace > inventoryCapacityForState(this.$state, committedInventory)) return false;
+      const projectedVehicle = outcome.vehicle ? normalizeVehicle(outcome.vehicle, this.currentNodeId) : null;
+      if (
+        projectedVehicle
+        && storageUsedSpace(this.vehicleInventory) > 0
+        && !(outcome.vehicleOperation === 'refuel' && isSameVehicleRefuel(this.vehicle, projectedVehicle))
+      ) return false;
+      if (projectedVehicle && storageUsedSpace(this.vehicleInventory) > trunkStorageCapacity(projectedVehicle)) return false;
       const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
       const actionDay = this.day;
       const actionTime = this.clockLabel;
@@ -1131,14 +1472,15 @@ export const useGameStore = defineStore('game', {
       const actionEndMinutes = actionStartMinutes + actionDuration;
       const actionEndDay = Math.floor(actionEndMinutes / (24 * 60)) + 1;
       this.inventory = committedInventory;
-      if (this.equippedWeaponId && !this.inventory.some((item) => item.id === this.equippedWeaponId)) this.equippedWeaponId = null;
+      this.nextItemSequence = transaction.nextSequence;
+      this.reconcileEquipment();
       outcome.removeTags?.forEach((tag) => {
         this.hiddenTags = this.hiddenTags.filter((entry) => entry !== tag);
       });
       outcome.addTags?.forEach((tag) => {
         if (tag && !this.hiddenTags.includes(tag)) this.hiddenTags.push(tag);
       });
-      if (outcome.vehicle) this.vehicle = normalizeVehicle(outcome.vehicle);
+      if (projectedVehicle) this.vehicle = projectedVehicle;
       outcome.wounds?.filter(Boolean).forEach((wound) => {
         if (!this.body.wounds.some((entry) => entry.id === wound.id)) this.body.wounds.push({ ...wound });
       });
@@ -1205,6 +1547,14 @@ export const useGameStore = defineStore('game', {
     },
     advanceSimulation({ minutes = 0, mode = 'active', noiseDelta = 0, threatDelta = 0 } = {}) {
       const previousDay = this.day;
+      const elapsedMinutes = Math.max(0, Math.round(Number(minutes) || 0));
+      const poweredRefrigerationMinutes = poweredMinutesForInterval({
+        day: this.day,
+        clockMinutes: this.clockMinutes,
+        elapsedMinutes,
+        world: this.world,
+        base: this.base,
+      });
       const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
       const result = advanceSurvivalState({
         day: this.day,
@@ -1227,6 +1577,13 @@ export const useGameStore = defineStore('game', {
       this.world = result.world;
       this.body = result.body;
       this.base = result.base;
+      this.inventory = advanceInventoryConditionStates(this.inventory, { elapsedMinutes });
+      this.vehicleInventory = advanceInventoryConditionStates(this.vehicleInventory, { elapsedMinutes });
+      this.baseInventory = advanceInventoryConditionStates(this.baseInventory, {
+        elapsedMinutes,
+        refrigerated: true,
+        poweredMinutes: poweredRefrigerationMinutes,
+      });
       if (this.day > previousDay) {
         const migratedCount = this.refreshNodeZombieMigration();
         if (migratedCount > 0) result.notices.push(`尸群迁入了这个地区，附近重新出现约 ${migratedCount} 只游荡者。`);
@@ -1415,15 +1772,53 @@ function uniqueValidNodeIds(ids) {
   return [...new Set((Array.isArray(ids) ? ids : []).filter((id) => valid.has(id)))];
 }
 
-function normalizeVehicle(vehicle) {
-  if (!vehicle || typeof vehicle !== 'object') return { status: 'none', fuel: 0, name: '徒步', condition: 0 };
+function emptyVehicleState() {
+  return { id: null, status: 'none', fuel: 0, name: '徒步', condition: 0, nodeId: null, trunkSpace: 0 };
+}
+
+function normalizeVehicle(vehicle, fallbackNodeId = null) {
+  if (!vehicle || typeof vehicle !== 'object') return emptyVehicleState();
   const status = ['none', 'damaged', 'working'].includes(vehicle.status) ? vehicle.status : 'none';
+  if (status === 'none') return emptyVehicleState();
+  const archetype = vehicleEvents.find((entry) => entry.id === vehicle.id || entry.name === vehicle.name) ?? null;
+  const validNodeIds = new Set(mapNodes.map((node) => node.id));
+  const nodeId = validNodeIds.has(vehicle.nodeId)
+    ? vehicle.nodeId
+    : validNodeIds.has(fallbackNodeId) ? fallbackNodeId : null;
   return {
+    id: archetype?.id ?? (typeof vehicle.id === 'string' && vehicle.id ? vehicle.id.slice(0, 80) : 'survivor_vehicle'),
     status,
     fuel: Math.max(0, Math.min(5, Number.isFinite(vehicle.fuel) ? Math.round(vehicle.fuel) : 0)),
     name: status === 'none' ? '徒步' : vehicle.name || (status === 'working' ? '可用车辆' : '受损车辆'),
     condition: Math.max(0, Math.min(100, Number.isFinite(vehicle.condition) ? Math.round(vehicle.condition) : 0)),
+    nodeId,
+    trunkSpace: clampInteger(vehicle.trunkSpace ?? archetype?.trunkSpace, 1, 200, status === 'working' ? 35 : 25),
   };
+}
+
+function isSameVehicleRefuel(current, projected) {
+  const before = normalizeVehicle(current);
+  const after = normalizeVehicle(projected);
+  return before.status !== 'none'
+    && after.status !== 'none'
+    && before.id === after.id
+    && before.nodeId === after.nodeId
+    && before.name === after.name
+    && before.condition === after.condition
+    && before.trunkSpace === after.trunkSpace
+    && after.fuel >= before.fuel;
+}
+
+function activeTravelVehicleForState(state) {
+  const normalized = vehicleAtCurrentNodeForState(state);
+  if (normalized.status === 'none' || normalized.fuel <= 0) return emptyVehicleState();
+  return normalized;
+}
+
+function vehicleAtCurrentNodeForState(state) {
+  const normalized = normalizeVehicle(state?.vehicle, state?.currentNodeId);
+  if (normalized.status === 'none' || normalized.nodeId !== state?.currentNodeId) return emptyVehicleState();
+  return normalized;
 }
 
 const defaultLootSlotsByQuality = {
@@ -1561,6 +1956,7 @@ function cloneCatalogRecord(record) {
     locations: record.locations ? [...record.locations] : undefined,
     unlocks: record.unlocks ? [...record.unlocks] : undefined,
     effects: record.effects ? { ...record.effects } : undefined,
+    spoilage: record.spoilage ? { ...record.spoilage } : undefined,
     vitalMods: record.vitalMods ? { ...record.vitalMods } : undefined,
     skillMods: record.skillMods ? { ...record.skillMods } : undefined,
   };
@@ -1641,6 +2037,12 @@ function clampSkill(value) {
   return Math.max(0, Math.min(10, Math.round(value)));
 }
 
+function isBeneficialVitalEffect(key, value) {
+  if (['health', 'endurance'].includes(key)) return value > 0;
+  if (['hunger', 'thirst', 'fatigue', 'panic', 'stress'].includes(key)) return value < 0;
+  return false;
+}
+
 function positiveInteger(value) {
   const number = Number(value);
   return Number.isInteger(number) && number > 0 ? number : 0;
@@ -1652,19 +2054,481 @@ function clampInteger(value, min, max, fallback) {
   return Math.max(min, Math.min(max, Math.round(number)));
 }
 
-function normalizeInventory(rawInventory) {
-  const counts = new Map();
-  rawInventory.forEach((entry) => {
-    const catalogItem = marketItems.find((item) => item.id === entry?.id || item.name === entry?.name);
-    if (!catalogItem) return;
-    const count = clampInteger(entry?.count, 0, 999, 0);
-    if (!count) return;
-    counts.set(catalogItem.id, Math.min(999, (counts.get(catalogItem.id) ?? 0) + count));
-  });
-  return [...counts.entries()].map(([id, count]) => ({
-    ...cloneCatalogRecord(marketItems.find((item) => item.id === id)),
-    count,
+function cloneInventory(inventory) {
+  return JSON.parse(JSON.stringify(Array.isArray(inventory) ? inventory : []));
+}
+
+function findInventoryStack(inventory, id, predicate = () => true) {
+  const entries = Array.isArray(inventory) ? inventory : [];
+  return entries.find((entry) => entry.stackId === id && entry.count > 0 && predicate(entry))
+    ?? entries.find((entry) => (entry.id === id || entry.name === id) && entry.count > 0 && predicate(entry))
+    ?? null;
+}
+
+function projectInventoryAddition(inventory, rawItem, count, {
+  acquiredMinutes = 0,
+  sequence = 1,
+  sourceId = 'inventory',
+} = {}) {
+  const quantity = positiveInteger(count);
+  const catalogItem = marketItems.find((item) => item.id === rawItem?.id || item.name === rawItem?.name);
+  if (!catalogItem || !quantity) return { ok: false, inventory: cloneInventory(inventory), nextSequence: sequence };
+  const next = normalizeStorageInventory(cloneInventory(inventory), marketItems, { containerId: STORAGE_CONTAINERS.CARRY });
+  const usedIds = new Set(next.map((item) => item.stackId).filter(Boolean));
+  let nextSequence = clampInteger(sequence, 1, 1_000_000_000, 1);
+  const isWeapon = catalogItem.tags?.includes('weapon');
+  const isIndividualEquipment = isWeapon || catalogItem.tags?.includes('bag');
+
+  if (isIndividualEquipment) {
+    for (let index = 0; index < quantity; index += 1) {
+      const conditionState = rawItem?.conditionState
+        ? normalizeItemConditionState(rawItem.conditionState, catalogItem)
+        : createItemConditionState(catalogItem, {
+          acquiredMinutes,
+          acquisitionSequence: nextSequence,
+          sourceId,
+        });
+      const stackId = uniqueRuntimeStackId(conditionState.stackId, usedIds);
+      next.push({
+        ...cloneCatalogRecord(catalogItem),
+        count: 1,
+        stackId,
+        conditionState: { ...cloneSnapshot(conditionState), instanceId: stackId, stackId },
+        ...(isWeapon ? { repairCount: clampInteger(rawItem?.repairCount, 0, 50, 0) } : {}),
+      });
+      nextSequence += 1;
+    }
+    return { ok: true, inventory: next, nextSequence };
+  }
+
+  const conditionState = rawItem?.conditionState
+    ? normalizeItemConditionState(rawItem.conditionState, catalogItem)
+    : createItemConditionState(catalogItem, {
+      acquiredMinutes,
+      acquisitionSequence: nextSequence,
+      sourceId,
+    });
+  const mergeTarget = next.find((entry) => (
+    entry.id === catalogItem.id
+    && !entry.tags?.includes('weapon')
+    && canMergeItemConditionStates(entry.conditionState, conditionState)
+  ));
+  if (mergeTarget) {
+    mergeTarget.count = Math.min(999_999, mergeTarget.count + quantity);
+  } else {
+    const stackId = uniqueRuntimeStackId(conditionState.stackId, usedIds);
+    next.push({
+      ...cloneCatalogRecord(catalogItem),
+      count: quantity,
+      stackId,
+      conditionState: { ...cloneSnapshot(conditionState), instanceId: stackId, stackId },
+    });
+  }
+  nextSequence = Math.min(1_000_000_000, nextSequence + quantity);
+  return { ok: true, inventory: next, nextSequence };
+}
+
+function projectInventoryRemoval(inventory, id, count) {
+  const quantity = positiveInteger(count);
+  const original = normalizeStorageInventory(cloneInventory(inventory), marketItems, { containerId: STORAGE_CONTAINERS.CARRY });
+  if (!quantity) return { ok: false, inventory: original };
+  const exact = original.find((entry) => entry.stackId === id);
+  const matches = exact
+    ? [exact]
+    : original.filter((entry) => entry.id === id || entry.name === id);
+  if (matches.reduce((sum, entry) => sum + positiveInteger(entry.count), 0) < quantity) {
+    return { ok: false, inventory: original };
+  }
+  let remaining = quantity;
+  for (const entry of matches) {
+    if (remaining <= 0) break;
+    const removed = Math.min(remaining, entry.count);
+    entry.count -= removed;
+    remaining -= removed;
+  }
+  return { ok: true, inventory: original.filter((entry) => entry.count > 0) };
+}
+
+function projectInventoryTransaction(inventory, {
+  consume = [],
+  add = [],
+  acquiredMinutes = 0,
+  sequence = 1,
+  sourceId = 'transaction',
+} = {}) {
+  let projected = normalizeStorageInventory(cloneInventory(inventory), marketItems, { containerId: STORAGE_CONTAINERS.CARRY });
+  let nextSequence = sequence;
+  for (const request of consume) {
+    const removal = projectInventoryRemoval(projected, request?.id, request?.count ?? 1);
+    if (!removal.ok) return { ok: false, inventory: cloneInventory(inventory), nextSequence: sequence };
+    projected = removal.inventory;
+  }
+  for (const request of add) {
+    const addition = projectInventoryAddition(projected, request?.item, request?.count ?? 1, {
+      acquiredMinutes,
+      sequence: nextSequence,
+      sourceId,
+    });
+    if (!addition.ok) return { ok: false, inventory: cloneInventory(inventory), nextSequence: sequence };
+    projected = addition.inventory;
+    nextSequence = addition.nextSequence;
+  }
+  return { ok: true, inventory: projected, nextSequence };
+}
+
+function uniqueRuntimeStackId(rawId, usedIds) {
+  const base = typeof rawId === 'string' && rawId ? rawId : 'item:stack';
+  let candidate = base;
+  let suffix = 2;
+  while (usedIds.has(candidate)) {
+    candidate = `${base}~${suffix}`;
+    suffix += 1;
+  }
+  usedIds.add(candidate);
+  return candidate;
+}
+
+function storageAccessForState(state) {
+  const now = worldMinutesForState(state);
+  const zombieState = state.currentNodeId ? state.nodeZombieStates?.[state.currentNodeId] : null;
+  const secured = Boolean(state.currentNodeId && zombieState && isNodeSecured(zombieState, now));
+  const atHome = secured && state.currentNodeId === state.spawnLocation?.id;
+  const vehicle = normalizeVehicle(state.vehicle, state.currentNodeId);
+  const atTrunk = secured && vehicle.status !== 'none' && vehicle.nodeId === state.currentNodeId;
+  return { carry: true, base: atHome, trunk: atTrunk, secured, vehicle };
+}
+
+function storageContextForState(state) {
+  const access = storageAccessForState(state);
+  return {
+    containers: {
+      carry: Array.isArray(state.inventory) ? state.inventory : [],
+      base: Array.isArray(state.baseInventory) ? state.baseInventory : [],
+      trunk: Array.isArray(state.vehicleInventory) ? state.vehicleInventory : [],
+    },
+    access: { base: access.base, trunk: access.trunk },
+    skills: state.skills,
+    selectedTraits: state.selectedTraits,
+    shelter: state.shelter,
+    vehicle: access.vehicle,
+    equippedBagStackId: state.equippedBagStackId,
+  };
+}
+
+function createTransferQuote(state, request = {}) {
+  const fromId = request.fromId ?? request.from;
+  const toId = request.toId ?? request.to;
+  const stackId = request.stackId;
+  const context = storageContextForState(state);
+  const source = context.containers?.[fromId];
+  const item = Array.isArray(source) ? source.find((entry) => entry.stackId === stackId) : null;
+  if (!item) return transferFailureResult({ reason: 'source_stack_missing' }, 0);
+  if (fromId === STORAGE_CONTAINERS.BASE && item.id === 'generator' && state.base?.generatorOn) {
+    return transferFailureResult({ reason: 'generator_running' }, 0);
+  }
+  if (!context.access[fromId] && fromId !== 'carry') return transferFailureResult({ reason: 'inaccessible_source' }, 0);
+  if (!context.access[toId] && toId !== 'carry') return transferFailureResult({ reason: 'inaccessible_destination' }, 0);
+  if (state.currentNodeId && !storageAccessForState(state).secured) {
+    return { ok: false, committed: false, fromId, toId, stackId, maxQuantity: 0, disabledReason: '遭遇中无法整理容器', reason: 'active_encounter' };
+  }
+
+  let maxQuantity = 0;
+  let limitingFailure = null;
+  for (let quantity = 1; quantity <= Math.min(9999, item.count); quantity += 1) {
+    const preview = previewStorageTransfer(context, { from: fromId, to: toId, stackId, count: quantity });
+    if (!preview.ok) {
+      limitingFailure = preview;
+      break;
+    }
+    maxQuantity = quantity;
+  }
+  const requested = request.quantity ?? request.count ?? maxQuantity;
+  const quantity = positiveInteger(requested);
+  if (!quantity || quantity > maxQuantity) {
+    if (maxQuantity === 0 && limitingFailure) {
+      return {
+        ...transferFailureResult(limitingFailure, 0),
+        fromId,
+        toId,
+        stackId,
+        item,
+        quantity,
+      };
+    }
+    return {
+      ok: false,
+      committed: false,
+      fromId,
+      toId,
+      stackId,
+      item,
+      quantity,
+      maxQuantity,
+      disabledReason: maxQuantity > 0 ? `最多只能转移 ${maxQuantity} 件` : '目标容器没有足够空间',
+      reason: maxQuantity > 0 ? 'insufficient_quantity' : 'destination_over_capacity',
+    };
+  }
+  const result = previewStorageTransfer(context, { from: fromId, to: toId, stackId, count: quantity });
+  if (!result.ok) return transferFailureResult(result, maxQuantity);
+  return { ok: true, committed: false, fromId, toId, stackId, item, quantity, maxQuantity, disabledReason: '', reason: null };
+}
+
+function transferFailureResult(result = {}, maxQuantity = 0) {
+  const messages = {
+    invalid_request: '转移请求无效',
+    invalid_container: '容器不存在',
+    invalid_count: '数量必须是正整数',
+    same_container: '来源和目标不能相同',
+    inaccessible_source: '当前无法接触来源容器',
+    inaccessible_destination: '当前无法接触目标容器',
+    source_stack_missing: '物品已经不在来源容器中',
+    insufficient_quantity: '来源数量不足',
+    destination_over_capacity: '目标容器空间不足',
+    equipped_bag_required: '卸下这个背包后随身物资会超重',
+    generator_running: '先关闭发电机，再移动据点设备',
+  };
+  return {
+    ok: false,
+    committed: false,
+    maxQuantity,
+    disabledReason: messages[result.reason] ?? '无法完成这次转移',
+    reason: result.reason ?? 'invalid_request',
+  };
+}
+
+function transferDurationMinutes(item, quantity) {
+  const effort = Math.max(1, Number(item?.space) || 1) * Math.max(1, quantity);
+  return Math.min(30, 5 + Math.ceil(effort * 1.5));
+}
+
+function storageName(id) {
+  return id === 'base' ? '据点仓储' : id === 'trunk' ? '车辆后备箱' : '随身背包';
+}
+
+function buildStorageContainers(state) {
+  const access = storageAccessForState(state);
+  const definitions = [
+    {
+      id: 'carry',
+      name: '随身背包',
+      items: state.inventory,
+      capacity: carryStorageCapacity({
+        skills: state.skills,
+        selectedTraits: state.selectedTraits,
+        inventory: state.inventory,
+        equippedBagStackId: state.equippedBagStackId,
+      }),
+      accessible: true,
+      accessReason: '',
+      preservationLabel: '常温携带',
+    },
+    {
+      id: 'base',
+      name: '据点仓储',
+      items: state.baseInventory,
+      capacity: baseStorageCapacity(state.shelter),
+      accessible: access.base,
+      accessReason: access.base ? '' : state.currentNodeId !== state.spawnLocation?.id ? '需要返回初始据点' : '先处理据点附近的尸群',
+      preservationLabel: state.world?.powerOn ? '通电冷藏 · 腐败速度 20%' : '断电 · 常温腐败',
+    },
+    {
+      id: 'trunk',
+      name: `${access.vehicle.name === '徒步' ? '车辆' : access.vehicle.name}后备箱`,
+      items: state.vehicleInventory,
+      capacity: trunkStorageCapacity(access.vehicle),
+      accessible: access.trunk,
+      accessReason: access.trunk ? '' : access.vehicle.status === 'none' ? '当前没有车辆' : access.vehicle.nodeId !== state.currentNodeId ? `车辆停在${mapNodes.find((node) => node.id === access.vehicle.nodeId)?.name ?? '其他地区'}` : '先处理车辆附近的尸群',
+      preservationLabel: '后备箱常温',
+    },
+  ];
+  return definitions.map((container) => ({
+    ...container,
+    kind: container.id,
+    usedSpace: storageUsedSpace(container.items),
+    items: (Array.isArray(container.items) ? container.items : []).map((item) => decorateStorageItem(item, state, container.id)),
   }));
+}
+
+function decorateStorageItem(item, state, containerId = 'carry') {
+  const condition = getItemConditionDisplay(item.conditionState);
+  const freshness = item.conditionState?.freshness ? condition : null;
+  const durability = item.conditionState?.condition ? condition : null;
+  const supportsUse = ['food', 'medical', 'morale'].includes(item.category);
+  const supportsEquip = item.tags?.includes('weapon') || item.tags?.includes('bag');
+  return {
+    ...item,
+    freshness: freshness ? { ...freshness, detail: itemConditionDetail(item.conditionState) } : null,
+    condition: durability ? { ...durability, detail: itemConditionDetail(item.conditionState) } : null,
+    canUse: supportsUse && containerId === 'carry' && !(state.currentNodeId && !storageAccessForState(state).secured),
+    useDisabledReason: supportsUse && containerId !== 'carry'
+      ? '先转移到随身背包'
+      : supportsUse && state.currentNodeId && !storageAccessForState(state).secured ? '遭遇中无法使用物品' : '',
+    canEquip: supportsEquip && containerId === 'carry' && !(durability?.disabledReason),
+    equipDisabledReason: containerId !== 'carry' ? '先转移到随身背包' : durability?.disabledReason ?? '',
+    canRepair: Boolean(containerId === 'carry' && durability && item.conditionState.condition.current < item.conditionState.condition.maximum),
+  };
+}
+
+function itemConditionDetail(conditionState) {
+  if (conditionState?.condition) {
+    return `${Math.round(conditionState.condition.current)} / ${Math.round(conditionState.condition.maximum)}`;
+  }
+  const freshness = conditionState?.freshness;
+  if (!freshness?.perishable) return freshness ? '不会自然腐败' : '';
+  if (freshness.state === 'rotten') return '已经腐败，食用会导致疾病';
+  const target = freshness.state === 'fresh' ? freshness.freshForMinutes : freshness.rottenAfterMinutes;
+  const remaining = Math.max(0, target - freshness.spoilageMinutes);
+  return `约 ${formatConditionDuration(remaining)}后${freshness.state === 'fresh' ? '变得不新鲜' : '腐败'}`;
+}
+
+function formatConditionDuration(minutes) {
+  if (minutes >= 24 * 60) return `${Math.ceil(minutes / (24 * 60))} 天`;
+  if (minutes >= 60) return `${Math.ceil(minutes / 60)} 小时`;
+  return `${Math.max(1, Math.ceil(minutes))} 分钟`;
+}
+
+function splitStartingStorage(state) {
+  let containers = {
+    carry: cloneInventory(state.inventory),
+    base: cloneInventory(state.baseInventory),
+    trunk: cloneInventory(state.vehicleInventory),
+  };
+  const bestBag = [...containers.carry]
+    .filter((item) => item.tags?.includes('bag'))
+    .sort((left, right) => (right.effects?.capacity ?? 0) - (left.effects?.capacity ?? 0))[0] ?? null;
+  let equippedBagStackId = bestBag?.stackId ?? null;
+  const context = {
+    containers,
+    access: { base: true, trunk: true },
+    skills: state.skills,
+    selectedTraits: state.selectedTraits,
+    shelter: state.shelter,
+    vehicle: state.vehicle,
+    equippedBagStackId,
+  };
+  let capacity = carryStorageCapacity({ ...context, inventory: containers.carry });
+  let safety = 0;
+  while (storageUsedSpace(containers.carry) > capacity && safety < 1000) {
+    safety += 1;
+    const candidate = [...containers.carry]
+      .filter((item) => item.stackId !== equippedBagStackId)
+      .sort((left, right) => startingCarryPriority(left) - startingCarryPriority(right))[0];
+    if (!candidate) break;
+    const excess = storageUsedSpace(containers.carry) - capacity;
+    const unitSpace = Math.max(0.01, Number(candidate.space) || 1);
+    const quantity = Math.min(candidate.count, Math.max(1, Math.ceil(excess / unitSpace)));
+    const projected = projectStorageTransfer({ ...context, containers, equippedBagStackId }, {
+      from: 'carry',
+      to: 'base',
+      stackId: candidate.stackId,
+      count: quantity,
+    });
+    if (!projected.ok) break;
+    containers = projected.containers;
+    equippedBagStackId = projected.nextEquippedBagStackId;
+    capacity = projected.capacities.carry;
+  }
+  const weapon = containers.carry.find((item) => item.stackId === state.equippedWeaponStackId && !isWeaponBroken(item.conditionState))
+    ?? containers.carry.find((item) => item.id === state.equippedWeaponId && item.tags?.includes('weapon') && !isWeaponBroken(item.conditionState))
+    ?? containers.carry.find((item) => item.tags?.includes('weapon') && !isWeaponBroken(item.conditionState));
+  return {
+    inventory: containers.carry,
+    baseInventory: containers.base,
+    equippedBagStackId,
+    equippedWeaponStackId: weapon?.stackId ?? null,
+    equippedWeaponId: weapon?.id ?? null,
+  };
+}
+
+function startingCarryPriority(item) {
+  if (item.tags?.includes('bag')) return 15;
+  if (item.tags?.includes('weapon')) return 90;
+  if (item.category === 'medical') return 85;
+  if (item.category === 'food' || item.tags?.includes('water')) return 80;
+  if (item.category === 'ammo') return 70;
+  if (item.tags?.includes('tool')) return 55;
+  if (item.tags?.includes('heavy') || item.tags?.includes('generator')) return 5;
+  return 35;
+}
+
+function advanceInventoryConditionStates(inventory, {
+  elapsedMinutes = 0,
+  refrigerated = false,
+  poweredMinutes = 0,
+} = {}) {
+  const elapsed = Math.max(0, Number(elapsedMinutes) || 0);
+  return cloneInventory(inventory).map((item) => {
+    let conditionState = normalizeItemConditionState(item.conditionState ?? item, item);
+    if (!conditionState.freshness || elapsed <= 0) return { ...item, conditionState };
+    if (!refrigerated) {
+      conditionState = advanceFoodSpoilage(conditionState, { elapsedMinutes: elapsed });
+    } else {
+      const powered = Math.max(0, Math.min(elapsed, Number(poweredMinutes) || 0));
+      if (powered > 0) conditionState = advanceFoodSpoilage(conditionState, { elapsedMinutes: powered, refrigerated: true, powerOn: true });
+      if (elapsed > powered) conditionState = advanceFoodSpoilage(conditionState, { elapsedMinutes: elapsed - powered, refrigerated: true, powerOn: false });
+    }
+    return { ...item, conditionState };
+  });
+}
+
+function poweredMinutesForInterval({ day, clockMinutes, elapsedMinutes, world, base }) {
+  const duration = Math.max(0, Math.round(Number(elapsedMinutes) || 0));
+  if (!duration) return 0;
+  let cursor = (Math.max(1, Number(day) || 1) - 1) * 24 * 60 + Math.max(0, Number(clockMinutes) || 0);
+  const end = cursor + duration;
+  let powered = 0;
+  let generatorOn = Boolean(base?.generatorOn && (base?.generatorFuel ?? 0) > 0);
+  let generatorFuel = Math.max(0, Math.round(Number(base?.generatorFuel) || 0));
+  const shutoffDay = Math.max(1, Math.round(Number(world?.powerShutoffDay) || 1));
+  const startingDay = Math.floor(cursor / (24 * 60)) + 1;
+  const gridUnavailableEarly = world?.powerOn === false && startingDay < shutoffDay && !generatorOn;
+  while (cursor < end) {
+    const currentDay = Math.floor(cursor / (24 * 60)) + 1;
+    const nextBoundary = currentDay * 24 * 60;
+    const segmentEnd = Math.min(end, nextBoundary);
+    if ((!gridUnavailableEarly && currentDay < shutoffDay) || (generatorOn && generatorFuel > 0)) powered += segmentEnd - cursor;
+    cursor = segmentEnd;
+    if (cursor === nextBoundary && cursor < end && generatorOn) {
+      generatorFuel = Math.max(0, generatorFuel - 1);
+      if (generatorFuel === 0) generatorOn = false;
+    }
+  }
+  return powered;
+}
+
+function selectCombatInventoryWeapon(inventory, equippedWeaponId, firearm) {
+  const entries = (Array.isArray(inventory) ? inventory : []).filter((item) => (
+    item.count > 0
+    && item.tags?.includes('weapon')
+    && !isWeaponBroken(item.conditionState)
+    && (firearm ? item.tags?.includes('firearm') : !item.tags?.includes('firearm'))
+  ));
+  const withAmmo = firearm
+    ? entries.filter((weapon) => inventory.some((item) => item.id === (weapon.id === 'shotgun' ? 'shotgun_shells' : '9mm_rounds') && item.count > 0))
+    : entries;
+  return withAmmo.find((item) => item.stackId === equippedWeaponId || item.id === equippedWeaponId)
+    ?? [...withAmmo].sort((left, right) => weaponPriority(right.id) - weaponPriority(left.id))[0]
+    ?? null;
+}
+
+function weaponPriority(id) {
+  const priorities = {
+    shotgun: 23,
+    m9_pistol: 16,
+    m36_revolver: 15,
+    fire_axe: 18,
+    machete: 17,
+    crowbar: 14,
+    baseball_bat: 13,
+    hand_axe: 12,
+    crafted_spear: 12,
+    hunting_knife: 10,
+    hammer: 9,
+    pipe_wrench: 9,
+    wrench: 8,
+    kitchen_knife: 7,
+  };
+  return priorities[id] ?? 1;
 }
 
 function normalizeHistory(history) {
@@ -1765,13 +2629,14 @@ function recipeStatus(recipe, state) {
 }
 
 function inventoryCapacityForState(state, inventory = []) {
-  const base = state.shelter?.space ?? 30;
-  const strengthBonus = Math.max(0, (state.skills?.strength ?? 5) - 5) * 3;
-  const bagBonus = Math.max(0, ...inventory.map((item) => item.effects?.capacity ?? 0));
-  const total = base + strengthBonus + bagBonus;
-  if (state.selectedTraits?.some((trait) => trait.id === 'organized')) return Math.floor(total * 1.3);
-  if (state.selectedTraits?.some((trait) => trait.id === 'disorganized')) return Math.floor(total * 0.7);
-  return total;
+  const carryCapacity = carryStorageCapacity({
+    skills: state.skills,
+    selectedTraits: state.selectedTraits,
+    inventory,
+    equippedBagStackId: state.equippedBagStackId,
+  });
+  if (!state.currentNodeId) return Math.max(carryCapacity, baseStorageCapacity(state.shelter));
+  return carryCapacity;
 }
 
 function worldMinutesForState(state) {
@@ -1809,9 +2674,9 @@ function skillGainsForMapAction({ actionId, outcome = {}, inventory = [], equipp
 }
 
 function selectProgressionWeapon(inventory, equippedWeaponId, firearm) {
-  const weapons = inventory.filter((item) => item.count > 0 && item.tags?.includes('weapon'));
+  const weapons = inventory.filter((item) => item.count > 0 && item.tags?.includes('weapon') && !isWeaponBroken(item.conditionState));
   const valid = weapons.filter((item) => firearm ? item.tags?.includes('firearm') : !item.tags?.includes('firearm'));
-  return valid.find((item) => item.id === equippedWeaponId) ?? valid[0] ?? null;
+  return valid.find((item) => item.stackId === equippedWeaponId || item.id === equippedWeaponId) ?? valid[0] ?? null;
 }
 
 function selectTreatmentWound(wounds, item) {
@@ -1835,7 +2700,13 @@ function levelUpSummary(progression) {
 }
 
 function cloneSnapshot(value) {
-  if (globalThis.structuredClone) return globalThis.structuredClone(value);
+  if (globalThis.structuredClone) {
+    try {
+      return globalThis.structuredClone(value);
+    } catch {
+      // Vue/Pinia proxies are JSON-saveable but not structured-cloneable.
+    }
+  }
   return JSON.parse(JSON.stringify(value));
 }
 

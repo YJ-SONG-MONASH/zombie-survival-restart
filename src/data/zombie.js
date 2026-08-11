@@ -1467,6 +1467,7 @@ export const vehicleEvents = [
     status: 'damaged',
     fuel: 1,
     condition: 38,
+    trunkSpace: 25,
     nodeTypes: ['road', 'commercial', 'town', 'spawn_town'],
     description: '方向盘还能动，但引擎抖得厉害，适合短距离逃离。',
   },
@@ -1476,6 +1477,7 @@ export const vehicleEvents = [
     status: 'working',
     fuel: 2,
     condition: 64,
+    trunkSpace: 50,
     nodeTypes: ['industrial', 'checkpoint', 'road'],
     description: '后斗还有工具痕迹，油不多，但足够把路线往前推远一点。',
   },
@@ -1485,6 +1487,7 @@ export const vehicleEvents = [
     status: 'working',
     fuel: 2,
     condition: 58,
+    trunkSpace: 35,
     nodeTypes: ['checkpoint', 'major_city', 'commercial'],
     description: '车门上有弹孔，电台只剩杂音，但还能启动。',
   },
@@ -2815,7 +2818,7 @@ export const shelterConsumableGuarantees = {
 
 export const universalShelterLootPools = {
   drinks: ['water_bottle', 'water_bottle', 'water_bottle', 'water_bottle', 'coffee', 'teabag'],
-  foods: ['canned_soup', 'canned_beans', 'canned_tuna', 'cereal', 'chips', 'peanut_butter'],
+  foods: ['canned_soup', 'canned_beans', 'canned_tuna', 'cereal', 'chips', 'peanut_butter', 'apple', 'cabbage', 'milk', 'fresh_meat', 'bread'],
   essentials: ['bandage', 'adhesive_bandages', 'hammer', 'screwdriver'],
 };
 
@@ -2853,7 +2856,7 @@ export const shelterLootProfiles = {
     guaranteed: [{ itemId: 'plank' }],
     categoryWeights: { food: 4, base: 3, tool: 2, morale: 2, medical: 1 },
     tagBoosts: { carpentry: 3, repair: 3 },
-    itemBoosts: { hammer: 3, duct_tape: 4, wood_glue: 2 },
+    itemBoosts: { hammer: 3, duct_tape: 4, wood_glue: 2, apple: 3, bread: 3 },
   },
   trailer_home: {
     slotCount: 8,
@@ -2885,7 +2888,7 @@ export const shelterLootProfiles = {
     ],
     categoryWeights: { food: 4, medical: 3, bag: 3, base: 3, tool: 2 },
     tagBoosts: { food: 2, capacity: 4, generator: 2 },
-    itemBoosts: { big_hiking_bag: 3, first_aid_kit: 3, generator: 2 },
+    itemBoosts: { big_hiking_bag: 3, first_aid_kit: 3, generator: 2, apple: 4, cabbage: 4, milk: 4, fresh_meat: 3, bread: 4 },
   },
   single_floor_house: {
     slotCount: 10,
@@ -2903,7 +2906,7 @@ export const shelterLootProfiles = {
     guaranteed: [{ itemId: 'hiking_bag' }, { itemId: 'first_aid_kit' }],
     categoryWeights: { food: 5, morale: 4, medical: 3, bag: 3 },
     tagBoosts: { food: 4, trade: 4, morale: 3, capacity: 3 },
-    itemBoosts: { peanut_butter: 4, cigarette: 4, beta_blockers: 3 },
+    itemBoosts: { peanut_butter: 4, cigarette: 4, beta_blockers: 3, apple: 4, milk: 4, bread: 5 },
   },
   small_warehouse: {
     slotCount: 10,
@@ -2931,7 +2934,7 @@ export const shelterLootProfiles = {
     guaranteed: [{ itemId: 'first_aid_kit' }, { itemId: 'hiking_bag' }, { itemId: 'gas_can' }],
     categoryWeights: { food: 5, medical: 4, morale: 4, bag: 3, weapon: 2 },
     tagBoosts: { trade: 5, food: 4, capacity: 3 },
-    itemBoosts: { peanut_butter: 5, antibiotics: 2, machete: 2 },
+    itemBoosts: { peanut_butter: 5, antibiotics: 2, machete: 2, cabbage: 4, milk: 4, fresh_meat: 5, bread: 5 },
   },
   muldraugh_large_warehouse: {
     slotCount: 24,
@@ -3053,8 +3056,13 @@ export const shelterLootProfiles = {
 
 export const marketItems = [
   { id: 'water_bottle', name: '水瓶', canonicalName: 'Water Bottle', category: 'food', tier: 'white', price: 45, space: 1, iconFile: 'water_bottle.png', fallbackIcon: 'WB', effects: { thirst: -30 }, description: '最基础的饮水容器，能稳定压低口渴压力。', tags: ['water', 'fluid_container'] },
-  { id: 'wild_berries', name: '野生浆果', canonicalName: 'Wild Berries', category: 'food', tier: 'white', price: 20, space: 1, iconFile: '', fallbackIcon: 'BR', effects: { hunger: -14, thirst: -2 }, description: '野外找到的小份食物。没有草药学知识时，你只能依靠经验判断。', tags: ['food', 'foraged', 'perishable'] },
-  { id: 'foraged_mushrooms', name: '野生蘑菇', canonicalName: 'Foraged Mushrooms', category: 'food', tier: 'green', price: 35, space: 1, iconFile: '', fallbackIcon: 'MU', effects: { hunger: -18 }, description: '能填肚子，但来历不明的蘑菇从来不是零风险食物。', tags: ['food', 'foraged', 'perishable'] },
+  { id: 'wild_berries', name: '野生浆果', canonicalName: 'Wild Berries', category: 'food', tier: 'white', price: 20, space: 1, iconFile: '', fallbackIcon: 'BR', effects: { hunger: -14, thirst: -2 }, spoilage: { freshForMinutes: 2 * 24 * 60, rottenAfterMinutes: 4 * 24 * 60 }, description: '野外找到的小份食物。没有草药学知识时，你只能依靠经验判断。', tags: ['food', 'foraged', 'perishable'] },
+  { id: 'foraged_mushrooms', name: '野生蘑菇', canonicalName: 'Foraged Mushrooms', category: 'food', tier: 'green', price: 35, space: 1, iconFile: '', fallbackIcon: 'MU', effects: { hunger: -18 }, spoilage: { freshForMinutes: 36 * 60, rottenAfterMinutes: 3 * 24 * 60 }, description: '能填肚子，但来历不明的蘑菇从来不是零风险食物。', tags: ['food', 'foraged', 'perishable'] },
+  { id: 'apple', name: '苹果', canonicalName: 'Apple', category: 'food', tier: 'white', price: 30, space: 1, iconFile: '', fallbackIcon: 'AP', effects: { hunger: -12, thirst: -5, stress: -1 }, spoilage: { freshForMinutes: 5 * 24 * 60, rottenAfterMinutes: 10 * 24 * 60 }, description: '常见水果，前几天是轻便补给，放得太久就只剩招苍蝇的甜味。', tags: ['food', 'perishable'] },
+  { id: 'cabbage', name: '卷心菜', canonicalName: 'Cabbage', category: 'food', tier: 'green', price: 45, space: 2, iconFile: '', fallbackIcon: 'CA', effects: { hunger: -22, thirst: -8 }, spoilage: { freshForMinutes: 3 * 24 * 60, rottenAfterMinutes: 7 * 24 * 60 }, description: '分量扎实的蔬菜，适合短期储备，但常温下撑不过太久。', tags: ['food', 'perishable'] },
+  { id: 'milk', name: '牛奶', canonicalName: 'Milk', category: 'food', tier: 'green', price: 70, space: 1, iconFile: '', fallbackIcon: 'MI', effects: { hunger: -10, thirst: -18, stress: -1 }, spoilage: { freshForMinutes: 2 * 24 * 60, rottenAfterMinutes: 5 * 24 * 60 }, description: '停电前很珍贵，停电后很快就会变成必须处理的麻烦。', tags: ['food', 'perishable'] },
+  { id: 'fresh_meat', name: '鲜肉', canonicalName: 'Fresh Meat', category: 'food', tier: 'blue', price: 130, space: 2, iconFile: '', fallbackIcon: 'ME', effects: { hunger: -30, health: -5, stress: 3 }, spoilage: { freshForMinutes: 1 * 24 * 60, rottenAfterMinutes: 3 * 24 * 60 }, description: '高热量但极易腐败；没有烹饪条件就直接下肚，会付出健康代价。', tags: ['food', 'perishable'] },
+  { id: 'bread', name: '面包', canonicalName: 'Bread', category: 'food', tier: 'white', price: 55, space: 1, iconFile: '', fallbackIcon: 'BD', effects: { hunger: -24, thirst: 3, stress: -2 }, spoilage: { freshForMinutes: 4 * 24 * 60, rottenAfterMinutes: 8 * 24 * 60 }, description: '安静方便的主食，干硬之后仍能填肚子，发霉后就不再值得冒险。', tags: ['food', 'perishable'] },
   { id: 'canned_soup', name: '罐装汤', canonicalName: 'Canned Soup', category: 'food', tier: 'white', price: 55, space: 1, iconFile: 'canned_soup.png', fallbackIcon: 'SO', effects: { hunger: -20, stress: -2 }, description: '开罐即食，热一下更能撑住情绪。', tags: ['food', 'canned'] },
   { id: 'canned_beans', name: '罐装豆子', canonicalName: 'Canned Beans', category: 'food', tier: 'white', price: 55, space: 1, iconFile: 'canned_beans.png', fallbackIcon: 'BE', effects: { hunger: -20 }, description: '便宜可靠的罐头，适合堆在安全屋角落。', tags: ['food', 'canned'] },
   { id: 'canned_tuna', name: '金枪鱼罐头', canonicalName: 'Canned Tuna', category: 'food', tier: 'white', price: 65, space: 1, iconFile: 'canned_tuna.png', fallbackIcon: 'TU', effects: { hunger: -22 }, description: '小而扎实，长线生存时很省空间。', tags: ['food', 'canned'] },

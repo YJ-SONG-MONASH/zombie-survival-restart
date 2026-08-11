@@ -417,6 +417,7 @@ export function resolveNodeAction({
       addTags,
       removeTags,
       vehicle: vehicleOutcome.vehicle,
+      vehicleOperation: vehicleOutcome.vehicleOperation,
       minutes: durationForAction('vehicle'),
       mode: 'active',
       noiseDelta: 16,
@@ -553,6 +554,7 @@ function mapOutcome({
   removeTags,
   scoutDepth = 0,
   vehicle = null,
+  vehicleOperation = null,
   highlight = null,
   minutes = 120,
   mode = 'active',
@@ -575,6 +577,7 @@ function mapOutcome({
     scoutDepth,
     revealNodeIds: [],
     vehicle,
+    vehicleOperation,
     highlight,
     minutes,
     mode,
@@ -676,6 +679,7 @@ function resolveVehicleSearch({ node, day, inventory, traits, skills, profession
       consume,
       vitalDelta: { ...vitalDelta, stress: -2, fatigue: -4 },
       vehicle: { ...vehicle, fuel: Math.min(5, (vehicle.fuel ?? 0) + 2), status: 'working' },
+      vehicleOperation: 'refuel',
     };
   }
 
@@ -690,11 +694,15 @@ function resolveVehicleSearch({ node, day, inventory, traits, skills, profession
       consume,
       vitalDelta: { ...vitalDelta, fatigue: Math.max(0, vitalDelta.fatigue - 3), stress: Math.max(-6, vitalDelta.stress - 5) },
       vehicle: {
+        id: event.id,
         status: event.status,
         fuel: Math.max(1, event.fuel + fuelBonus),
         name: event.name,
         condition: event.condition,
+        nodeId: node.id,
+        trunkSpace: event.trunkSpace,
       },
+      vehicleOperation: 'replace',
     };
   }
 
@@ -706,6 +714,7 @@ function resolveVehicleSearch({ node, day, inventory, traits, skills, profession
     consume,
     vitalDelta: { ...vitalDelta, health: vitalDelta.health - (score < 35 ? 5 : 0), panic: vitalDelta.panic + 4 },
     vehicle: null,
+    vehicleOperation: null,
     addTag: score < 35 ? '精神紧绷' : null,
   };
 }
@@ -732,14 +741,14 @@ function nodeLoot({ node, day, skills, traits, inventory }) {
 function nodeLootPool(node) {
   const common = ['water_bottle', 'canned_beans', 'chips', 'bandage'];
   const pools = {
-    spawn_town: ['water_bottle', 'canned_soup', 'canned_tuna', 'cereal', 'bandage', 'hammer', 'screwdriver', 'duffel_bag'],
-    town: ['water_bottle', 'canned_beans', 'cereal', 'peanut_butter', 'trowel', 'cabbage_seeds', 'hammer', 'bandage'],
+    spawn_town: ['water_bottle', 'canned_soup', 'canned_tuna', 'cereal', 'apple', 'bread', 'milk', 'bandage', 'hammer', 'screwdriver', 'duffel_bag'],
+    town: ['water_bottle', 'canned_beans', 'cereal', 'peanut_butter', 'apple', 'cabbage', 'bread', 'trowel', 'cabbage_seeds', 'hammer', 'bandage'],
     road: ['water_bottle', 'chips', 'gas_can', 'wrench', 'lug_wrench', 'jack', 'duffel_bag'],
-    commercial: ['canned_soup', 'canned_beans', 'canned_tuna', 'coffee', 'teabag', 'painkillers', 'beta_blockers', 'baseball_bat'],
+    commercial: ['canned_soup', 'canned_beans', 'canned_tuna', 'apple', 'milk', 'fresh_meat', 'bread', 'coffee', 'teabag', 'painkillers', 'beta_blockers', 'baseball_bat'],
     industrial: ['hammer', 'saw', 'screwdriver', 'wrench', 'pipe_wrench', 'nails', 'duct_tape', 'propane_torch', 'gas_can'],
     wilds: ['water_bottle', 'chips', 'fishing_tackle', 'trowel', 'cabbage_seeds', 'crafted_spear', 'bandage'],
     checkpoint: ['first_aid_kit', 'painkillers', '9mm_rounds', 'shotgun_shells', 'm9_pistol', 'gas_can', 'wrench'],
-    major_city: ['canned_tuna', 'peanut_butter', 'antibiotics', 'first_aid_kit', 'hiking_bag', 'machete', '9mm_rounds'],
+    major_city: ['canned_tuna', 'peanut_butter', 'milk', 'fresh_meat', 'bread', 'antibiotics', 'first_aid_kit', 'hiking_bag', 'machete', '9mm_rounds'],
   };
   return pools[node.type] ?? common;
 }
@@ -884,7 +893,7 @@ function scoreProfile({ action, event, inventory, option, profession, shelter, v
 
 function bestCombatSkill(skills, inventory) {
   const weaponSkills = inventory
-    .filter((item) => item.tags?.includes('weapon'))
+    .filter((item) => item.tags?.includes('weapon') && !item.conditionState?.condition?.broken)
     .map((item) => item.effects?.skill)
     .filter(Boolean);
   if (!weaponSkills.length) return Math.max(skills.strength ?? 5, skills.fitness ?? 5) / 2;

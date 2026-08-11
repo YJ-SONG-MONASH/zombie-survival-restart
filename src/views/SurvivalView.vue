@@ -131,13 +131,20 @@
 
       <nav class="map-drawer-tabs" aria-label="地图侧栏">
         <button :class="{ active: activeDrawer === 'location' }" @click="toggleDrawer('location')">地点</button>
-        <button :class="{ active: activeDrawer === 'inventory' }" @click="toggleDrawer('inventory')">背包</button>
+        <button
+          :class="['storage-drawer-tab', { active: activeDrawer === 'inventory' }]"
+          :aria-label="game.storageWarningCount ? `物资，${game.storageWarningCount} 项腐败或损坏警告` : '物资'"
+          @click="toggleDrawer('inventory')"
+        >
+          物资
+          <b v-if="game.storageWarningCount" class="storage-warning-badge" aria-hidden="true">{{ Math.min(99, game.storageWarningCount) }}</b>
+        </button>
         <button :class="{ active: activeDrawer === 'survival' }" @click="toggleDrawer('survival')">生存</button>
         <button :class="{ active: activeDrawer === 'skills' }" @click="toggleDrawer('skills')">技能</button>
         <button :class="{ active: activeDrawer === 'log' }" @click="toggleDrawer('log')">记录</button>
       </nav>
 
-      <aside v-if="activeDrawer" class="map-side-drawer">
+      <aside v-if="activeDrawer" :class="['map-side-drawer', { 'inventory-storage-drawer': activeDrawer === 'inventory' }]">
         <header class="drawer-header">
           <div>
             <p class="panel-kicker">{{ drawerTitle.kicker }}</p>
@@ -336,47 +343,205 @@
           </template>
         </section>
 
-        <section v-else-if="activeDrawer === 'inventory'" class="drawer-section">
+        <section v-else-if="activeDrawer === 'inventory'" class="drawer-section inventory-storage-section">
           <div class="vehicle-strip drawer-vehicle-strip">
             <span>交通：{{ vehicleLabel }}</span>
             <span>燃料 {{ game.vehicle?.fuel ?? 0 }}</span>
             <span>状态 {{ vehicleStatusLabel }}</span>
           </div>
-          <div class="inventory-capacity-heading">
-            <h3>背包</h3>
-            <strong>{{ game.usedSpace }} / {{ game.maxSpace }} 格</strong>
+
+          <div class="storage-equipment-strip">
+            <span>主手 <strong>{{ game.equippedWeapon?.name ?? '徒手' }}</strong></span>
+            <span>背包 <strong>{{ game.equippedBag?.name ?? '无' }}</strong></span>
+            <span v-if="game.storageWarningCount" class="danger">{{ game.storageWarningCount }} 项物资需要处理</span>
           </div>
-          <progress class="inventory-capacity-meter" :value="game.usedSpace" :max="Math.max(1, game.maxSpace)"></progress>
-          <p class="equipped-weapon-line">
-            主手：<strong>{{ game.equippedWeapon?.name ?? '徒手' }}</strong>
-          </p>
-          <p v-if="encounterActive" class="drawer-encounter-warning">遭遇中只能更换武器；先清场或成功绕行再使用物品。</p>
-          <p v-if="game.inventory.length === 0">空空如也</p>
-          <ul v-else class="map-inventory-list">
-            <li v-for="item in game.inventory" :key="item.id" :class="{ equipped: game.equippedWeapon?.id === item.id }">
-              <div class="inventory-item-main">
-                <span class="item-icon inventory-icon" aria-hidden="true">
-                  <img :src="itemIconSrc(item)" :alt="item.name" @error="markInventoryIconMissing" />
-                  <span></span>
-                </span>
-                <span>
-                  <strong>{{ item.name }} x{{ item.count }}</strong>
-                  <small>{{ item.space }} 格/件 · {{ item.description }}</small>
-                </span>
-              </div>
-              <div v-if="canUseInventoryItem(item) || isWeapon(item)" class="inventory-item-actions">
-                <button v-if="canUseInventoryItem(item)" class="secondary" :disabled="encounterActive" @click="useInventoryItem(item)">使用</button>
-                <button v-if="isWeapon(item)" class="secondary" @click="toggleWeapon(item)">
-                  {{ game.equippedWeapon?.id === item.id ? '卸下' : '装备' }}
-                </button>
-              </div>
-            </li>
-          </ul>
-          <h3>状态</h3>
-          <p v-if="game.hiddenTags.length === 0">暂无特殊状态</p>
-          <div v-else class="tag-list drawer-tag-list">
-            <span v-for="tag in game.hiddenTags" :key="tag">{{ tag }}</span>
+
+          <p v-if="encounterActive" class="drawer-encounter-warning">遭遇中只能更换随身武器；清场或成功绕行后才能使用、维修和转移物资。</p>
+
+          <nav class="storage-container-selector" aria-label="选择地点容器">
+            <button
+              v-for="container in externalStorageContainers"
+              :key="container.id"
+              :class="[{ active: selectedExternalContainer?.id === container.id, blocked: !container.accessible }]"
+              :aria-pressed="selectedExternalContainer?.id === container.id"
+              @click="selectExternalStorageContainer(container.id)"
+            >
+              <strong>{{ container.name }}</strong>
+              <span>{{ formatStorageSpace(container) }}</span>
+              <small>{{ container.accessible ? container.preservationLabel : container.accessReason }}</small>
+            </button>
+          </nav>
+
+          <div class="storage-route-bar" aria-label="当前转移路线">
+            <button
+              :class="['storage-route-button', { active: activeStoragePaneId === 'carry' }]"
+              :aria-pressed="activeStoragePaneId === 'carry'"
+              @click="activateStoragePane('carry')"
+            >
+              <small>随身</small>
+              <strong>{{ carryStorageContainer?.name ?? '随身背包' }}</strong>
+              <span>{{ formatStorageSpace(carryStorageContainer) }}</span>
+            </button>
+            <b class="storage-route-arrow" aria-hidden="true">⇄</b>
+            <button
+              :class="['storage-route-button', { active: activeStoragePaneId === selectedExternalContainer?.id, blocked: !selectedExternalContainer?.accessible }]"
+              :aria-pressed="activeStoragePaneId === selectedExternalContainer?.id"
+              @click="activateStoragePane(selectedExternalContainer?.id)"
+            >
+              <small>当前容器</small>
+              <strong>{{ selectedExternalContainer?.name ?? '没有容器' }}</strong>
+              <span>{{ formatStorageSpace(selectedExternalContainer) }}</span>
+            </button>
           </div>
+
+          <p v-if="storageActionFeedback" class="storage-action-feedback" role="status" aria-live="polite">{{ storageActionFeedback }}</p>
+
+          <div class="storage-workspace">
+            <article
+              v-for="container in visibleStoragePanes"
+              :key="container.id"
+              :class="[
+                'storage-pane',
+                `storage-pane-${container.id}`,
+                { 'mobile-active': activeStoragePaneId === container.id, inaccessible: !container.accessible },
+              ]"
+            >
+              <header class="storage-pane-header">
+                <div>
+                  <small>{{ container.id === 'carry' ? 'PLAYER INVENTORY' : 'WORLD CONTAINER' }}</small>
+                  <h3>{{ container.name }}</h3>
+                </div>
+                <strong :class="storageCapacityTone(container)">{{ formatStorageSpace(container) }}</strong>
+              </header>
+              <progress
+                class="inventory-capacity-meter"
+                :class="storageCapacityTone(container)"
+                :value="container.usedSpace"
+                :max="Math.max(1, container.capacity)"
+                :aria-label="`${container.name}容量 ${formatStorageSpace(container)}`"
+              ></progress>
+              <p class="storage-preservation-line">{{ container.preservationLabel }}</p>
+
+              <p v-if="!container.accessible" class="storage-access-warning">
+                <b>当前不可访问</b>
+                <span>{{ container.accessReason || '需要先满足容器访问条件' }}</span>
+              </p>
+              <p v-else-if="!container.items.length" class="storage-empty-state">这个容器是空的。</p>
+              <ul v-else class="map-inventory-list storage-item-list">
+                <li
+                  v-for="item in container.items"
+                  :key="item.stackId"
+                  :class="[
+                    { equipped: isStorageItemEquipped(item), selected: isStorageItemSelected(container, item) },
+                    itemConditionDisplay(item) ? `tone-${itemConditionDisplay(item).tone}` : '',
+                  ]"
+                >
+                  <button
+                    class="storage-item-select"
+                    :aria-pressed="isStorageItemSelected(container, item)"
+                    @click="selectStorageItem(container, item)"
+                  >
+                    <span class="item-icon inventory-icon" aria-hidden="true">
+                      <img :src="itemIconSrc(item)" :alt="item.name" @error="markInventoryIconMissing" />
+                      <span></span>
+                    </span>
+                    <span class="storage-item-copy">
+                      <span class="storage-item-title">
+                        <strong>{{ item.name }}</strong>
+                        <b>x{{ item.count }}</b>
+                      </span>
+                      <small>{{ item.space }} 格/件 · {{ itemCategoryLabel(item) }}</small>
+                      <span v-if="itemConditionDisplay(item)" :class="['item-condition-strip', `tone-${itemConditionDisplay(item).tone}`]">
+                        <span><b>{{ itemConditionDisplay(item).label }}</b><small>{{ itemConditionDisplay(item).detail }}</small></span>
+                        <progress
+                          v-if="Number.isFinite(itemConditionDisplay(item).percent)"
+                          :value="itemConditionDisplay(item).percent"
+                          max="100"
+                          :aria-label="`${item.name}${itemConditionDisplay(item).label} ${itemConditionDisplay(item).percent}%`"
+                        ></progress>
+                      </span>
+                    </span>
+                  </button>
+
+                  <div class="storage-item-actions">
+                    <button
+                      v-if="supportsItemUse(item)"
+                      class="secondary"
+                      :disabled="!item.canUse"
+                      @click="useStorageItem(item)"
+                    >{{ itemUseLabel(item) }}</button>
+                    <button
+                      v-if="isWeapon(item) || isBag(item)"
+                      class="secondary"
+                      :disabled="!canEquipStorageItem(item)"
+                      @click="toggleStorageEquipment(item)"
+                    >{{ itemEquipLabel(item) }}</button>
+                    <button
+                      v-if="isWeapon(item) && item.condition"
+                      class="secondary"
+                      :disabled="Boolean(itemRepairDisabledReason(item, container))"
+                      @click="toggleRepairPicker(item)"
+                    >{{ repairStackId === item.stackId ? '收起维修' : '维修' }}</button>
+                  </div>
+
+                  <div v-if="repairStackId === item.stackId" class="repair-material-picker">
+                    <span>选择维修材料</span>
+                    <button
+                      v-for="material in repairMaterials"
+                      :key="material.id"
+                      class="secondary"
+                      :disabled="Boolean(itemRepairDisabledReason(item, container)) || material.count < 1"
+                      @click="repairStorageWeapon(item, material.id)"
+                    >{{ material.name }} ×{{ material.count }}</button>
+                  </div>
+
+                  <ul v-if="storageItemDisabledReasons(item, container).length" class="storage-disabled-reasons">
+                    <li v-for="reason in storageItemDisabledReasons(item, container)" :key="reason">{{ reason }}</li>
+                  </ul>
+                </li>
+              </ul>
+            </article>
+          </div>
+
+          <section v-if="selectedStorageItem && selectedStorageSource && transferDestination" class="storage-transfer-tray">
+            <header>
+              <span>
+                <small>SELECTED STACK</small>
+                <strong>{{ selectedStorageItem.name }} ×{{ selectedStorageItem.count }}</strong>
+              </span>
+              <button class="storage-selection-close" aria-label="取消选择物资" @click="clearStorageSelection">×</button>
+            </header>
+            <p>{{ selectedStorageSource.name }} → {{ transferDestination.name }}</p>
+            <div class="storage-transfer-controls">
+              <div class="transfer-stepper" aria-label="转移数量">
+                <button :disabled="normalizedTransferQuantity <= 1" aria-label="减少转移数量" @click="adjustTransferQuantity(-1)">−</button>
+                <input
+                  v-model.number="transferQuantity"
+                  type="number"
+                  inputmode="numeric"
+                  min="1"
+                  :max="Math.max(1, transferMaxQuantity)"
+                  aria-label="转移数量"
+                  @change="clampTransferQuantity"
+                />
+                <button :disabled="normalizedTransferQuantity >= Math.max(1, transferMaxQuantity)" aria-label="增加转移数量" @click="adjustTransferQuantity(1)">+</button>
+                <button :disabled="transferMaxQuantity < 1" @click="setMaximumTransferQuantity">最多 {{ transferMaxQuantity }}</button>
+              </div>
+              <button class="primary-action storage-transfer-button" :disabled="Boolean(transferDisabledReason)" @click="commitStorageTransfer">
+                {{ transferActionLabel }} ×{{ normalizedTransferQuantity }}
+              </button>
+            </div>
+            <small v-if="transferDisabledReason" class="storage-transfer-reason">{{ transferDisabledReason }}</small>
+            <small v-else>最多可转移 {{ transferMaxQuantity }} 件；整理会消耗少量时间。</small>
+          </section>
+
+          <section class="storage-special-status">
+            <h3>角色状态</h3>
+            <p v-if="game.hiddenTags.length === 0">暂无特殊状态</p>
+            <div v-else class="tag-list drawer-tag-list">
+              <span v-for="tag in game.hiddenTags" :key="tag">{{ tag }}</span>
+            </div>
+          </section>
         </section>
 
         <section v-else-if="activeDrawer === 'survival'" class="drawer-section survival-drawer-section">
@@ -723,6 +888,13 @@ const selectedSearchTarget = ref(null);
 const sceneInspectFeedback = ref('');
 const locationSearch = ref(null);
 const resolutionReport = ref(null);
+const selectedExternalContainerId = ref('base');
+const activeStoragePaneId = ref('carry');
+const selectedStorageContainerId = ref('');
+const selectedStorageStackId = ref('');
+const transferQuantity = ref(1);
+const storageActionFeedback = ref('');
+const repairStackId = ref('');
 const searchSlotCountByQuality = {
   white: 4,
   green: 5,
@@ -945,15 +1117,60 @@ const evacuationStatus = computed(() => {
   }
   return '撤离窗口已经关闭';
 });
+const storageContainersForDisplay = computed(() => Array.isArray(game.storageContainers)
+  ? game.storageContainers.filter((container) => container?.id)
+  : []);
+const carryStorageContainer = computed(() => storageContainersForDisplay.value.find((container) => container.id === 'carry') ?? null);
+const externalStorageContainers = computed(() => storageContainersForDisplay.value.filter((container) => container.id !== 'carry'));
+const selectedExternalContainer = computed(() => externalStorageContainers.value.find((container) => container.id === selectedExternalContainerId.value)
+  ?? externalStorageContainers.value.find((container) => container.accessible)
+  ?? externalStorageContainers.value[0]
+  ?? null);
+const visibleStoragePanes = computed(() => [carryStorageContainer.value, selectedExternalContainer.value]
+  .filter((container, index, entries) => container && entries.findIndex((entry) => entry.id === container.id) === index));
+const selectedStorageSource = computed(() => storageContainersForDisplay.value.find((container) => container.id === selectedStorageContainerId.value) ?? null);
+const selectedStorageItem = computed(() => selectedStorageSource.value?.items?.find((item) => item.stackId === selectedStorageStackId.value) ?? null);
+const transferDestination = computed(() => {
+  if (!selectedStorageSource.value) return null;
+  return selectedStorageSource.value.id === 'carry' ? selectedExternalContainer.value : carryStorageContainer.value;
+});
+const normalizedTransferQuantity = computed(() => Math.max(1, Math.round(Number(transferQuantity.value) || 1)));
+const transferQuote = computed(() => {
+  if (!selectedStorageItem.value || !selectedStorageSource.value || !transferDestination.value) {
+    return { ok: false, maxQuantity: 0, disabledReason: '先选择要转移的物资' };
+  }
+  return game.previewTransfer({
+    fromId: selectedStorageSource.value.id,
+    toId: transferDestination.value.id,
+    stackId: selectedStorageItem.value.stackId,
+    quantity: normalizedTransferQuantity.value,
+  });
+});
+const transferMaxQuantity = computed(() => Math.max(0, Number(transferQuote.value?.maxQuantity) || 0));
+const transferDisabledReason = computed(() => {
+  if (game.isGameOver) return '本局已经结束';
+  if (!selectedStorageSource.value?.accessible) return selectedStorageSource.value?.accessReason || '当前无法接触来源容器';
+  if (!transferDestination.value?.accessible) return transferDestination.value?.accessReason || '当前无法接触目标容器';
+  return transferQuote.value?.ok ? '' : transferQuote.value?.disabledReason || '无法完成这次转移';
+});
+const transferActionLabel = computed(() => selectedStorageSource.value?.id === 'carry' ? '存入' : '取出');
+const repairMaterials = computed(() => ['duct_tape', 'wood_glue'].map((id) => {
+  const item = carryStorageContainer.value?.items?.find((entry) => entry.id === id);
+  return { id, name: item?.name ?? (id === 'duct_tape' ? '胶带' : '木工胶'), count: item?.count ?? 0 };
+}));
 const generatorDisabledReason = computed(() => {
   if (game.isGameOver) return '本局已经结束';
   if (encounterActive.value) return '遭遇中无法操作基地设备';
   if (!game.isAtHome) return '需要返回初始据点';
-  if (!game.inventory.some((item) => item.id === 'generator' && item.count > 0)) return '背包中没有发电机';
-  const knowsGenerator = game.inventory.some((item) => item.id === 'how_to_use_generators' && item.count > 0)
+  if (game.base?.generatorOn) return '';
+  const homeItems = [...game.inventory, ...(Array.isArray(game.baseInventory) ? game.baseInventory : [])];
+  if (!game.baseInventory.some((item) => item.id === 'generator' && item.count > 0)) {
+    return '先把发电机存入据点仓储并完成安装';
+  }
+  const knowsGenerator = homeItems.some((item) => item.id === 'how_to_use_generators' && item.count > 0)
     || (game.skills.electrical ?? 0) >= 3;
   if (!knowsGenerator) return '需要《如何使用发电机》或电工 3';
-  if (!game.base?.generatorOn && (game.base?.generatorFuel ?? 0) <= 0 && !game.inventory.some((item) => item.id === 'gas_can' && item.count > 0)) {
+  if (!game.base?.generatorOn && (game.base?.generatorFuel ?? 0) <= 0 && !homeItems.some((item) => item.id === 'gas_can' && item.count > 0)) {
     return '需要一桶汽油';
   }
   return '';
@@ -966,14 +1183,19 @@ const baseWaterDisabledReason = computed(() => {
   return '';
 });
 const recentMapLog = computed(() => game.mapLog.slice(0, 5));
-const vehicleLabel = computed(() => game.vehicle?.name ?? '徒步');
+const vehicleIsElsewhere = computed(() => Boolean(game.vehicle?.status !== 'none' && game.vehicle?.nodeId && game.vehicle.nodeId !== game.currentNodeId));
+const vehicleLabel = computed(() => {
+  const name = game.vehicle?.name ?? '徒步';
+  return vehicleIsElsewhere.value ? `${name}（停在其他地区）` : name;
+});
 const vehicleStatusLabel = computed(() => {
+  if (vehicleIsElsewhere.value) return '停在其他地区';
   if (game.vehicle?.status === 'working') return '可用';
   if (game.vehicle?.status === 'damaged') return '受损';
   return '无车';
 });
 const drawerTitle = computed(() => {
-  if (activeDrawer.value === 'inventory') return { kicker: 'BAG / STATUS', title: '背包与状态' };
+  if (activeDrawer.value === 'inventory') return { kicker: 'MATERIALS / STORAGE', title: '物资与仓储' };
   if (activeDrawer.value === 'survival') return { kicker: 'SURVIVAL / BODY / BASE', title: '生存管理' };
   if (activeDrawer.value === 'skills') return { kicker: 'SKILLS / TRAITS', title: '技能与特性' };
   if (activeDrawer.value === 'log') return { kicker: 'MAP LOG', title: '记录' };
@@ -1011,6 +1233,18 @@ watch(
     selectedSceneElement.value = null;
     selectedSearchTarget.value = null;
     sceneInspectFeedback.value = '';
+  }
+);
+
+watch(
+  () => game.currentNodeId,
+  () => {
+    clearStorageSelection();
+    storageActionFeedback.value = '';
+    const preferred = externalStorageContainers.value.find((container) => container.accessible)
+      ?? externalStorageContainers.value[0];
+    if (preferred) selectedExternalContainerId.value = preferred.id;
+    activeStoragePaneId.value = 'carry';
   }
 );
 
@@ -1082,7 +1316,7 @@ function runNodeAction(actionId) {
   showResolutionReport(before);
 }
 
-function canUseInventoryItem(item) {
+function supportsItemUse(item) {
   return ['food', 'medical', 'morale'].includes(item?.category);
 }
 
@@ -1090,17 +1324,216 @@ function isWeapon(item) {
   return Boolean(item?.tags?.includes('weapon'));
 }
 
-function useInventoryItem(item) {
+function isBag(item) {
+  return Boolean(item?.tags?.includes('bag'));
+}
+
+function formatStorageSpace(container) {
+  if (!container) return '—';
+  return `${formatNumber(container.usedSpace ?? 0)} / ${formatNumber(container.capacity ?? 0)} 格`;
+}
+
+function storageCapacityTone(container) {
+  const capacity = Math.max(0, Number(container?.capacity) || 0);
+  const used = Math.max(0, Number(container?.usedSpace) || 0);
+  if (capacity <= 0) return used > 0 ? 'danger' : 'neutral';
+  if (used >= capacity) return 'danger';
+  if (used / capacity >= 0.85) return 'warn';
+  return 'normal';
+}
+
+function itemConditionDisplay(item) {
+  return item?.condition ?? item?.freshness ?? null;
+}
+
+function itemCategoryLabel(item) {
+  const labels = {
+    food: '食物与饮水',
+    medical: '医疗',
+    morale: '精神用品',
+    weapon: '武器',
+    ammo: '弹药',
+    tool: '工具',
+    base: '基地物资',
+    bag: '背包',
+    survival: '生存工具',
+    vehicle: '车辆物资',
+  };
+  return labels[item?.category] ?? '杂物';
+}
+
+function isStorageItemEquipped(item) {
+  if (isWeapon(item)) return item.stackId === game.equippedWeaponStackId;
+  if (isBag(item)) return item.stackId === game.equippedBagStackId;
+  return false;
+}
+
+function isStorageItemSelected(container, item) {
+  return selectedStorageContainerId.value === container?.id && selectedStorageStackId.value === item?.stackId;
+}
+
+function itemUseLabel(item) {
+  if (item?.freshness?.tone === 'danger') return '冒险食用';
+  if (item?.tags?.includes('water')) return '饮用';
+  return item?.category === 'food' ? '食用' : '使用';
+}
+
+function itemEquipLabel(item) {
+  if (isBag(item)) return item.stackId === game.equippedBagStackId ? '卸下背包' : '装备背包';
+  return item.stackId === game.equippedWeaponStackId ? '卸下' : '装备';
+}
+
+function canEquipStorageItem(item) {
+  return Boolean(item?.canEquip && !(isBag(item) && encounterActive.value));
+}
+
+function itemEquipDisabledReason(item) {
+  if (isBag(item) && encounterActive.value) return '遭遇中只能更换随身武器';
+  return item?.equipDisabledReason || '当前无法装备';
+}
+
+function itemRepairDisabledReason(item, container) {
+  if (!isWeapon(item) || !item?.condition) return '';
+  if (container?.id !== 'carry') return '先转移到随身背包';
+  if (game.isGameOver) return '本局已经结束';
+  if (encounterActive.value) return '遭遇中无法维修';
+  if (!item.canRepair) {
+    if ((Number(item.condition.percent) || 0) >= 100) return '耐久已经完好';
+    return '当前无法维修这件武器';
+  }
+  if (!repairMaterials.value.some((material) => material.count > 0)) return '缺少胶带或木工胶';
+  return '';
+}
+
+function storageItemDisabledReasons(item, container) {
+  const reasons = [];
+  if (supportsItemUse(item) && !item.canUse) reasons.push(`使用：${item.useDisabledReason || '当前无法使用'}`);
+  if ((isWeapon(item) || isBag(item)) && !canEquipStorageItem(item)) reasons.push(`装备：${itemEquipDisabledReason(item)}`);
+  const repairReason = itemRepairDisabledReason(item, container);
+  if (repairReason) reasons.push(`维修：${repairReason}`);
+  return [...new Set(reasons)];
+}
+
+function selectExternalStorageContainer(containerId) {
+  const container = externalStorageContainers.value.find((entry) => entry.id === containerId);
+  if (!container) return;
+  if (selectedStorageContainerId.value && selectedStorageContainerId.value !== 'carry' && selectedStorageContainerId.value !== container.id) {
+    clearStorageSelection();
+  }
+  selectedExternalContainerId.value = container.id;
+  activeStoragePaneId.value = container.id;
+  storageActionFeedback.value = container.accessible ? '' : container.accessReason;
+}
+
+function activateStoragePane(containerId) {
+  if (!containerId || !visibleStoragePanes.value.some((container) => container.id === containerId)) return;
+  activeStoragePaneId.value = containerId;
+}
+
+function selectStorageItem(container, item) {
+  if (!container?.accessible || !item?.stackId) return;
+  if (isStorageItemSelected(container, item)) {
+    clearStorageSelection();
+    return;
+  }
+  selectedStorageContainerId.value = container.id;
+  selectedStorageStackId.value = item.stackId;
+  activeStoragePaneId.value = container.id;
+  transferQuantity.value = 1;
+  repairStackId.value = '';
+  storageActionFeedback.value = '';
+}
+
+function clearStorageSelection() {
+  selectedStorageContainerId.value = '';
+  selectedStorageStackId.value = '';
+  transferQuantity.value = 1;
+  repairStackId.value = '';
+}
+
+function clampTransferQuantity() {
+  const maximum = Math.max(1, transferMaxQuantity.value);
+  transferQuantity.value = Math.max(1, Math.min(maximum, normalizedTransferQuantity.value));
+}
+
+function adjustTransferQuantity(delta) {
+  transferQuantity.value = Math.max(1, Math.min(Math.max(1, transferMaxQuantity.value), normalizedTransferQuantity.value + delta));
+}
+
+function setMaximumTransferQuantity() {
+  if (transferMaxQuantity.value > 0) transferQuantity.value = transferMaxQuantity.value;
+}
+
+function commitStorageTransfer() {
+  if (transferDisabledReason.value || !selectedStorageItem.value || !selectedStorageSource.value || !transferDestination.value) return;
+  const itemName = selectedStorageItem.value.name;
+  const fromName = selectedStorageSource.value.name;
+  const toName = transferDestination.value.name;
+  const quantity = normalizedTransferQuantity.value;
+  const result = game.transferItem({
+    fromId: selectedStorageSource.value.id,
+    toId: transferDestination.value.id,
+    stackId: selectedStorageItem.value.stackId,
+    quantity,
+  });
+  if (!result?.ok || !result?.committed) {
+    storageActionFeedback.value = result?.disabledReason || '转移失败，物资没有发生变化。';
+    return;
+  }
+  storageActionFeedback.value = `${itemName} ×${quantity} 已从${fromName}转移到${toName}。`;
+  const source = game.storageContainers.find((container) => container.id === selectedStorageContainerId.value);
+  if (!source?.items?.some((item) => item.stackId === selectedStorageStackId.value)) clearStorageSelection();
+  else {
+    transferQuantity.value = 1;
+    clampTransferQuantity();
+  }
+}
+
+function useStorageItem(item) {
   const before = captureGameSnapshot();
-  if (!game.useItem(item.id)) return;
+  if (!game.useItem(item.stackId)) {
+    storageActionFeedback.value = item.useDisabledReason || '当前无法使用这件物资。';
+    return;
+  }
+  storageActionFeedback.value = `${item.name}已经使用。`;
+  if (!game.inventory.some((entry) => entry.stackId === item.stackId)) clearStorageSelection();
   showResolutionReport(before, {
     title: `使用 ${item.name}`,
     result: `${item.name}已经使用，身体与背包状态已更新。`,
   });
 }
 
-function toggleWeapon(item) {
-  game.equipWeapon(item.id);
+function toggleStorageEquipment(item) {
+  const wasEquipped = isStorageItemEquipped(item);
+  const changed = isBag(item) ? game.equipBag(item.stackId) : game.equipWeapon(item.stackId);
+  if (!changed) {
+    storageActionFeedback.value = isBag(item) && wasEquipped
+      ? '卸下这个背包后容量不足，请先腾出随身空间。'
+      : item.equipDisabledReason || '当前无法更换这件装备。';
+    return;
+  }
+  storageActionFeedback.value = `${item.name}已${wasEquipped ? '卸下' : '装备'}。`;
+}
+
+function toggleRepairPicker(item) {
+  repairStackId.value = repairStackId.value === item.stackId ? '' : item.stackId;
+  if (repairStackId.value && !repairMaterials.value.some((material) => material.count > 0)) {
+    storageActionFeedback.value = '随身背包里没有胶带或木工胶。';
+  }
+}
+
+function repairStorageWeapon(item, materialId) {
+  const material = repairMaterials.value.find((entry) => entry.id === materialId);
+  if (!material?.count) {
+    storageActionFeedback.value = `没有可用的${material?.name ?? '维修材料'}。`;
+    return;
+  }
+  const result = game.repairWeapon(item.stackId, materialId);
+  if (!result?.ok) {
+    storageActionFeedback.value = result?.disabledReason || '维修失败，物资没有发生变化。';
+    return;
+  }
+  storageActionFeedback.value = `${item.name}恢复了 ${result.restored} 点耐久，消耗 1 份${material.name}。`;
 }
 
 function craftSurvivalRecipe(recipe) {

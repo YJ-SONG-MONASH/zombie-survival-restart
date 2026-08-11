@@ -105,7 +105,7 @@
       <section class="loot-inventory">
         <h2>已带走物资</h2>
         <p v-if="!game.inventory.length">背包还是空的。</p>
-        <span v-for="item in game.inventory" :key="item.id" class="inventory-item">
+        <span v-for="item in game.inventory" :key="item.stackId ?? item.id" class="inventory-item">
           <span class="item-icon inventory-icon" aria-hidden="true">
             <img :src="itemIconSrc(item)" :alt="item.name" @error="markInventoryIconMissing" />
             <span></span>

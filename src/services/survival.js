@@ -97,6 +97,7 @@ export function createBaseState(shelter = null) {
     barricades: 0,
     generatorFuel: 0,
     generatorOn: false,
+    installedGeneratorStackId: null,
     waterReserve: 0,
   };
 }
@@ -146,6 +147,9 @@ export function normalizeBaseState(base, shelter = null) {
     barricades: finiteInteger(source.barricades, 0, 0, 20),
     generatorFuel: finiteInteger(source.generatorFuel, 0, 0, 20),
     generatorOn: Boolean(source.generatorOn) && finiteInteger(source.generatorFuel, 0, 0) > 0,
+    installedGeneratorStackId: typeof source.installedGeneratorStackId === 'string'
+      ? source.installedGeneratorStackId.slice(0, 160)
+      : null,
     waterReserve: finiteInteger(source.waterReserve, 0, 0, 30),
   };
 }
@@ -512,9 +516,13 @@ export function moodlesFor({ vitals = {}, body = {}, world = {}, usedSpace = 0, 
 }
 
 function selectWeapon(inventory, equippedWeaponId, firearm) {
-  const candidates = (inventory ?? []).filter((item) => item.count > 0 && item.tags?.includes('weapon'));
+  const candidates = (inventory ?? []).filter((item) => (
+    item.count > 0
+    && item.tags?.includes('weapon')
+    && !item.conditionState?.condition?.broken
+  ));
   const valid = candidates.filter((item) => firearm ? item.tags.includes('firearm') : !item.tags.includes('firearm'));
-  const equipped = valid.find((item) => item.id === equippedWeaponId);
+  const equipped = valid.find((item) => item.stackId === equippedWeaponId || item.id === equippedWeaponId);
   if (equipped) return equipped;
   return [...valid].sort((a, b) => {
     const powers = firearm ? firearmPowerById : meleePowerById;
@@ -525,10 +533,10 @@ function selectWeapon(inventory, equippedWeaponId, firearm) {
 function selectFirearmWithAmmo(inventory, equippedWeaponId) {
   const ammoCount = (ammoId) => inventory.find((item) => item.id === ammoId)?.count ?? 0;
   const candidates = (inventory ?? []).filter((item) => {
-    if (item.count <= 0 || !item.tags?.includes('firearm')) return false;
+    if (item.count <= 0 || !item.tags?.includes('firearm') || item.conditionState?.condition?.broken) return false;
     return ammoCount(item.id === 'shotgun' ? 'shotgun_shells' : '9mm_rounds') > 0;
   });
-  const equipped = candidates.find((item) => item.id === equippedWeaponId);
+  const equipped = candidates.find((item) => item.stackId === equippedWeaponId || item.id === equippedWeaponId);
   if (equipped) return equipped;
   return [...candidates].sort((a, b) => (firearmPowerById[b.id] ?? 0) - (firearmPowerById[a.id] ?? 0))[0] ?? null;
 }

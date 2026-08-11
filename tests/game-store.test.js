@@ -469,7 +469,8 @@ describe('save migration and recovery', () => {
     expect(game.body.infectionLevel).toBe(0);
     expect(game.base.barricades).toBe(0);
     expect(game.base.generatorFuel).toBe(20);
-    expect(game.base.generatorOn).toBe(true);
+    expect(game.base.generatorOn).toBe(false);
+    expect(game.base.installedGeneratorStackId).toBeNull();
     expect(Object.keys(game.nodeZombieStates)).toHaveLength(mapNodes.length);
     expect(game.skillXp).toEqual(expect.objectContaining({ fitness: expect.any(Number), aiming: expect.any(Number) }));
   });
