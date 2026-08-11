@@ -157,7 +157,7 @@ describe('v0.3 evasion grace', () => {
     expect(game.performTacticalAction('disengage', {
       encounterId: game.activeTacticalEncounter.id,
       expectedTurn: game.activeTacticalEncounter.turn,
-    })).toBe(true);
+    })).toEqual(expect.objectContaining({ ok: true }));
     expect(sourceState.count).toBe(10);
     expect(game.nodeZombieStates[sourceId].evasionUntilMinutes).toBeGreaterThan(game.totalWorldMinutes);
     expect(game.isCurrentNodeSecured).toBe(true);
@@ -181,7 +181,7 @@ describe('v0.3 evasion grace', () => {
     expect(game.performTacticalAction('disengage', {
       encounterId: game.activeTacticalEncounter.id,
       expectedTurn: game.activeTacticalEncounter.turn,
-    })).toBe(true);
+    })).toEqual(expect.objectContaining({ ok: true }));
 
     expect(game.nodeZombieStates[nodeId].evasionUntilMinutes).toBe(state.evasionUntilMinutes);
     expect(game.isCurrentNodeSecured).toBe(false);
@@ -275,12 +275,16 @@ describe('v0.3 compatibility and midnight ordering', () => {
     const actionStartMinutes = game.totalWorldMinutes;
 
     expect(game.resolveNodeAction('combat_melee')).toBe(true);
+    game.activeTacticalEncounter.enemies[0].posture = 'downed';
+    game.activeTacticalEncounter.enemies[0].distance = 0;
+    game.activeTacticalEncounter.enemies[0].hp = 1;
     game.activeTacticalEncounter.zombies = { distant: 0, approaching: 0, engaged: 0, downed: 1 };
     game.activeTacticalEncounter.rangeBand = 'contact';
     expect(game.performTacticalAction('stomp', {
       encounterId: game.activeTacticalEncounter.id,
       expectedTurn: game.activeTacticalEncounter.turn,
-    })).toBe(true);
+      targetId: game.activeTacticalEncounter.enemies[0].id,
+    })).toEqual(expect.objectContaining({ ok: true }));
 
     expect(game.day).toBe(2);
     expect(game.clockMinutes).toBe(0);

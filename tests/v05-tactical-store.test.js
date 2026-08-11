@@ -123,9 +123,11 @@ function startEncounter(game, preferredActionId = 'combat_melee') {
 
 function tacticalCommand(game, actionId, options = {}) {
   const encounter = game.activeTacticalEncounter;
+  const targetId = options.targetId ?? tacticalTargetId(game, actionId);
   return game.performTacticalAction(actionId, {
     encounterId: encounter.id,
     expectedTurn: encounter.turn,
+    ...(targetId ? { targetId } : {}),
     ...options,
   });
 }
@@ -160,6 +162,7 @@ function tacticalServiceContext(game) {
 
 function expectedTacticalResolution(game, actionId, options = {}) {
   const encounter = clone(game.activeTacticalEncounter);
+  const targetId = options.targetId ?? tacticalTargetId(game, actionId);
   const command = {
     actionId,
     encounterId: encounter.id,
@@ -168,6 +171,7 @@ function expectedTacticalResolution(game, actionId, options = {}) {
       ?? game.equippedWeaponStackId
       ?? encounter.selectedWeaponStackId
       ?? null,
+    ...(targetId ? { targetId } : {}),
     ...options,
   };
   const resolution = resolveTacticalAction(encounter, command, tacticalServiceContext(game));
@@ -195,8 +199,26 @@ function expectedTacticalResolution(game, actionId, options = {}) {
 
 function performWithOracle(game, actionId, options = {}) {
   const expected = expectedTacticalResolution(game, actionId, options);
-  expect(game.performTacticalAction(actionId, expected.command)).toBe(true);
+  expect(game.performTacticalAction(actionId, expected.command)).toEqual(expect.objectContaining({ ok: true }));
   return expected.resolution;
+}
+
+function tacticalTargetId(game, actionId) {
+  if (!['push', 'melee', 'stomp', 'fire'].includes(actionId)) return null;
+  const enemies = Array.isArray(game.activeTacticalEncounter?.enemies)
+    ? game.activeTacticalEncounter.enemies
+    : [];
+  return [...enemies]
+    .filter((enemy) => {
+      if (!(Number(enemy?.hp) > 0)) return false;
+      if (actionId === 'push') return enemy.posture === 'standing' && enemy.distance === 0;
+      if (actionId === 'stomp') return enemy.posture === 'downed' && enemy.distance === 0;
+      return true;
+    })
+    .sort((left, right) => (
+      Number(left.distance) - Number(right.distance)
+      || String(left.id).localeCompare(String(right.id))
+    ))[0]?.id ?? null;
 }
 
 function bucketSize(bucket) {
@@ -218,6 +240,20 @@ function bucketEntries(bucket) {
 }
 
 function forceZombieBucket(encounter, targetBucket) {
+  if (Array.isArray(encounter?.enemies)) {
+    encounter.enemies.forEach((enemy) => {
+      enemy.posture = targetBucket === 'downed' ? 'downed' : 'standing';
+      enemy.distance = targetBucket === 'distant' ? 3 : targetBucket === 'approaching' ? 1 : 0;
+    });
+    encounter.zombies = {
+      distant: targetBucket === 'distant' ? encounter.enemies.length : 0,
+      approaching: targetBucket === 'approaching' ? encounter.enemies.length : 0,
+      engaged: targetBucket === 'engaged' ? encounter.enemies.length : 0,
+      downed: targetBucket === 'downed' ? encounter.enemies.length : 0,
+    };
+    encounter.rangeBand = targetBucket === 'distant' ? 'far' : targetBucket === 'approaching' ? 'near' : 'contact';
+    return;
+  }
   const buckets = encounter.zombies;
   const names = ['distant', 'approaching', 'engaged', 'downed'];
   const arrays = names.every((name) => Array.isArray(buckets[name]));
@@ -305,8 +341,8 @@ describe('v0.5 tactical save migration and projections', () => {
     const game = useGameStore();
     game.loadPersistedState();
 
-    expect(SAVE_VERSION).toBe(7);
-    expect(game.saveVersion).toBe(7);
+    expect(SAVE_VERSION).toBe(8);
+    expect(game.saveVersion).toBe(8);
     expect(game.activeTacticalEncounter).toBeNull();
     expect(game.nextEncounterSequence).toBe(1);
     expect(game.firearmLoads).toEqual({});
@@ -793,14 +829,15 @@ describe('v0.5 tactical persistence, terminal ordering, and dismissal', () => {
       encounterId: restored.activeTacticalEncounter.id,
       expectedTurn: restored.activeTacticalEncounter.turn,
       weaponStackId: bat.stackId,
+      targetId: tacticalTargetId(restored, 'melee'),
     };
     const random = vi.spyOn(Math, 'random').mockReturnValue(0.001);
     const originalResult = game.performTacticalAction('melee', command);
     random.mockReturnValue(0.999);
     const restoredResult = restored.performTacticalAction('melee', command);
 
-    expect(originalResult).toBe(true);
-    expect(restoredResult).toBe(true);
+    expect(originalResult).toEqual(expect.objectContaining({ ok: true }));
+    expect(restoredResult).toEqual(expect.objectContaining({ ok: true }));
     expect(restored.$state).toEqual(game.$state);
   });
 
@@ -813,6 +850,7 @@ describe('v0.5 tactical persistence, terminal ordering, and dismissal', () => {
     synchronizeSkillXp(game);
     startEncounter(game);
     forceZombieBucket(game.activeTacticalEncounter, 'downed');
+    game.activeTacticalEncounter.enemies[0].hp = 1;
     const beforeDismiss = clone(game.$state);
 
     expectRejected(game.dismissTacticalEncounter());

@@ -132,7 +132,7 @@ describe('tactical encounter save state', () => {
 
     expect(first).toEqual(repeated);
     expect(first).toMatchObject({
-      version: 1,
+      version: 2,
       encounterId: first.id,
       nodeId: 'rosewood',
       status: 'active',
@@ -140,7 +140,7 @@ describe('tactical encounter save state', () => {
       startedAtMinutes: 720,
       elapsedMinutes: 0,
       rng: { seed: 913, cursor: 0 },
-      rangeBand: 'near',
+      rangeBand: 'contact',
       escapeProgress: 0,
       player: {
         balance: 100,
@@ -192,7 +192,7 @@ describe('tactical encounter save state', () => {
       startedAtMinutes: 0,
       elapsedMinutes: 0,
       rng: { seed: 4, cursor: 0 },
-      rangeBand: 'near',
+      rangeBand: 'contact',
       escapeProgress: 100,
       selectedWeaponStackId: null,
     });
@@ -232,7 +232,7 @@ describe('tactical action availability and transaction safety', () => {
     });
     expect(actions.find((action) => action.id === 'fire')).toMatchObject({
       enabled: false,
-      disabledReason: 'requires_firearm',
+      disabledReason: 'weapon_broken',
     });
   });
 
@@ -252,7 +252,9 @@ describe('tactical action availability and transaction safety', () => {
       .toMatchObject({ enabled: false, disabledReason: 'weapon_broken' });
 
     const pistolState = { ...state, selectedWeaponStackId: 'pistol:empty' };
-    const pistolActions = listTacticalActions(pistolState, context);
+    const pistolActions = listTacticalActions(pistolState, context, {
+      targetId: pistolState.enemies[0].id,
+    });
     expect(pistolActions.find(({ id }) => id === 'reload'))
       .toMatchObject({ enabled: false, disabledReason: 'no_matching_ammo' });
     expect(pistolActions.find(({ id }) => id === 'fire'))
@@ -308,6 +310,7 @@ describe('close-quarters tactical actions', () => {
       actionId: 'push',
       expectedTurn: state.turn,
       encounterId: state.id,
+      targetId: state.enemies.find((enemy) => enemy.posture === 'standing' && enemy.distance === 0).id,
     }, makeContext());
 
     expect(result.ok).toBe(true);
@@ -341,6 +344,7 @@ describe('close-quarters tactical actions', () => {
       actionId: 'melee',
       expectedTurn: state.turn,
       weaponStackId: 'axe:exact',
+      targetId: state.enemies.find((enemy) => enemy.posture === 'standing' && enemy.distance === 0).id,
     }, context);
 
     expect(result.ok).toBe(true);
@@ -365,6 +369,7 @@ describe('close-quarters tactical actions', () => {
     const result = resolveTacticalAction(state, {
       actionId: 'stomp',
       expectedTurn: state.turn,
+      targetId: state.enemies.find((enemy) => enemy.posture === 'downed').id,
     }, makeContext());
 
     expect(result.ok).toBe(true);
@@ -399,7 +404,7 @@ describe('close-quarters tactical actions', () => {
     }));
   });
 
-  it('lets a successful contact retreat create real space for a follow-up disengage', () => {
+  it('lets repeated successful retreats build a real escape opening', () => {
     let state = createEncounter({
       seed: 22,
       zombieCount: 6,
@@ -421,18 +426,22 @@ describe('close-quarters tactical actions', () => {
     expect(contactRetreat.nextState.zombies.engaged).toBe(0);
     state = contactRetreat.nextState;
 
-    const distanceRetreat = resolveTacticalAction(state, {
-      actionId: 'step_back',
-      expectedTurn: state.turn,
-    }, context);
-    expect(distanceRetreat.ok).toBe(true);
-    expect(distanceRetreat.events[0]).toMatchObject({ success: true });
-    expect(distanceRetreat.nextState.rangeBand).toBe('far');
-    expect(listTacticalActions(distanceRetreat.nextState, context).find(({ id }) => id === 'disengage'))
+    for (let attempt = 0; attempt < 3 && state.escapeProgress < 100; attempt += 1) {
+      const retreat = resolveTacticalAction(state, {
+        actionId: 'step_back',
+        expectedTurn: state.turn,
+      }, context);
+      expect(retreat.ok).toBe(true);
+      expect(retreat.events[0]).toMatchObject({ success: true });
+      state = retreat.nextState;
+    }
+    expect(state.escapeProgress).toBe(100);
+    expect(state.zombies.engaged).toBe(0);
+    expect(listTacticalActions(state, context).find(({ id }) => id === 'disengage'))
       .toMatchObject({ enabled: true });
   });
 
-  it('can keep retreating at far range until disengage becomes available', () => {
+  it('can keep retreating under pursuit until disengage becomes available', () => {
     let state = createEncounter({
       seed: 22,
       zombieCount: 5,
@@ -449,18 +458,22 @@ describe('close-quarters tactical actions', () => {
       expectedTurn: state.turn,
     }, context);
     expect(first.ok).toBe(true);
-    expect(first.nextState.rangeBand).toBe('far');
+    expect(first.nextState.zombies.engaged).toBe(0);
     expect(listTacticalActions(first.nextState, context).find(({ id }) => id === 'step_back').enabled)
       .toBe(true);
     state = first.nextState;
 
-    const second = resolveTacticalAction(state, {
-      actionId: 'step_back',
-      expectedTurn: state.turn,
-    }, context);
-    expect(second.ok).toBe(true);
-    expect(second.nextState.escapeProgress).toBeGreaterThanOrEqual(40);
-    expect(listTacticalActions(second.nextState, context).find(({ id }) => id === 'disengage'))
+    for (let attempt = 0; attempt < 3 && state.escapeProgress < 100; attempt += 1) {
+      const retreat = resolveTacticalAction(state, {
+        actionId: 'step_back',
+        expectedTurn: state.turn,
+      }, context);
+      expect(retreat.ok).toBe(true);
+      expect(retreat.events[0]).toMatchObject({ success: true });
+      state = retreat.nextState;
+    }
+    expect(state.escapeProgress).toBe(100);
+    expect(listTacticalActions(state, context).find(({ id }) => id === 'disengage'))
       .toMatchObject({ enabled: true, disabledReason: '' });
   });
 
@@ -580,6 +593,7 @@ describe('firearms, escape, and deterministic continuation', () => {
       expectedTurn: saved.turn,
       encounterId: saved.id,
       weaponStackId: 'pistol:one',
+      targetId: saved.enemies.find((enemy) => enemy.posture === 'standing').id,
     };
     const direct = resolveTacticalAction(reloaded.nextState, command, context);
     const resumed = resolveTacticalAction(saved, command, JSON.parse(JSON.stringify(context)));
@@ -693,6 +707,7 @@ describe('survivor pressure and presentation summary', () => {
       actionId: 'melee',
       expectedTurn: 0,
       weaponStackId: 'axe:exact',
+      targetId: state.enemies.find((enemy) => enemy.posture === 'standing' && enemy.distance === 0).id,
     }, context);
 
     expect(result.effects.newWounds).toHaveLength(1);

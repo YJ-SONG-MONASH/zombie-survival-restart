@@ -236,13 +236,16 @@ describe('v0.4 freshness, durability, and repair loop', () => {
     encounter.evasionUntilMinutes = 0;
 
     expect(game.resolveNodeAction('combat_melee')).toBe(true);
+    game.activeTacticalEncounter.enemies[0].posture = 'standing';
+    game.activeTacticalEncounter.enemies[0].distance = 1;
     game.activeTacticalEncounter.zombies = { distant: 0, approaching: 1, engaged: 0, downed: 0 };
     game.activeTacticalEncounter.rangeBand = 'near';
     expect(game.performTacticalAction('melee', {
       encounterId: game.activeTacticalEncounter.id,
       expectedTurn: game.activeTacticalEncounter.turn,
       weaponStackId: spear.stackId,
-    })).toBe(true);
+      targetId: game.activeTacticalEncounter.enemies[0].id,
+    })).toEqual(expect.objectContaining({ ok: true }));
     const broken = game.inventory.find((entry) => entry.stackId === spear.stackId);
     expect(broken.conditionState.condition.broken).toBe(true);
     expect(game.equippedWeaponStackId).toBeNull();
@@ -283,8 +286,8 @@ describe('v0.4 save migration', () => {
 
     game.loadPersistedState();
 
-    expect(SAVE_VERSION).toBe(7);
-    expect(game.saveVersion).toBe(7);
+    expect(SAVE_VERSION).toBe(8);
+    expect(game.saveVersion).toBe(8);
     expect(game.baseInventory).toEqual([]);
     expect(game.vehicleInventory).toEqual([]);
     expect(game.inventory.every((entry) => entry.stackId && entry.conditionState)).toBe(true);

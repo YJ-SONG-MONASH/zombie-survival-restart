@@ -353,12 +353,16 @@ describe('game store invariants', () => {
     expect(game.resolveNodeAction('combat_melee')).toBe(true);
     expect(game.nodeZombieStates.dixie_highway_north.count).toBe(1);
     expect(game.activeTacticalEncounter).toEqual(expect.objectContaining({ status: 'active', turn: 0 }));
+    game.activeTacticalEncounter.enemies[0].posture = 'downed';
+    game.activeTacticalEncounter.enemies[0].distance = 0;
+    game.activeTacticalEncounter.enemies[0].hp = 1;
     game.activeTacticalEncounter.zombies = { distant: 0, approaching: 0, engaged: 0, downed: 1 };
     game.activeTacticalEncounter.rangeBand = 'contact';
     expect(game.performTacticalAction('stomp', {
       encounterId: game.activeTacticalEncounter.id,
       expectedTurn: game.activeTacticalEncounter.turn,
-    })).toBe(true);
+      targetId: game.activeTacticalEncounter.enemies[0].id,
+    })).toEqual(expect.objectContaining({ ok: true }));
 
     expect(game.nodeZombieStates.dixie_highway_north.count).toBe(0);
     expect(game.nodeZombieStates.dixie_highway_north.clearedDay).toBe(game.day);
@@ -378,7 +382,7 @@ describe('game store invariants', () => {
     expect(game.performTacticalAction('disengage', {
       encounterId: game.activeTacticalEncounter.id,
       expectedTurn: game.activeTacticalEncounter.turn,
-    })).toBe(true);
+    })).toEqual(expect.objectContaining({ ok: true }));
     expect(game.nodeZombieStates.dixie_highway_north.count).toBe(10);
     expect(game.isCurrentNodeSecured).toBe(true);
     expect(game.currentEncounter).toBeNull();

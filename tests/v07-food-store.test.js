@@ -282,8 +282,8 @@ describe('v0.7 food preparation save migration', () => {
 
     restored.loadPersistedState();
 
-    expect(SAVE_VERSION).toBe(7);
-    expect(restored.saveVersion).toBe(7);
+    expect(SAVE_VERSION).toBe(8);
+    expect(restored.saveVersion).toBe(8);
     expect(restored.foodPreparationRevision).toBe(0);
     expect(restored.foodPreparationCommandIds).toEqual([]);
     const restoredMeat = restored.inventory.find((entry) => entry.id === 'fresh_meat');

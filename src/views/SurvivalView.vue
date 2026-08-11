@@ -23,7 +23,7 @@
             <b>⌁</b>噪声 {{ Math.round(game.world?.noise ?? 0) }} · {{ noiseLabel }}
           </span>
           <span :class="['world-status-chip', worldSignalTone(game.world?.threat)]">
-            <b>☣</b>尸群 {{ Math.round(game.world?.threat ?? 0) }} · {{ threatLabel }}
+            <b>☣</b>区域威胁 {{ Math.round(game.world?.threat ?? 0) }} · {{ threatLabel }}
           </span>
         </div>
       </div>
@@ -590,6 +590,51 @@
               </dl>
             </section>
 
+            <section class="tactical-target-section" aria-labelledby="tactical-target-heading">
+              <div class="drawer-subheading">
+                <div>
+                  <h3 id="tactical-target-heading">选择目标</h3>
+                  <small>
+                    按距离列出最近 {{ tacticalTargets.length }} / 6 只
+                    <template v-if="tacticalHiddenEnemyCount"> · 另有 {{ tacticalHiddenEnemyCount }} 只未辨清</template>
+                  </small>
+                </div>
+                <span v-if="selectedTacticalTarget">锁定 · {{ selectedTacticalTarget.typeLabel }}</span>
+                <span v-else>没有合法目标</span>
+              </div>
+              <div v-if="tacticalTargets.length" class="tactical-target-list" role="listbox" aria-label="战术目标">
+                <button
+                  v-for="target in tacticalTargets"
+                  :key="target.id"
+                  type="button"
+                  role="option"
+                  :aria-selected="target.id === selectedTacticalTargetId"
+                  :class="['tactical-target-card', `range-${target.rangeBand}`, { selected: target.id === selectedTacticalTargetId, dead: target.dead, disabled: !target.selectable }]"
+                  :disabled="!target.selectable || tacticalActionBusy"
+                  :title="target.selectable ? `锁定${target.typeLabel}，${target.intentLabel}` : `${target.typeLabel}已经失去威胁`"
+                  @click="selectTacticalTarget(target)"
+                >
+                  <span class="tactical-target-heading">
+                    <strong>{{ target.typeLabel }}</strong>
+                    <b>{{ target.distanceLabel }}</b>
+                  </span>
+                  <span class="tactical-target-health">
+                    <span><b>HP</b>{{ target.hp }} / {{ target.maxHp }}</span>
+                    <progress :value="target.hp" :max="target.maxHp"></progress>
+                  </span>
+                  <dl class="tactical-target-facts">
+                    <div><dt>速度</dt><dd>{{ target.speedLabel }}</dd></div>
+                    <div><dt>攻击</dt><dd>{{ target.attackDamageLabel }}</dd></div>
+                    <div><dt>抓握</dt><dd>{{ target.grabLabel }}</dd></div>
+                    <div><dt>护甲</dt><dd>{{ target.armorLabel }}</dd></div>
+                    <div><dt>姿态</dt><dd>{{ target.postureLabel }}</dd></div>
+                    <div class="wide"><dt>下一步</dt><dd>{{ target.intentLabel }}</dd></div>
+                  </dl>
+                </button>
+              </div>
+              <p v-else class="survival-empty-state">个体目标数据正在同步；先观察尸群距离分布。</p>
+            </section>
+
             <section class="tactical-vitals" aria-label="战斗状态">
               <article v-for="vital in tacticalVitals" :key="vital.id" :class="{ danger: vital.danger }">
                 <span>{{ vital.label }}</span>
@@ -631,7 +676,10 @@
             <section v-if="!tacticalTerminal" class="tactical-action-section">
               <div class="drawer-subheading">
                 <h3>选择行动</h3>
-                <span>{{ tacticalActions.filter((action) => !action.disabled).length }} / {{ tacticalActions.length }} 可用</span>
+                <span>
+                  {{ tacticalActions.filter((action) => !action.disabled).length }} / {{ tacticalActions.length }} 可用
+                  <template v-if="selectedTacticalTarget"> · 对 {{ selectedTacticalTarget.typeLabel }}</template>
+                </span>
               </div>
               <div class="tactical-action-grid">
                 <button
@@ -644,6 +692,11 @@
                 >
                   <span class="tactical-action-heading"><strong>{{ action.label }}</strong><b>{{ action.riskLabel }}</b></span>
                   <em>{{ action.estimatedOutcome }}</em>
+                  <span class="tactical-action-forecast" aria-label="行动预测">
+                    <span><b>命中</b>{{ action.hitChanceLabel }}</span>
+                    <span><b>伤害</b>{{ action.damageRangeLabel }}</span>
+                    <span><b>反扑</b>{{ action.retaliationRangeLabel }}</span>
+                  </span>
                   <small>{{ formatDuration(action.minutes) }} · 体力 {{ action.staminaLabel }} · 噪音 {{ action.noiseLabel }}</small>
                   <i v-if="action.disabledReason">{{ action.disabledReason }}</i>
                 </button>
@@ -1267,6 +1320,7 @@ const tacticalActionFeedback = ref('');
 const tacticalActionFeedbackTone = ref('neutral');
 const tacticalSheetExpanded = ref(false);
 const selectedTacticalWeaponId = ref('');
+const selectedTacticalTargetId = ref('');
 const lastAutoOpenedTacticalKey = ref('');
 const tacticalStartRequested = ref(false);
 const foodPreparationDrafts = ref({});
@@ -1290,6 +1344,30 @@ const tacticalActionFallbacks = [
   { id: 'disengage', label: '脱离', estimatedOutcome: '尝试结束接触并建立安全窗口', staminaCost: 6, noiseDelta: 0 },
   { id: 'brace', label: '稳住阵脚', estimatedOutcome: '恢复平衡并少量恢复耐力，降低下一次失误风险', staminaCost: 0, noiseDelta: 0 },
 ];
+const tacticalRangeLabels = {
+  contact: '贴身',
+  engaged: '贴身',
+  near: '近距',
+  approaching: '逼近',
+  mid: '中距',
+  far: '远距',
+  distant: '远距',
+  downed: '倒地',
+};
+const tacticalEnemyTypeLabels = {
+  zombie: '普通丧尸',
+  decayed: '腐烂游荡者',
+  walker: '游荡丧尸',
+  shambler: '蹒跚丧尸',
+  fast_shambler: '快步丧尸',
+  sprinter: '奔跑丧尸',
+  crawler: '爬行丧尸',
+  brute: '壮硕丧尸',
+  tough: '强壮游荡者',
+  armored: '防护丧尸',
+  former_soldier: '军装丧尸',
+  former_police: '警装丧尸',
+};
 const vitalsForDisplay = computed(() => vitalDefinitions.map((vital) => {
   const value = game.vitals[vital.id] ?? 0;
   return {
@@ -1478,6 +1556,46 @@ const tacticalBuckets = computed(() => {
     { id: 'downed', label: '倒地', value: finiteRoundedOrNull(buckets.downed) ?? 0 },
   ].map((bucket) => ({ ...bucket, hot: bucket.value > 0 && ['approaching', 'engaged'].includes(bucket.id) }));
 });
+const tacticalTargetSource = computed(() => {
+  const state = tacticalEncounterState.value ?? {};
+  const summary = game.tacticalEncounterSummary && typeof game.tacticalEncounterSummary === 'object'
+    ? game.tacticalEncounterSummary
+    : {};
+  const candidates = [
+    summary.visibleEnemies,
+    state.visibleEnemies,
+    game.tacticalTargetList,
+    game.tacticalEnemyList,
+    game.tacticalTargets,
+    game.tacticalEnemies,
+    summary.targets,
+    summary.enemies,
+    summary.zombieTargets,
+    state.targets,
+    state.enemies,
+    state.zombieTargets,
+  ];
+  const source = candidates.find((candidate) => Array.isArray(candidate) || (candidate && typeof candidate === 'object'));
+  if (Array.isArray(source)) return source;
+  return source && typeof source === 'object' ? Object.values(source) : [];
+});
+const tacticalHiddenEnemyCount = computed(() => Math.max(0, finiteRoundedOrNull(
+  game.tacticalEncounterSummary?.hiddenEnemyCount
+    ?? tacticalEncounterState.value?.hiddenEnemyCount,
+) ?? 0));
+const tacticalTargets = computed(() => tacticalTargetSource.value
+  .map((target, index) => normalizeTacticalTarget(target, index))
+  .filter((target) => target.id)
+  .sort((left, right) => {
+    if (left.selectable !== right.selectable) return left.selectable ? -1 : 1;
+    const leftDistance = left.distanceMeters ?? Number.POSITIVE_INFINITY;
+    const rightDistance = right.distanceMeters ?? Number.POSITIVE_INFINITY;
+    return leftDistance - rightDistance || left.sourceIndex - right.sourceIndex;
+  })
+  .slice(0, 6));
+const selectedTacticalTarget = computed(() => tacticalTargets.value.find((target) => (
+  target.id === selectedTacticalTargetId.value && target.selectable
+)) ?? null);
 const tacticalStatusLabel = computed(() => ({
   active: `第 ${tacticalSummary.value.turn + 1} 回合`,
   cleared: '清场',
@@ -1496,9 +1614,8 @@ const tacticalPressureLabel = computed(() => {
   }[tacticalSummary.value.pressureBand] ?? '压力未知';
   return `${label} · ${Math.round(Number(tacticalSummary.value.pressure) || 0)}%`;
 });
-const tacticalRangeLabel = computed(() => ({
-  contact: '贴身', near: '近距', mid: '中距', far: '远距', distant: '远距',
-}[tacticalSummary.value.rangeBand] ?? String(tacticalSummary.value.rangeBand || '未知')));
+const tacticalRangeLabel = computed(() => tacticalRangeLabels[tacticalSummary.value.rangeBand]
+  ?? String(tacticalSummary.value.rangeBand || '未知'));
 const tacticalThreatLabel = computed(() => `${Math.round(Number(tacticalSummary.value.threat ?? game.world?.threat) || 0)} · ${threatLabel.value}`);
 const tacticalNoiseLabel = computed(() => `${Math.round(Number(tacticalSummary.value.noise ?? game.world?.noise) || 0)} · ${noiseLabel.value}`);
 const tacticalVitals = computed(() => {
@@ -1535,23 +1652,34 @@ const tacticalWeapon = computed(() => {
 });
 const tacticalWeaponConditionText = computed(() => tacticalWeapon.value?.conditionText ?? '无武器耐久');
 const tacticalActions = computed(() => {
-  const supplied = Array.isArray(game.tacticalActionList) ? game.tacticalActionList : [];
+  let supplied = [];
+  if (typeof game.tacticalActionsFor === 'function') {
+    try {
+      const result = game.tacticalActionsFor(
+        selectedTacticalTargetId.value || null,
+        tacticalWeapon.value?.stackId ?? null,
+      );
+      supplied = Array.isArray(result) ? result : Array.isArray(result?.actions) ? result.actions : [];
+    } catch {
+      supplied = [];
+    }
+  }
+  if (!supplied.length && Array.isArray(game.tacticalActionList)) supplied = game.tacticalActionList;
+
+  const fallbackIds = new Set(tacticalActionFallbacks.map((action) => action.id));
   const source = tacticalActionFallbacks.map((fallback) => {
     const action = supplied.find((entry) => entry?.id === fallback.id);
     return action
       ? { ...fallback, ...action }
       : { ...fallback, enabled: false, disabledReason: '战术行动数据正在同步' };
   });
+  source.push(...supplied.filter((action) => action?.id && !fallbackIds.has(action.id)));
   return source.map(normalizeTacticalAction);
 });
 const tacticalLog = computed(() => {
   const source = game.tacticalEncounterSummary?.log ?? tacticalEncounterState.value?.log ?? [];
   if (!Array.isArray(source)) return [];
-  return source.slice(-8).reverse().map((entry, index) => ({
-    id: entry?.id ?? `${tacticalSummary.value.turn}-${index}-${typeof entry === 'string' ? entry : entry?.text ?? ''}`,
-    turnLabel: entry?.turn !== undefined ? `R${Math.max(1, Number(entry.turn) || 1)}` : `R${Math.max(1, tacticalSummary.value.turn - index)}`,
-    text: typeof entry === 'string' ? entry : entry?.text ?? entry?.message ?? entry?.label ?? describeTacticalEvent(entry),
-  }));
+  return source.slice(-8).reverse().map(normalizeTacticalLogEntry);
 });
 const tacticalFooterHint = computed(() => tacticalActionBusy.value
   ? '正在结算这一回合…'
@@ -1923,6 +2051,22 @@ watch(
   { immediate: true }
 );
 
+watch(
+  () => `${tacticalSummary.value.id}:${tacticalTargets.value.map((target) => `${target.id}:${target.hp}:${target.selectable ? 1 : 0}:${target.distanceMeters ?? 'x'}`).join('|')}`,
+  () => {
+    if (!tacticalModeVisible.value) {
+      selectedTacticalTargetId.value = '';
+      return;
+    }
+    const current = tacticalTargets.value.find((target) => (
+      target.id === selectedTacticalTargetId.value && target.selectable
+    ));
+    if (current) return;
+    selectedTacticalTargetId.value = tacticalTargets.value.find((target) => target.selectable)?.id ?? '';
+  },
+  { immediate: true }
+);
+
 function toggleDrawer(drawer) {
   activeDrawer.value = activeDrawer.value === drawer ? '' : drawer;
 }
@@ -2044,18 +2188,20 @@ async function performTacticalAction(action) {
   tacticalActionFeedback.value = '';
   const encounterId = tacticalEncounterState.value?.id ?? tacticalEncounterState.value?.encounterId;
   const expectedTurn = tacticalEncounterState.value?.turn;
+  const targetBefore = selectedTacticalTarget.value ? { ...selectedTacticalTarget.value } : null;
   try {
     const result = await game.performTacticalAction(action.id, {
       encounterId,
       expectedTurn,
       weaponStackId: tacticalWeapon.value?.stackId ?? null,
+      targetId: targetBefore?.id ?? null,
     });
     if (result === false || result?.ok === false) {
       tacticalActionFeedback.value = tacticalDisabledReason(result?.disabledReason ?? result?.reason) || '行动未能执行，状态没有变化。';
       tacticalActionFeedbackTone.value = 'danger';
       return;
     }
-    tacticalActionFeedback.value = formatTacticalResult(result, action);
+    tacticalActionFeedback.value = formatTacticalResult(result, action, targetBefore);
     tacticalActionFeedbackTone.value = 'neutral';
   } catch (error) {
     tacticalActionFeedback.value = error instanceof Error ? error.message : '战术行动结算失败';
@@ -2066,6 +2212,13 @@ async function performTacticalAction(action) {
     await new Promise((resolve) => setTimeout(resolve, 280));
     tacticalActionBusy.value = false;
   }
+}
+
+function selectTacticalTarget(target) {
+  if (!target?.id || !target.selectable || tacticalActionBusy.value) return;
+  selectedTacticalTargetId.value = target.id;
+  tacticalActionFeedback.value = `已锁定${target.typeLabel} · ${target.distanceLabel} · ${target.intentLabel}`;
+  tacticalActionFeedbackTone.value = 'neutral';
 }
 
 function selectTacticalWeapon(weapon) {
@@ -3129,6 +3282,216 @@ function tacticalVital(id, label, rawValue, higherIsGood) {
   };
 }
 
+function normalizeTacticalTarget(target, sourceIndex = 0) {
+  if (!target || typeof target !== 'object') return { id: '' };
+  const id = String(target.id ?? target.targetId ?? target.enemyId ?? target.zombieId ?? '');
+  const maximum = Math.max(1, optionalNumber(
+    target.maxHp ?? target.maxHealth ?? target.healthMax ?? target.vitals?.maxHealth,
+  ) ?? 1);
+  const current = Math.max(0, Math.min(maximum, optionalNumber(
+    target.hp ?? target.health ?? target.currentHp ?? target.vitals?.health,
+  ) ?? maximum));
+  const status = String(target.status ?? target.state ?? '').toLowerCase();
+  const dead = Boolean(target.dead ?? target.killed ?? target.isDead)
+    || current <= 0
+    || ['dead', 'killed', 'destroyed'].includes(status);
+  const typeKey = String(target.profileId ?? target.type ?? target.archetype ?? target.kind ?? 'zombie').toLowerCase();
+  const posture = target.posture ?? target.stance ?? status;
+  const rangeBand = normalizeTacticalRangeBand(
+    target.rangeBand ?? target.distanceBand ?? target.range ?? target.bucket ?? target.position?.rangeBand ?? target.distance,
+    posture,
+  );
+  const distanceMetersSource = target.distanceMeters
+    ?? target.rangeMeters
+    ?? target.meters
+    ?? target.position?.meters
+    ?? target.distance;
+  const distanceMeters = optionalMetricNumber(
+    distanceMetersSource,
+  );
+  const distanceLabel = tacticalDistanceLabel(target.distanceLabel, distanceMetersSource, distanceMeters, rangeBand);
+  const damageRange = normalizeNumericRange(
+    target.attackDamageRange ?? target.damageRange ?? target.attackDamage ?? target.damage,
+    target.minAttackDamage ?? target.damageMin,
+    target.maxAttackDamage ?? target.damageMax,
+  );
+  const selectable = !dead
+    && target.visible !== false
+    && target.targetable !== false
+    && target.selectable !== false
+    && target.legal !== false
+    && !['hidden', 'invalid', 'escaped'].includes(status);
+  return {
+    ...target,
+    id,
+    sourceIndex,
+    typeLabel: target.typeLabel
+      ?? target.profileLabel
+      ?? target.nameZh
+      ?? target.label
+      ?? target.name
+      ?? tacticalEnemyTypeLabels[typeKey]
+      ?? `丧尸 ${sourceIndex + 1}`,
+    hp: Math.round(current),
+    maxHp: Math.round(maximum),
+    dead,
+    selectable,
+    rangeBand,
+    distanceMeters,
+    distanceLabel,
+    speedLabel: tacticalSpeedLabel(target.speed ?? target.movementSpeed ?? target.stats?.speed ?? target.speedLabel),
+    attackDamageLabel: damageRange
+      ? `${formatNumericRange(damageRange)} 点`
+      : tacticalLabeledMultiplier(target.attack, target.attackLabel, '强度未知'),
+    grabLabel: tacticalLabeledMultiplier(
+      target.grip ?? target.grabChance ?? target.grappleChance ?? target.grabStrength ?? target.stats?.grab,
+      target.gripLabel ?? target.grabLabel,
+      '未知',
+    ),
+    armorLabel: tacticalPercentOrText(
+      target.armorLabel ?? target.armorPercent ?? target.armor ?? target.defense ?? target.stats?.armor,
+      '无',
+    ),
+    postureLabel: tacticalPostureLabel(posture),
+    intentLabel: tacticalIntentLabel(target.intentLabel ?? target.nextIntent ?? target.intent ?? target.nextAction ?? target.aiIntent),
+  };
+}
+
+function normalizeTacticalRangeBand(value, posture = '') {
+  const postureKey = String(posture ?? '').toLowerCase();
+  if (['downed', 'prone', 'down', 'fallen'].includes(postureKey)) return 'downed';
+  const distance = optionalNumber(value);
+  if (distance !== null) {
+    if (distance <= 0) return 'engaged';
+    if (distance >= 3) return 'distant';
+    return 'approaching';
+  }
+  const key = String(value ?? '').toLowerCase();
+  if (tacticalRangeLabels[key]) return key;
+  return 'near';
+}
+
+function tacticalDistanceLabel(rawLabel, rawMeters, parsedMeters, rangeBand) {
+  const bandLabel = String(rawLabel ?? tacticalRangeLabels[rangeBand] ?? '未知距离').trim();
+  const suppliedMeters = typeof rawMeters === 'string' ? rawMeters.trim() : '';
+  const metersLabel = suppliedMeters
+    ? (suppliedMeters.includes('米') ? suppliedMeters : `${suppliedMeters} 米`)
+    : parsedMeters === null ? '米数未知' : `${formatTacticalMeters(parsedMeters)} 米`;
+  if (!metersLabel || bandLabel.includes(metersLabel)) return bandLabel;
+  return `${bandLabel} · ${metersLabel}`;
+}
+
+function formatTacticalMeters(value) {
+  const number = Math.max(0, Number(value) || 0);
+  return number < 10 ? number.toFixed(number % 1 ? 1 : 0) : `${Math.round(number)}`;
+}
+
+function tacticalSpeedLabel(value) {
+  if (value && typeof value === 'object') value = value.label ?? value.value ?? value.metersPerSecond;
+  const number = optionalNumber(value);
+  if (number !== null) return `${Math.max(0, Math.round(number))} 档/回合${number >= 2 ? '（快）' : ''}`;
+  const key = String(value ?? '').toLowerCase();
+  return {
+    stopped: '静止', slow: '缓慢', shambler: '蹒跚', normal: '普通', fast: '快速', sprinter: '疾跑',
+  }[key] ?? (value ? String(value) : '未知');
+}
+
+function tacticalMultiplierLabel(value, fallback = '未知') {
+  if (value && typeof value === 'object') value = value.label ?? value.multiplier ?? value.value;
+  const number = optionalNumber(value);
+  if (number === null) return value ? String(value) : fallback;
+  return `×${Number(number.toFixed(2))}`;
+}
+
+function tacticalLabeledMultiplier(value, label, fallback = '未知') {
+  const multiplier = tacticalMultiplierLabel(value, '');
+  const text = label === null || label === undefined ? '' : String(label).trim();
+  if (text && multiplier && !text.includes(multiplier)) return `${text} · ${multiplier}`;
+  return text || multiplier || fallback;
+}
+
+function tacticalPostureLabel(value) {
+  const key = String(value ?? '').toLowerCase();
+  return {
+    standing: '站立', upright: '站立', approaching: '逼近', engaged: '缠斗',
+    grabbing: '抓握中', grabbed: '抓握中', staggered: '踉跄', stunned: '失衡',
+    downed: '倒地', prone: '倒地', crawling: '爬行', crawler: '爬行',
+    dead: '死亡', killed: '死亡', active: '站立',
+  }[key] ?? (value ? String(value) : '未知');
+}
+
+function tacticalIntentLabel(value) {
+  if (value && typeof value === 'object') value = value.label ?? value.type ?? value.id ?? value.action;
+  const key = String(value ?? '').toLowerCase();
+  return {
+    approach: '继续逼近', closing: '继续逼近', advance: '继续逼近',
+    attack: '挥击', strike: '挥击', bite: '扑咬', grab: '尝试抓握', grapple: '尝试抓握',
+    recover: '恢复平衡', stand_up: '起身', rise: '起身', crawl: '爬行贴近',
+    flank: '侧面包夹', retreat: '短暂后退', idle: '观察', none: '尚未判断',
+  }[key] ?? (value ? String(value) : '尚未判断');
+}
+
+function tacticalPercentOrText(value, fallback = '未知') {
+  if (value && typeof value === 'object') value = value.label ?? value.percent ?? value.value ?? value.chance;
+  const number = optionalNumber(value);
+  if (number === null) return value ? String(value) : fallback;
+  const percent = number <= 1 ? number * 100 : number;
+  return `${Math.max(0, Math.round(percent))}%`;
+}
+
+function optionalNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function optionalMetricNumber(value) {
+  const direct = optionalNumber(value);
+  if (direct !== null) return direct;
+  if (typeof value !== 'string') return null;
+  const match = value.match(/-?\d+(?:\.\d+)?/);
+  return match ? optionalNumber(match[0]) : null;
+}
+
+function normalizeNumericRange(value, fallbackMin = null, fallbackMax = null, { percent = false } = {}) {
+  let minimum = null;
+  let maximum = null;
+  if (Array.isArray(value)) {
+    [minimum, maximum] = value;
+  } else if (value && typeof value === 'object') {
+    minimum = value.min ?? value.minimum ?? value.low ?? value.from ?? value[0];
+    maximum = value.max ?? value.maximum ?? value.high ?? value.to ?? value[1] ?? minimum;
+  } else if (typeof value === 'string') {
+    const matches = value.match(/-?\d+(?:\.\d+)?/g) ?? [];
+    minimum = matches[0];
+    maximum = matches[1] ?? matches[0];
+  } else {
+    minimum = value;
+    maximum = value;
+  }
+  minimum = optionalNumber(minimum) ?? optionalNumber(fallbackMin);
+  maximum = optionalNumber(maximum) ?? optionalNumber(fallbackMax) ?? minimum;
+  if (minimum === null && maximum === null) return null;
+  minimum ??= maximum;
+  maximum ??= minimum;
+  if (percent) {
+    minimum = minimum <= 1 ? minimum * 100 : minimum;
+    maximum = maximum <= 1 ? maximum * 100 : maximum;
+  }
+  return {
+    min: Math.max(0, Math.min(minimum, maximum)),
+    max: Math.max(0, Math.max(minimum, maximum)),
+  };
+}
+
+function formatNumericRange(range, { percent = false } = {}) {
+  if (!range) return '—';
+  const minimum = Math.round(range.min);
+  const maximum = Math.round(range.max);
+  const suffix = percent ? '%' : '';
+  return minimum === maximum ? `${minimum}${suffix}` : `${minimum}–${maximum}${suffix}`;
+}
+
 function normalizeTacticalWeapon(weapon) {
   const itemId = weapon?.itemId ?? weapon?.id;
   const catalog = marketItems.find((item) => item.id === itemId) ?? {};
@@ -3169,14 +3532,38 @@ function normalizeTacticalWeapon(weapon) {
 
 function normalizeTacticalAction(action) {
   const rawRisk = action?.risk ?? action?.riskPercent ?? action?.preview?.risk;
-  const riskNumber = finiteOrNull(rawRisk);
+  const riskNumber = optionalNumber(rawRisk);
   const riskPercent = riskNumber === null ? null : Math.max(0, Math.min(100, Math.round(riskNumber <= 1 ? riskNumber * 100 : riskNumber)));
   const stamina = Math.abs(Math.round(Number(action?.staminaCost ?? action?.enduranceCost ?? action?.costs?.endurance ?? 0) || 0));
   const noise = Math.round(Number(action?.noiseDelta ?? action?.noiseCost ?? action?.costs?.noise ?? 0) || 0);
   const disabledReason = tacticalDisabledReason(action?.disabledReason);
   const disabled = Boolean(action?.disabled ?? action?.enabled === false) || Boolean(disabledReason && action?.enabled !== true);
-  const riskTone = action?.tone ?? (riskPercent === null ? 'neutral' : riskPercent >= 65 ? 'danger' : riskPercent >= 35 ? 'warn' : 'good');
+  const suppliedTone = { critical: 'danger', warning: 'warn' }[action?.tone] ?? action?.tone;
+  const riskTone = suppliedTone ?? (riskPercent === null ? 'neutral' : riskPercent >= 65 ? 'danger' : riskPercent >= 35 ? 'warn' : 'good');
   const estimated = action?.estimatedOutcome ?? action?.estimatedResult ?? action?.outcome ?? action?.preview?.label ?? action?.description;
+  const rawHitChance = action?.hitChance
+    ?? action?.chanceToHit
+    ?? action?.accuracy
+    ?? action?.successChance
+    ?? action?.preview?.hitChance;
+  const hitChance = optionalNumber(rawHitChance);
+  const hitPercent = hitChance === null ? null : Math.max(0, Math.min(100, Math.round(hitChance <= 1 ? hitChance * 100 : hitChance)));
+  const damageRange = normalizeNumericRange(
+    action?.damageRange ?? action?.estimatedDamage ?? action?.preview?.damageRange ?? action?.preview?.damage,
+    action?.damageMin ?? action?.minDamage ?? action?.preview?.minDamage,
+    action?.damageMax ?? action?.maxDamage ?? action?.preview?.maxDamage,
+  );
+  const retaliationRange = normalizeNumericRange(
+    action?.retaliationRiskRange
+      ?? action?.retaliationRisk
+      ?? action?.counterRiskRange
+      ?? action?.counterRisk
+      ?? action?.preview?.retaliationRiskRange
+      ?? action?.preview?.retaliationRisk,
+    action?.retaliationRiskMin ?? action?.counterRiskMin,
+    action?.retaliationRiskMax ?? action?.counterRiskMax,
+    { percent: true },
+  );
   return {
     ...action,
     id: action?.id,
@@ -3186,6 +3573,11 @@ function normalizeTacticalAction(action) {
     riskLabel: typeof rawRisk === 'string' ? rawRisk : riskPercent === null ? '风险未知' : `风险 ${riskPercent}%`,
     tone: riskTone,
     estimatedOutcome: typeof estimated === 'string' ? estimated : '结算结果取决于距离、状态与武器',
+    hitChanceLabel: typeof rawHitChance === 'string' && optionalNumber(rawHitChance) === null
+      ? rawHitChance
+      : hitPercent === null ? '—' : `${hitPercent}%`,
+    damageRangeLabel: damageRange ? `${formatNumericRange(damageRange)} 点` : '—',
+    retaliationRangeLabel: formatNumericRange(retaliationRange, { percent: true }),
     staminaLabel: action?.staminaLabel ?? (stamina ? `-${stamina}` : '±0'),
     noiseLabel: action?.noiseLabel ?? (noise > 0 ? `+${noise}` : noise < 0 ? `${noise}` : '安静'),
     disabled,
@@ -3199,7 +3591,16 @@ function tacticalDisabledReason(reason) {
     encounter_terminal: '遭遇已经结束',
     stale_encounter: '遭遇状态已变化，请重新打开战术面板',
     stale_turn: '回合状态已变化，请重新选择',
+    stale_target: '目标状态已变化，已改选最近威胁',
     invalid_action: '这个行动当前不存在',
+    invalid_target: '这个目标已经无效',
+    target_missing: '目标已离开接触，已改选最近威胁',
+    target_required: '先选择一个合法目标',
+    target_dead: '目标已经倒下，请选择其他丧尸',
+    target_hidden: '这个目标已离开视野',
+    target_out_of_range: '目标不在当前行动的有效距离内',
+    target_out_of_reach: '当前武器够不到这个目标',
+    target_posture_invalid: '这个行动不适用于目标当前姿态',
     weapon_missing: '需要先装备一件可用武器',
     weapon_broken: '当前武器已经损坏',
     requires_weapon: '需要装备合适的武器',
@@ -3228,13 +3629,98 @@ function tacticalDisabledReason(reason) {
   return labels[reason] ?? String(reason).replaceAll('_', ' ');
 }
 
+function normalizeTacticalLogEntry(entry, index) {
+  const turnLabel = entry?.turn !== undefined
+    ? `R${Math.max(1, Number(entry.turn) || 1)}`
+    : `R${Math.max(1, tacticalSummary.value.turn - index)}`;
+  if (typeof entry === 'string') {
+    return {
+      id: `${tacticalSummary.value.turn}-${index}-${entry}`,
+      turnLabel,
+      text: entry,
+    };
+  }
+  const baseText = entry?.text ?? entry?.message ?? entry?.label ?? describeTacticalEvent(entry);
+  return {
+    id: entry?.id ?? `${tacticalSummary.value.turn}-${index}-${baseText}`,
+    turnLabel,
+    text: appendTacticalDamageDetail(baseText, entry),
+  };
+}
+
+function tacticalDamageDetail(payload, fallbackTarget = null) {
+  if (!payload || typeof payload !== 'object') return '';
+  const enemyChanges = Array.isArray(payload.effects?.enemyChanges)
+    ? payload.effects.enemyChanges
+    : Array.isArray(payload.enemyChanges) ? payload.enemyChanges : [];
+  const requestedTargetId = String(payload.targetId ?? fallbackTarget?.id ?? '');
+  const enemyChange = [...enemyChanges].reverse().find((change) => (
+    !requestedTargetId || String(change?.targetId ?? '') === requestedTargetId
+  )) ?? null;
+  const eventWithDamage = Array.isArray(payload.events)
+    ? [...payload.events].reverse().find((event) => event && typeof event === 'object' && [
+      event.damageDealt, event.dealtDamage, event.damage, event.targetRemainingHp,
+      event.remainingHp, event.targetHp, event.hpAfter,
+    ].some((value) => optionalNumber(value) !== null))
+    : null;
+  const sources = [
+    payload,
+    payload.outcome,
+    payload.result,
+    payload.combatResult,
+    payload.enemyChange,
+    enemyChange,
+    payload.targetState,
+    payload.target && typeof payload.target === 'object' ? payload.target : null,
+    eventWithDamage,
+  ].filter((source) => source && typeof source === 'object');
+  const firstNumber = (keys) => {
+    for (const source of sources) {
+      for (const key of keys) {
+        const value = optionalNumber(source[key]);
+        if (value !== null) return value;
+      }
+    }
+    return null;
+  };
+  const firstValue = (keys) => {
+    for (const source of sources) {
+      for (const key of keys) {
+        if (source[key] !== null && source[key] !== undefined && source[key] !== '') return source[key];
+      }
+    }
+    return null;
+  };
+  const targetId = String(firstValue(['targetId', 'enemyId', 'zombieId']) ?? fallbackTarget?.id ?? '');
+  const currentTarget = tacticalTargets.value.find((target) => target.id === targetId) ?? fallbackTarget;
+  const damage = firstNumber(['damageDealt', 'dealtDamage', 'targetDamage', 'damageAmount', 'damage']);
+  const remainingHp = firstNumber(['targetRemainingHp', 'remainingHp', 'targetHp', 'hpAfter', 'currentHp', 'hp']);
+  const maximumHp = firstNumber(['targetMaxHp', 'maxHp', 'maxHealth', 'healthMax']) ?? currentTarget?.maxHp ?? null;
+  if (damage === null && remainingHp === null) return '';
+  const targetName = firstValue(['targetLabel', 'targetName', 'enemyName']) ?? currentTarget?.typeLabel ?? '目标';
+  const details = [];
+  if (damage !== null) details.push(`造成 ${Math.max(0, Math.round(damage))} 伤害`);
+  if (remainingHp !== null) {
+    const maximum = maximumHp === null ? '' : ` / ${Math.max(1, Math.round(maximumHp))}`;
+    details.push(`剩余 HP ${Math.max(0, Math.round(remainingHp))}${maximum}`);
+  }
+  return `${targetName}：${details.join(' · ')}`;
+}
+
+function appendTacticalDamageDetail(baseText, payload, fallbackTarget = null) {
+  const base = String(baseText ?? '').trim();
+  const detail = tacticalDamageDetail(payload, fallbackTarget);
+  if (!detail || base.includes('剩余 HP')) return base;
+  return base ? `${base} ${detail}` : detail;
+}
+
 function describeTacticalEvent(event) {
   if (!event || typeof event !== 'object') return '战况已更新。';
   if (event.type === 'player_action') {
     const label = tacticalActionFallbacks.find((action) => action.id === event.actionId)?.label ?? '行动';
     const result = event.success ? '成功' : '失手';
     const kills = Number(event.zombieKills) > 0 ? `，击倒 ${Math.round(event.zombieKills)} 只` : '';
-    return `${label}${result}${kills}。`;
+    return appendTacticalDamageDetail(`${label}${result}${kills}。`, event);
   }
   if (event.type === 'zombie_response') {
     const response = {
@@ -3245,7 +3731,7 @@ function describeTacticalEvent(event) {
       stumbled: '你在反扑中踉跄失衡。',
       evaded: '你避开了这一轮扑咬。',
     }[event.outcome];
-    return response ?? '尸群作出反应，你的站位与压力发生变化。';
+    return appendTacticalDamageDetail(response ?? '尸群作出反应，你的站位与压力发生变化。', event);
   }
   const labels = {
     zombie_killed: '一只丧尸失去行动能力。',
@@ -3253,15 +3739,17 @@ function describeTacticalEvent(event) {
     weapon_wear: '主手武器在使用中损耗。',
     reload: '弹药已装填。',
   };
-  return labels[event.type] ?? event.description ?? event.type ?? '战况已更新。';
+  return appendTacticalDamageDetail(labels[event.type] ?? event.description ?? event.type ?? '战况已更新。', event);
 }
 
-function formatTacticalResult(result, action) {
+function formatTacticalResult(result, action, fallbackTarget = null) {
   if (typeof result === 'string') return result;
-  if (result?.message) return result.message;
-  if (result?.summary) return typeof result.summary === 'string' ? result.summary : action.estimatedOutcome;
-  if (Array.isArray(result?.events) && result.events.length) return describeTacticalEvent(result.events[result.events.length - 1]);
-  return `${action.label}已结算，战况与消耗已同步。`;
+  let summary = '';
+  if (result?.message) summary = result.message;
+  else if (result?.summary) summary = typeof result.summary === 'string' ? result.summary : action.estimatedOutcome;
+  else if (Array.isArray(result?.events) && result.events.length) summary = describeTacticalEvent(result.events[result.events.length - 1]);
+  else summary = `${action.label}已结算，战况与消耗已同步。`;
+  return appendTacticalDamageDetail(summary, result, fallbackTarget);
 }
 
 function finiteOrNull(value) {
