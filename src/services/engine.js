@@ -1,4 +1,5 @@
 import { eventDeck, marketItems, skillDefinitions, vehicleEvents, vitalDefinitions } from '../data/zombie.js';
+import { createWound, durationForAction, resolveCombatEncounter, weatherDefinitions } from './survival.js';
 
 const foodIds = ['canned_soup', 'canned_beans', 'canned_tuna', 'cereal', 'chips', 'peanut_butter'];
 const waterIds = ['water_bottle'];
@@ -131,28 +132,26 @@ export function resolveAction({ day, actionText, optionId, event, profession, sh
   };
 }
 
-export function resolveMapMove({ day, node, inventory, tags = [], traits = [], vitals, skills, vehicle }) {
+export function resolveMapMove({ day, node, inventory, tags = [], traits = [], vitals, skills, vehicle, world = null }) {
   const traitIds = new Set(traits.map((trait) => trait.id));
   const consume = [];
   const addTags = [];
   const notes = [`抵达${node.name}`];
   const danger = node.danger ?? 3;
   const vitalDelta = {
-    health: danger >= 5 ? -4 : -1,
+    health: danger >= 6 ? -2 : 0,
     endurance: -Math.max(5, danger * 4),
-    hunger: 6,
-    thirst: 8,
-    fatigue: traitIds.has('wakeful') ? Math.max(2, danger - 1) : danger + 4,
-    panic: danger * 3,
-    stress: danger * 2,
+    hunger: 0,
+    thirst: 0,
+    fatigue: traitIds.has('wakeful') ? Math.max(0, danger - 3) : Math.max(1, danger - 2),
+    panic: Math.max(0, danger * 2 - 2),
+    stress: Math.max(0, danger - 1),
   };
 
-  applyDailyNeeds({ day, inventory, traits: traitIds, vitals, consume, vitalDelta, addTags, notes });
-  if (vehicle?.status && vehicle.status !== 'none') {
+  if (vehicle?.status && vehicle.status !== 'none' && (vehicle.fuel ?? 0) > 0) {
     vitalDelta.fatigue -= vehicle.status === 'working' ? 4 : 2;
     notes.push(`${vehicle.name ?? '车辆'}节省了体力`);
   }
-  if (tags.includes('受伤')) vitalDelta.health -= 3;
 
   const score = Math.max(10, Math.min(95, 72 - danger * 7 + mobilityScore(skills, inventory, traits)));
   const result = `你沿着地图边缘推进到${node.name}。${node.description}今天的路线没有给你太多喘息，但新的位置已经打开。`;
@@ -168,11 +167,33 @@ export function resolveMapMove({ day, node, inventory, tags = [], traits = [], v
     removeTags: [],
     revealNodeIds: [],
     vehicle: null,
+    minutes: durationForAction('move', { vehicle }),
+    mode: 'active',
+    noiseDelta: vehicle?.status !== 'none' && (vehicle.fuel ?? 0) > 0 ? 18 : 4,
+    threatDelta: Math.max(0, danger * 2 - (world?.weatherId === 'rain' ? 3 : 0)),
     highlight: score >= 86 ? `第${day}天：你抵达${node.name}，路线被重新打开。` : null,
   };
 }
 
-export function resolveNodeAction({ actionId, node, day, inventory, tags = [], traits = [], vitals, skills, profession, vehicle, manualLoot = null }) {
+export function resolveNodeAction({
+  actionId,
+  node,
+  day,
+  clockMinutes = 480,
+  inventory,
+  tags = [],
+  traits = [],
+  vitals,
+  skills,
+  profession,
+  vehicle,
+  world = null,
+  body = null,
+  base = null,
+  equippedWeaponId = null,
+  searchCount = 0,
+  manualLoot = null,
+}) {
   const traitIds = new Set(traits.map((trait) => trait.id));
   const danger = node.danger ?? 3;
   const consume = [];
@@ -183,21 +204,52 @@ export function resolveNodeAction({ actionId, node, day, inventory, tags = [], t
   const vitalDelta = {
     health: -Math.max(0, danger - 3),
     endurance: -Math.max(3, danger * 3),
-    hunger: 5,
-    thirst: 7,
-    fatigue: traitIds.has('wakeful') ? 3 : 5,
+    hunger: 0,
+    thirst: 0,
+    fatigue: traitIds.has('wakeful') ? 1 : 2,
     panic: Math.max(0, danger * 2 - 2),
     stress: Math.max(0, danger * 2 - 1),
   };
 
-  applyDailyNeeds({ day, inventory, traits: traitIds, vitals, consume, vitalDelta, addTags, notes });
+  if (['combat_melee', 'combat_firearm', 'evade'].includes(actionId)) {
+    const combat = resolveCombatEncounter({
+      approach: actionId,
+      node,
+      day,
+      clockMinutes,
+      inventory,
+      skills,
+      traits,
+      vitals,
+      world,
+      equippedWeaponId,
+    });
+    return mapOutcome({
+      day,
+      title: combat.title,
+      result: combat.result,
+      notes: [combat.notes],
+      score: combat.score,
+      vitalDelta: combat.vitals,
+      consume: combat.consume,
+      add,
+      addTags: combat.wounds.some((wound) => wound.type === 'bite') ? ['疑似咬伤'] : [],
+      removeTags,
+      wounds: combat.wounds,
+      kills: combat.kills,
+      minutes: combat.minutes,
+      mode: combat.mode,
+      noiseDelta: combat.noiseDelta,
+      threatDelta: combat.threatDelta,
+    });
+  }
 
   if (actionId === 'rest') {
     vitalDelta.health += 2;
-    vitalDelta.endurance += 12;
-    vitalDelta.fatigue -= 24;
-    vitalDelta.panic -= 16;
-    vitalDelta.stress -= 14;
+    vitalDelta.endurance += 8;
+    vitalDelta.fatigue -= 10;
+    vitalDelta.panic -= 8;
+    vitalDelta.stress -= 8;
     notes.push('临时休整');
     return mapOutcome({
       day,
@@ -210,6 +262,35 @@ export function resolveNodeAction({ actionId, node, day, inventory, tags = [], t
       add,
       addTags,
       removeTags,
+      minutes: durationForAction('rest'),
+      mode: 'rest',
+      noiseDelta: -8,
+      threatDelta: -5,
+    });
+  }
+
+  if (actionId === 'sleep') {
+    vitalDelta.health = base?.defense >= 4 ? 4 : 1;
+    vitalDelta.endurance = 12;
+    vitalDelta.fatigue = -20;
+    vitalDelta.panic = -12;
+    vitalDelta.stress = -10;
+    notes.push('完整睡眠');
+    return mapOutcome({
+      day,
+      title: '熬过一夜',
+      result: `你在${node.name}把入口重新检查一遍，然后断断续续睡了几个小时。${(world?.threat ?? 0) >= 70 ? '远处持续有撞击和拖行声，今晚并不安稳。' : '天亮前没有东西真正靠近你的藏身处。'}`,
+      notes,
+      score: 72 + (base?.defense ?? 0) * 3 - danger * 4,
+      vitalDelta,
+      consume,
+      add,
+      addTags,
+      removeTags,
+      minutes: durationForAction('sleep'),
+      mode: 'sleep',
+      noiseDelta: -12,
+      threatDelta: -8,
     });
   }
 
@@ -231,7 +312,84 @@ export function resolveNodeAction({ actionId, node, day, inventory, tags = [], t
       addTags,
       removeTags,
       scoutDepth: 2,
+      minutes: durationForAction('scout'),
+      mode: 'active',
+      noiseDelta: -4,
+      threatDelta: -8,
       highlight: danger >= 5 ? `第${day}天：你在${node.name}摸清了一条高危路线。` : null,
+    });
+  }
+
+  if (actionId === 'forage') {
+    const weather = weatherDefinitions.find((entry) => entry.id === world?.weatherId) ?? weatherDefinitions[0];
+    const score = Math.max(10, Math.min(98,
+      46 + (skills.foraging ?? 0) * 8 + (traitIds.has('outdoorsman') ? 10 : 0) + weather.searchMod - danger * 4 + Math.floor(Math.random() * 18)
+    ));
+    const foundIds = score >= 75 ? ['wild_berries', 'foraged_mushrooms'] : score >= 42 ? ['wild_berries'] : [];
+    foundIds.forEach((id) => {
+      const item = marketItems.find((entry) => entry.id === id);
+      if (item) add.push({ ...item, count: 1 });
+    });
+    if (score >= 82 && day % 2 === 0) {
+      const seeds = marketItems.find((entry) => entry.id === 'cabbage_seeds');
+      if (seeds) add.push({ ...seeds, count: 1 });
+    }
+    vitalDelta.health = 0;
+    vitalDelta.endurance = -10;
+    vitalDelta.fatigue = 2;
+    vitalDelta.panic = Math.max(0, danger - 2);
+    vitalDelta.stress = 0;
+    notes.push(foundIds.length ? `找到${foundIds.length}份野外食物` : '没有找到可确认安全的食物');
+    return mapOutcome({
+      day,
+      title: '野外觅食',
+      result: foundIds.length
+        ? `你在${node.name}的林线和荒地里慢慢筛过可食用植物，带回了${foundIds.map((id) => marketItems.find((item) => item.id === id)?.name).join('、')}。`
+        : `你在${node.name}绕了很久，只找到无法确认是否有毒的植物，最后空手返回。`,
+      notes,
+      score,
+      vitalDelta,
+      consume,
+      add,
+      addTags,
+      removeTags,
+      minutes: durationForAction('forage'),
+      mode: 'active',
+      noiseDelta: -3,
+      threatDelta: -4,
+    });
+  }
+
+  if (actionId === 'fortify') {
+    const hasHammer = inventory.some((item) => item.id === 'hammer' && item.count > 0);
+    const hasPlank = inventory.some((item) => item.id === 'plank' && item.count > 0);
+    const hasNails = inventory.some((item) => item.id === 'nails' && item.count > 0);
+    const ready = hasHammer && hasPlank && hasNails;
+    if (ready) consume.push('plank', 'nails');
+    vitalDelta.health = 0;
+    vitalDelta.endurance = ready ? -12 : -2;
+    vitalDelta.fatigue = ready ? 4 : 0;
+    vitalDelta.panic = -2;
+    vitalDelta.stress = ready ? -4 : 2;
+    notes.push(ready ? '木板与钉子构成一层新路障' : '缺少锤子、木板或钉子');
+    return mapOutcome({
+      day,
+      title: ready ? '据点加固' : '材料不足',
+      result: ready
+        ? `你用木板封住${node.name}据点最薄弱的入口。路障不可能永远挡住尸群，但能换来宝贵的反应时间。`
+        : '你检查了入口，但没有齐备锤子、木板和钉子，只能先把薄弱点记下来。',
+      notes,
+      score: ready ? 62 + (skills.carpentry ?? 0) * 6 : 20,
+      vitalDelta,
+      consume,
+      add,
+      addTags,
+      removeTags,
+      minutes: ready ? durationForAction('fortify') : 20,
+      mode: 'active',
+      noiseDelta: ready ? 24 : 0,
+      threatDelta: ready ? 8 : 0,
+      baseDelta: ready ? { defense: 1, barricades: 1 } : null,
     });
   }
 
@@ -257,24 +415,32 @@ export function resolveNodeAction({ actionId, node, day, inventory, tags = [], t
       addTags,
       removeTags,
       vehicle: vehicleOutcome.vehicle,
+      minutes: durationForAction('vehicle'),
+      mode: 'active',
+      noiseDelta: 16,
+      threatDelta: 8,
       highlight: vehicleOutcome.vehicle?.status === 'working' ? `第${day}天：你在${node.name}弄到了一辆能开的车。` : null,
     });
   }
 
   const foundItems = manualLoot
     ? normalizeManualLootItems(manualLoot.collectedItems)
-    : nodeLoot({ node, day, skills, traits, inventory });
-  if (!manualLoot) foundItems.forEach((item) => add.push({ ...item, count: 1 }));
-  const searchScore = Math.max(10, Math.min(98, 54 - danger * 4 + scoutScore(skills, traits) + lootToolScore(inventory)));
+    : searchCount >= 3
+      ? []
+      : nodeLoot({ node, day: day + searchCount * 7, skills, traits, inventory }).slice(0, Math.max(1, 2 - searchCount));
+  foundItems.forEach((item) => add.push({ ...item, count: item.count ?? 1 }));
+  const searchScore = Math.max(10, Math.min(98, 54 - danger * 4 + scoutScore(skills, traits) + lootToolScore(inventory) - (manualLoot ? 0 : searchCount * 9)));
+  const wounds = [];
   if (searchScore < 42) {
     vitalDelta.health -= danger >= 5 ? 10 : 5;
     vitalDelta.panic += 10;
     addTags.push('受伤');
+    wounds.push(createWound({ danger, score: searchScore, day, clockMinutes, source: `${node.name}搜刮事故` }));
     notes.push('搜刮时受伤');
   } else if (foundItems.length) {
     notes.push(`${manualLoot ? '带走' : '找到'}${foundItems.map((item) => item.name).join('、')}`);
   } else {
-    notes.push(manualLoot ? '没有带走有价值物资' : '没有找到有价值物资');
+    notes.push(manualLoot ? '没有带走有价值物资' : searchCount >= 3 ? '周边已被反复翻找，资源耗尽' : '没有找到有价值物资');
   }
 
   return mapOutcome({
@@ -288,6 +454,11 @@ export function resolveNodeAction({ actionId, node, day, inventory, tags = [], t
     add,
     addTags,
     removeTags,
+    wounds,
+    minutes: durationForAction('search'),
+    mode: 'active',
+    noiseDelta: 10 + danger * 2,
+    threatDelta: Math.max(0, danger - 2),
     highlight: searchScore >= 86 ? `第${day}天：你在${node.name}找到关键补给。` : null,
   });
 }
@@ -295,15 +466,25 @@ export function resolveNodeAction({ actionId, node, day, inventory, tags = [], t
 function normalizeManualLootItems(items = []) {
   const byId = new Map();
   items.filter(Boolean).forEach((item) => {
-    if (!byId.has(item.id)) byId.set(item.id, item);
+    const existing = byId.get(item.id);
+    if (existing) existing.count += Math.max(1, Number(item.count) || 1);
+    else byId.set(item.id, { ...item, count: Math.max(1, Number(item.count) || 1) });
   });
   return [...byId.values()];
 }
 
-export function createEnding({ day, victory, vitals, skills, profession, survivorName, spawnLocation, shelter, inventory, history, traits = [], highlight }) {
+export function createEnding({ day, maxDay = 20, victory, vitals, skills, profession, survivorName, spawnLocation, shelter, inventory, history, traits = [], highlight, body = null, world = null, stats = null }) {
   const best = [...history].sort((a, b) => b.score - a.score)[0];
   const worst = [...history].sort((a, b) => a.score - b.score)[0];
-  const reason = victory ? '等到军方撤离' : vitals.health <= 0 ? '生命值耗尽' : '生存记录中断';
+  const reason = victory
+    ? '等到军方撤离'
+    : (body?.infectionLevel ?? 0) >= 100
+      ? 'Knox 感染吞噬了最后的意识'
+      : vitals.health <= 0
+        ? '生命值耗尽'
+        : day > maxDay
+          ? '错过最后撤离窗口'
+          : '生存记录中断';
   const archetype = pickArchetype({ history, profession, vitals, victory });
   const topSkills = Object.entries(skills ?? {})
     .sort((a, b) => b[1] - a[1])
@@ -340,10 +521,45 @@ export function createEnding({ day, victory, vitals, skills, profession, survivo
     traits: traits.map((trait) => ({ name: trait.name, canonicalName: trait.canonicalName, points: trait.points, icon: trait.icon })),
     shelterName: shelter?.name ?? '无避难所',
     inventory: inventory.map((item) => ({ name: item.name, count: item.count, icon: item.fallbackIcon ?? item.icon })),
+    world: world ? {
+      weatherId: world.weatherId,
+      threat: world.threat,
+      powerOn: world.powerOn,
+      waterOn: world.waterOn,
+    } : null,
+    wounds: (body?.wounds ?? []).map((wound) => ({
+      bodyPart: wound.bodyPart,
+      type: wound.type,
+      severity: wound.severity,
+      knoxInfection: wound.knoxInfection,
+    })),
+    infectionLevel: body?.infectionLevel ?? 0,
+    stats: stats ? { ...stats } : null,
   };
 }
 
-function mapOutcome({ day, title, result, notes, score, vitalDelta, consume, add, addTags, removeTags, scoutDepth = 0, vehicle = null, highlight = null }) {
+function mapOutcome({
+  day,
+  title,
+  result,
+  notes,
+  score,
+  vitalDelta,
+  consume,
+  add,
+  addTags,
+  removeTags,
+  scoutDepth = 0,
+  vehicle = null,
+  highlight = null,
+  minutes = 120,
+  mode = 'active',
+  wounds = [],
+  kills = 0,
+  noiseDelta = 0,
+  threatDelta = 0,
+  baseDelta = null,
+}) {
   return {
     title,
     result,
@@ -358,6 +574,13 @@ function mapOutcome({ day, title, result, notes, score, vitalDelta, consume, add
     revealNodeIds: [],
     vehicle,
     highlight,
+    minutes,
+    mode,
+    wounds,
+    kills,
+    noiseDelta,
+    threatDelta,
+    baseDelta,
     action: title,
     day,
   };
@@ -456,7 +679,7 @@ function resolveVehicleSearch({ node, day, inventory, traits, skills, profession
 
   if (score >= 58) {
     const fuelBonus = gasCan ? 1 : 0;
-    if (gasCan && event.status === 'working') consume.push('gas_can');
+    if (gasCan) consume.push('gas_can');
     notes.push(`发现${event.name}`);
     return {
       score,

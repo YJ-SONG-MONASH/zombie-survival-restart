@@ -1,6 +1,6 @@
 <template>
   <section class="home-screen screen pz-home">
-    <button class="icon-button settings-button" title="API 设置" @click="showSettings = true">⚙️</button>
+    <button class="icon-button settings-button" title="自定义叙事尚未接入当前玩法" disabled>⚙️</button>
 
     <header class="hero pz-hero">
       <p class="pz-kicker">KNOX EVENT / SOLO SURVIVAL</p>
@@ -8,13 +8,22 @@
       <p class="pz-subtitle">This is how you died.</p>
       <div class="server-switch" role="group" aria-label="运行模式">
         <button :class="{ active: settings.mode === 'offline' }" @click="settings.useOfficial()">离线规则</button>
-        <button :class="{ active: settings.mode === 'custom' }" @click="showSettings = true">自定义 API</button>
+        <button disabled title="后续版本接入">自定义叙事（开发中）</button>
       </div>
       <p class="server-status">
         <span class="status-dot"></span>
-        {{ settings.isCustomMode ? '自定义 API 已配置' : '本地规则引擎已就绪' }}
+        本地规则引擎已就绪
       </p>
     </header>
+
+    <section v-if="hasActiveRun" class="continue-run-card">
+      <div>
+        <p class="panel-kicker">ACTIVE SAVE</p>
+        <h2>{{ game.survivorName || '无名幸存者' }} · 第 {{ game.day }} 天 {{ game.clockLabel }}</h2>
+        <p>{{ game.currentMapNode?.name ?? game.spawnLocation?.name }} · {{ game.activeWeather.label }} · {{ game.ending?.title ? game.ending.title : '仍在挣扎求生' }}</p>
+      </div>
+      <button class="primary-action" @click="continueGame">继续游戏</button>
+    </section>
 
     <div class="scenario-list pz-scenario-list">
       <button
@@ -22,6 +31,7 @@
         :key="scenario.id"
         class="scenario-card pz-scenario-card"
         :class="[{ locked: scenario.locked }, `accent-${scenario.accent || 'muted'}`]"
+        :disabled="scenario.locked"
         @click="start(scenario)"
       >
         <span class="scenario-icon">{{ scenarioGlyph(scenario.icon) }}</span>
@@ -231,6 +241,7 @@ const settingsDraft = reactive({
   model: settings.model,
   apiKey: settings.apiKey,
 });
+const hasActiveRun = computed(() => Boolean(game.profession || game.shelter || game.history.length || game.ending));
 
 const itemCategoryLabels = {
   all: '全部',
@@ -300,7 +311,16 @@ const visibleShelters = computed(() => shelters
   .sort((a, b) => qualityMeta(b.quality).rank - qualityMeta(a.quality).rank || a.name.localeCompare(b.name, 'zh-CN')));
 
 function start(scenario) {
+  if (scenario.locked) return;
+  if (hasActiveRun.value && !globalThis.confirm('开始新游戏会覆盖当前生存进度（档案馆记录会保留）。确定继续吗？')) return;
   if (game.startScenario(scenario.id)) router.push('/profession');
+}
+
+function continueGame() {
+  if (game.ending?.title) router.push('/ending');
+  else if (game.profession && game.shelter) router.push('/survival');
+  else if (game.profession) router.push('/market');
+  else router.push('/profession');
 }
 
 function scenarioGlyph(icon) {

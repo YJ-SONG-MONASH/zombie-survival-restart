@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import {
+  craftingRecipes,
   hiddenProfessionAliases,
   hiddenSurvivorPresets,
   lootTierWeights,
@@ -24,10 +25,32 @@ import {
   vitalDefinitions,
 } from '../data/zombie.js';
 import { createDayEvent, createEnding, resolveAction, resolveMapMove, resolveNodeAction as resolveMapNodeAction } from '../services/engine.js';
+import {
+  START_MINUTE,
+  advanceSurvivalState,
+  bodyPartLabels,
+  createBaseState,
+  createBodyState,
+  createSurvivalStats,
+  createWorldState,
+  durationForAction,
+  formatClock,
+  moodlesFor,
+  normalizeBaseState,
+  normalizeBodyState,
+  normalizeSurvivalStats,
+  normalizeWorldState,
+  weatherDefinitions,
+  woundTypeLabels,
+} from '../services/survival.js';
+
+export const SAVE_VERSION = 2;
 
 const defaultState = () => ({
+  saveVersion: SAVE_VERSION,
   scenario: cloneCatalogRecord(scenarios[0]),
   day: 1,
+  clockMinutes: START_MINUTE,
   maxDay: 20,
   vitals: createBaseVitals(),
   skills: createBaseSkills(),
@@ -56,6 +79,12 @@ const defaultState = () => ({
   movesRemaining: 1,
   mapLog: [],
   searchedSceneObjectIds: [],
+  nodeSearchCounts: {},
+  world: createWorldState(),
+  body: createBodyState(),
+  base: createBaseState(),
+  equippedWeaponId: null,
+  survivalStats: createSurvivalStats(),
   ending: null,
   archives: [],
 });
@@ -63,18 +92,14 @@ const defaultState = () => ({
 export const useGameStore = defineStore('game', {
   state: defaultState,
   getters: {
-    isGameOver: (state) => state.vitals.health <= 0 || state.day > state.maxDay,
-    isVictory: (state) => state.day > state.maxDay && state.vitals.health > 0,
-    usedSpace: (state) => state.inventory.reduce((sum, item) => sum + item.space * item.count, 0),
-    maxSpace: (state) => {
-      const base = state.shelter?.space ?? 30;
-      const strengthBonus = Math.max(0, (state.skills?.strength ?? 5) - 5) * 3;
-      const bagBonus = state.inventory.reduce((sum, item) => sum + ((item.effects?.capacity ?? 0) * item.count), 0);
-      const total = base + strengthBonus + bagBonus;
-      if (state.selectedTraits.some((trait) => trait.id === 'organized')) return Math.floor(total * 1.3);
-      if (state.selectedTraits.some((trait) => trait.id === 'disorganized')) return Math.floor(total * 0.7);
-      return total;
+    isVictory: (state) => state.day >= state.maxDay && state.day <= state.maxDay + 5 && ['valley_checkpoint', 'louisville_outskirts'].includes(state.currentNodeId) && state.vitals.health > 0,
+    isGameOver() {
+      return this.vitals.health <= 0 || this.body?.infectionLevel >= 100 || this.isVictory || this.day > this.maxDay + 5;
     },
+    evacuationWindowOpen: (state) => state.day >= state.maxDay && state.day <= state.maxDay + 5,
+    evacuationDeadline: (state) => state.maxDay + 5,
+    usedSpace: (state) => state.inventory.reduce((sum, item) => sum + item.space * item.count, 0),
+    maxSpace: (state) => inventoryCapacityForState(state, state.inventory),
     remainingSpace() {
       return this.maxSpace - this.usedSpace;
     },
@@ -96,14 +121,59 @@ export const useGameStore = defineStore('game', {
     isHiddenPresetLocked: (state) => Boolean(findHiddenSurvivorPreset(state.survivorName)?.lockedTraits),
     sortedArchives: (state) => [...state.archives].sort((a, b) => b.createdAt - a.createdAt),
     currentMapNode: (state) => mapNodes.find((node) => node.id === state.currentNodeId) ?? null,
+    clockLabel: (state) => formatClock(state.clockMinutes),
+    activeWeather: (state) => weatherDefinitions.find((weather) => weather.id === state.world?.weatherId) ?? weatherDefinitions[0],
+    isAtHome: (state) => Boolean(state.currentNodeId && state.currentNodeId === state.spawnLocation?.id),
+    equippedWeapon: (state) => state.inventory.find((item) => item.id === state.equippedWeaponId && item.count > 0) ?? null,
+    woundList: (state) => (state.body?.wounds ?? []).map((wound) => ({
+      ...wound,
+      bodyPartLabel: bodyPartLabels[wound.bodyPart] ?? wound.bodyPart,
+      typeLabel: woundTypeLabels[wound.type] ?? wound.type,
+    })),
+    moodles() {
+      return moodlesFor({
+        vitals: this.vitals,
+        body: this.body,
+        world: this.world,
+        usedSpace: this.usedSpace,
+        maxSpace: this.maxSpace,
+      });
+    },
+    recipeList: (state) => craftingRecipes.map((recipe) => recipeStatus(recipe, state)),
     inspectedMapNode: (state) => mapNodes.find((node) => node.id === state.inspectedNodeId) ?? null,
     inspectedNodeDetail: (state) => mapNodeDetails[state.inspectedNodeId] ?? null,
     visibleMapNodeList: (state) => buildVisibleMapNodes(state),
     currentNeighborNodes: (state) => neighborsForNode(state.currentNodeId).map((id) => mapNodes.find((node) => node.id === id)).filter(Boolean),
     currentNodeActions: (state) => {
       const node = mapNodes.find((entry) => entry.id === state.currentNodeId);
-      return (node?.actions ?? ['search', 'scout', 'rest'])
-        .map((id) => mapNodeActions.find((action) => action.id === id))
+      const actionIds = [...(node?.actions ?? ['search', 'scout', 'rest'])];
+      if ((node?.danger ?? 0) >= 2) actionIds.push('evade', 'combat_melee', 'combat_firearm');
+      if (node?.type === 'wilds') actionIds.push('forage');
+      if (state.currentNodeId === state.spawnLocation?.id) actionIds.push('fortify', 'sleep');
+      else if ((node?.danger ?? 9) <= 2 && !actionIds.includes('rest')) actionIds.push('rest', 'sleep');
+      return [...new Set(actionIds)]
+        .map((id) => {
+          const action = mapNodeActions.find((entry) => entry.id === id);
+          if (!action) return null;
+          let disabledReason = '';
+          if (id === 'combat_firearm') {
+            const hasUsableFirearm = state.inventory
+              .filter((item) => item.count > 0 && item.tags?.includes('firearm'))
+              .some((firearm) => state.inventory.some((item) => item.id === (firearm.id === 'shotgun' ? 'shotgun_shells' : '9mm_rounds') && item.count > 0));
+            if (!hasUsableFirearm) disabledReason = '需要枪械和对应弹药';
+          }
+          if (id === 'fortify') {
+            const has = (itemId) => state.inventory.some((item) => item.id === itemId && item.count > 0);
+            if (!has('hammer') || !has('plank') || !has('nails')) disabledReason = '需要锤子、木板和钉子';
+          }
+          if (id === 'search' && (state.nodeSearchCounts?.[node?.id] ?? 0) >= 3) disabledReason = '周边已被搜空，请检查具体建筑容器';
+          return {
+            ...action,
+            minutes: durationForAction(id),
+            disabled: Boolean(disabledReason),
+            disabledReason,
+          };
+        })
         .filter(Boolean);
     },
     currentNodeType: (state) => {
@@ -113,25 +183,79 @@ export const useGameStore = defineStore('game', {
   },
   actions: {
     loadPersistedState() {
-      const raw = localStorage.getItem('moshi-survival-state');
+      let raw = null;
+      try {
+        raw = localStorage.getItem('moshi-survival-state');
+      } catch {
+        return;
+      }
       if (!raw) return;
       try {
         const parsed = JSON.parse(raw);
-        if (parsed?.game) this.$patch(parsed.game);
+        if (!parsed?.game || typeof parsed.game !== 'object') return;
+        if (Number(parsed.game.saveVersion) > SAVE_VERSION) {
+          try {
+            localStorage.setItem('moshi-survival-state-future-backup', raw);
+          } catch {
+            // The current save remains untouched even if a backup cannot be written.
+          }
+          return;
+        }
+        this.$patch(parsed.game);
+        this.migrateLegacySurvivalState(parsed.game);
         this.normalizeCatalogReferences();
-        if (!Array.isArray(this.selectedTraits)) this.selectedTraits = [];
-        if (this.baseTraitPoints === undefined || this.baseTraitPoints === null) this.baseTraitPoints = this.profession?.traitPointMod ?? 0;
-        if (!this.spawnLocation) this.spawnLocation = cloneCatalogRecord(spawnLocations[0]);
-        if (!this.survivorName) this.survivorName = '';
         if (!parsed?.game?.vitals || !parsed?.game?.skills) this.recalculateCharacterState(false);
       } catch {
-        localStorage.removeItem('moshi-survival-state');
+        try {
+          localStorage.setItem('moshi-survival-state-corrupt-backup', raw);
+        } catch {
+          // Storage may be unavailable; resetting the in-memory game is still safe.
+        }
+        try {
+          localStorage.removeItem('moshi-survival-state');
+        } catch {
+          // Ignore storage backends that reject writes and deletes.
+        }
       }
     },
     resetGame() {
       const archives = this.archives;
       this.$patch(defaultState());
       this.archives = archives;
+    },
+    migrateLegacySurvivalState(rawState = {}) {
+      const hasOwn = (key) => Object.prototype.hasOwnProperty.call(rawState, key);
+      const location = spawnLocations.find((entry) => entry.id === this.spawnLocation?.id) ?? spawnLocations[0];
+      const shelter = shelters.find((entry) => entry.id === this.shelter?.id) ?? null;
+      const node = mapNodes.find((entry) => entry.id === (this.currentNodeId ?? location.id)) ?? mapNodes.find((entry) => entry.id === location.id);
+      if (!hasOwn('clockMinutes')) this.clockMinutes = START_MINUTE;
+      if (!hasOwn('world')) {
+        this.world = createWorldState({
+          day: clampInteger(this.day, 1, 999, 1),
+          spawnId: location.id,
+          nodeDanger: node?.danger ?? 3,
+          shelterDefense: shelter?.defense ?? 0,
+        });
+      }
+      if (!hasOwn('base')) this.base = createBaseState(shelter);
+      if (!hasOwn('survivalStats')) this.survivalStats = createSurvivalStats();
+      if (!hasOwn('equippedWeaponId')) this.equippedWeaponId = null;
+      if (!hasOwn('nodeSearchCounts')) this.nodeSearchCounts = {};
+      if (!hasOwn('body')) {
+        const tags = new Set(Array.isArray(this.hiddenTags) ? this.hiddenTags : []);
+        const body = createBodyState();
+        if (tags.has('疑似咬伤')) {
+          body.wounds.push(legacyWound('bite', 5, true));
+          body.infectionLevel = 12;
+        } else if (tags.has('感染')) {
+          body.wounds.push({ ...legacyWound('laceration', 3, false), infected: true });
+          body.infectionLevel = 18;
+        } else if (tags.has('受伤')) {
+          body.wounds.push(legacyWound('laceration', 2, false));
+        }
+        this.body = body;
+      }
+      this.saveVersion = SAVE_VERSION;
     },
     startScenario(scenarioId) {
       const selected = scenarios.find((scenario) => scenario.id === scenarioId);
@@ -203,11 +327,17 @@ export const useGameStore = defineStore('game', {
       return true;
     },
     normalizeCatalogReferences() {
+      this.saveVersion = SAVE_VERSION;
       const scenario = scenarios.find((item) => item.id === this.scenario?.id) ?? scenarios[0];
       const location = spawnLocations.find((item) => item.id === this.spawnLocation?.id) ?? spawnLocations[0];
       const profession = this.profession ? professions.find((item) => item.id === this.profession.id) : null;
       const shelter = this.shelter ? shelters.find((item) => item.id === this.shelter.id) : null;
       this.scenario = cloneCatalogRecord(scenario);
+      this.day = clampInteger(this.day, 1, 999, 1);
+      this.maxDay = clampInteger(scenario.maxDay, 1, 999, 20);
+      this.clockMinutes = ((clampInteger(this.clockMinutes, 0, 24 * 60 - 1, START_MINUTE) % (24 * 60)) + 24 * 60) % (24 * 60);
+      this.money = clampInteger(this.money, 0, 9999999, 6500);
+      this.survivorName = typeof this.survivorName === 'string' ? this.survivorName.slice(0, 48) : '';
       this.spawnLocation = cloneCatalogRecord(location);
       this.profession = profession ? cloneCatalogRecord(profession) : null;
       this.shelter = shelter ? cloneCatalogRecord(shelter) : null;
@@ -219,21 +349,19 @@ export const useGameStore = defineStore('game', {
             .map(cloneCatalogRecord)
         : [];
       this.shelterRollsUsed = Number.isFinite(this.shelterRollsUsed) ? Math.max(0, this.shelterRollsUsed) : 0;
-      this.maxShelterRolls = Number.isFinite(this.maxShelterRolls) ? Math.max(10, this.maxShelterRolls) : 10;
+      this.maxShelterRolls = 10;
       this.searchingSlotId = null;
       this.vitals = normalizeVitals(this.vitals, this.stats);
       this.skills = normalizeSkills(this.skills);
       const rawInventory = Array.isArray(this.inventory) ? this.inventory : [];
-      this.inventory = rawInventory
-        .map((item) => marketItems.find((entry) => entry.id === item?.id || entry.name === item?.name))
-        .filter(Boolean)
-        .map((item) => ({ ...cloneCatalogRecord(item), count: rawInventory.find((entry) => entry?.id === item.id || entry?.name === item.name)?.count ?? 1 }));
+      this.inventory = normalizeInventory(rawInventory);
       this.selectedTraits = Array.isArray(this.selectedTraits)
         ? this.selectedTraits
             .map((trait) => traits.find((entry) => entry.id === trait?.id))
             .filter(Boolean)
             .map(cloneCatalogRecord)
         : [];
+      this.baseTraitPoints = this.profession?.traitPointMod ?? 0;
       this.lootSlots = this.shelter ? normalizeLootSlots(this.lootSlots, this.shelter) : [];
       this.lootSearchStarted = Boolean(this.shelter && this.lootSlots.some((slot) => slot.status !== 'hidden'));
       const currentNode = mapNodes.find((node) => node.id === this.currentNodeId);
@@ -250,9 +378,31 @@ export const useGameStore = defineStore('game', {
       this.vehicle = normalizeVehicle(this.vehicle);
       this.movesRemaining = Number.isFinite(this.movesRemaining) ? Math.max(0, Math.round(this.movesRemaining)) : 1;
       this.mapLog = Array.isArray(this.mapLog) ? this.mapLog.slice(0, 80) : [];
+      this.history = normalizeHistory(this.history);
+      this.hiddenTags = Array.isArray(this.hiddenTags)
+        ? [...new Set(this.hiddenTags.filter((tag) => typeof tag === 'string' && tag).map((tag) => tag.slice(0, 40)))].slice(0, 40)
+        : [];
+      this.archives = normalizeArchives(this.archives);
+      this.ending = this.ending && typeof this.ending === 'object' ? this.ending : null;
       this.searchedSceneObjectIds = Array.isArray(this.searchedSceneObjectIds)
         ? [...new Set(this.searchedSceneObjectIds.filter(Boolean))].slice(0, 240)
         : [];
+      this.nodeSearchCounts = normalizeNodeSearchCounts(this.nodeSearchCounts);
+      const currentDanger = mapNodes.find((node) => node.id === this.currentNodeId)?.danger ?? 3;
+      this.world = normalizeWorldState(this.world, {
+        day: this.day,
+        spawnId: this.spawnLocation?.id,
+        nodeDanger: currentDanger,
+        shelterDefense: this.shelter?.defense ?? 0,
+      });
+      this.body = normalizeBodyState(this.body);
+      this.base = normalizeBaseState(this.base, this.shelter);
+      this.world.powerOn = this.day < this.world.powerShutoffDay || (this.base.generatorOn && this.base.generatorFuel > 0);
+      this.world.waterOn = this.day < this.world.waterShutoffDay;
+      this.survivalStats = normalizeSurvivalStats(this.survivalStats);
+      this.equippedWeaponId = this.inventory.some((item) => item.id === this.equippedWeaponId && item.tags?.includes('weapon'))
+        ? this.equippedWeaponId
+        : null;
     },
     recalculateCharacterState(includeUnlocks = false) {
       if (!this.profession) return;
@@ -318,6 +468,13 @@ export const useGameStore = defineStore('game', {
       this.lootSearchStarted = false;
       this.searchingSlotId = null;
       this.clearMapState();
+      this.base = createBaseState(this.shelter);
+      this.world = createWorldState({
+        day: this.day,
+        spawnId: this.spawnLocation?.id,
+        nodeDanger: mapNodes.find((node) => node.id === this.spawnLocation?.id)?.danger ?? 3,
+        shelterDefense: this.shelter?.defense ?? 0,
+      });
       return true;
     },
     ensureLootSlots() {
@@ -368,25 +525,155 @@ export const useGameStore = defineStore('game', {
       return true;
     },
     collectLootItem(item, count = 1) {
-      if (!item || this.remainingSpace < item.space * count) return false;
+      const quantity = positiveInteger(count);
+      if (!item || !quantity || this.remainingSpace < item.space * quantity) return false;
       const existing = this.inventory.find((entry) => entry.id === item.id);
-      if (existing) existing.count += count;
-      else this.inventory.push({ ...cloneCatalogRecord(item), count });
+      if (existing) existing.count += quantity;
+      else this.inventory.push({ ...cloneCatalogRecord(item), count: quantity });
       return true;
     },
     addItem(item, count = 1, free = false) {
-      if (!free && (this.money < item.price * count || this.remainingSpace < item.space * count)) return false;
+      const quantity = positiveInteger(count);
+      if (!item || !quantity) return false;
+      if (this.remainingSpace < item.space * quantity) return false;
+      if (!free && this.money < item.price * quantity) return false;
       const existing = this.inventory.find((entry) => entry.id === item.id);
-      if (existing) existing.count += count;
-      else this.inventory.push({ ...item, count });
-      if (!free) this.money -= item.price * count;
+      if (existing) existing.count += quantity;
+      else this.inventory.push({ ...cloneCatalogRecord(item), count: quantity });
+      if (!free) this.money -= item.price * quantity;
       return true;
     },
     removeItem(id, count = 1) {
+      const quantity = positiveInteger(count);
+      if (!quantity) return false;
       const item = this.inventory.find((entry) => entry.id === id || entry.name === id);
-      if (!item) return false;
-      item.count -= count;
+      if (!item || item.count < quantity) return false;
+      item.count -= quantity;
       if (item.count <= 0) this.inventory = this.inventory.filter((entry) => entry !== item);
+      if (this.equippedWeaponId === item.id && !this.inventory.some((entry) => entry.id === item.id)) this.equippedWeaponId = null;
+      return true;
+    },
+    equipWeapon(id) {
+      if (this.isGameOver) return false;
+      const weapon = this.inventory.find((item) => item.id === id && item.count > 0 && item.tags?.includes('weapon'));
+      if (!weapon) return false;
+      this.equippedWeaponId = this.equippedWeaponId === id ? null : id;
+      return true;
+    },
+    useItem(id) {
+      if (this.isGameOver) return false;
+      const item = this.inventory.find((entry) => entry.id === id && entry.count > 0);
+      if (!item || !['food', 'medical', 'morale'].includes(item.category)) return false;
+      const wound = [...(this.body?.wounds ?? [])].sort((a, b) => b.severity - a.severity)[0] ?? null;
+      if (item.tags?.includes('bandage') && wound) {
+        wound.bandaged = true;
+        wound.bleeding = false;
+      }
+      if (item.tags?.includes('disinfect') && wound) {
+        wound.disinfected = true;
+        if (!wound.knoxInfection) wound.infected = false;
+        this.body.infectionLevel = Math.max(0, this.body.infectionLevel - (item.id === 'disinfectant' ? 8 : 4));
+      }
+      if (item.id === 'first_aid_kit' && wound) {
+        wound.bandaged = true;
+        wound.bleeding = false;
+        wound.disinfected = true;
+        if (!wound.knoxInfection) wound.infected = false;
+      }
+      if (item.id === 'antibiotics') {
+        const hasKnoxInfection = (this.body?.wounds ?? []).some((entry) => entry.knoxInfection);
+        this.body.infectionLevel = Math.max(0, this.body.infectionLevel - (hasKnoxInfection ? 5 : 22));
+        if (!hasKnoxInfection && this.body.infectionLevel < 1) this.body.infectionLevel = 0;
+      }
+      if (item.id === 'painkillers') this.body.pain = Math.max(0, this.body.pain - 28);
+      applyVitalMods(this.vitals, item.effects ?? {});
+      if (item.id === 'foraged_mushrooms' && !this.selectedTraits.some((trait) => trait.id === 'herbalist') && (this.world.seed + this.day) % 5 === 0) {
+        applyVitalMods(this.vitals, { health: -8, stress: 10 });
+        if (!this.hiddenTags.includes('食物中毒')) this.hiddenTags.push('食物中毒');
+      }
+      this.removeItem(item.id, 1);
+      this.mapLog.unshift({
+        day: this.day,
+        time: this.clockLabel,
+        title: `使用 ${item.name}`,
+        text: wound && item.category === 'medical' ? `你处理了${bodyPartLabels[wound.bodyPart] ?? wound.bodyPart}的${woundTypeLabels[wound.type] ?? wound.type}。` : `${item.name}已经消耗。`,
+        mode: 'item',
+      });
+      this.mapLog = this.mapLog.slice(0, 80);
+      this.survivalStats.actions += 1;
+      const useMinutes = item.category === 'medical' ? 30 : item.tags?.includes('water') ? 10 : item.category === 'food' ? 20 : 10;
+      this.advanceSimulation({
+        minutes: useMinutes,
+        mode: 'rest',
+        noiseDelta: -1,
+        threatDelta: 0,
+      });
+      this.finishIfGameOver();
+      return true;
+    },
+    craftRecipe(recipeId) {
+      if (this.isGameOver) return false;
+      const recipe = craftingRecipes.find((entry) => entry.id === recipeId);
+      const status = recipeStatus(recipe, this.$state);
+      if (!recipe || !status.canCraft) return false;
+      recipe.ingredients.forEach((ingredient) => this.removeItem(ingredient.itemId, ingredient.count));
+      const result = marketItems.find((item) => item.id === recipe.resultId);
+      if (!result || !this.collectLootItem(result, recipe.resultCount ?? 1)) return false;
+      this.survivalStats.crafted += 1;
+      this.survivalStats.actions += 1;
+      const beforeDay = this.day;
+      const beforeTime = this.clockLabel;
+      this.advanceSimulation({
+        minutes: recipe.minutes ?? durationForAction('craft'),
+        mode: 'active',
+        noiseDelta: 8,
+        threatDelta: 2,
+      });
+      this.history.push({
+        day: beforeDay,
+        time: beforeTime,
+        title: recipe.name,
+        log: '制作与维护',
+        action: recipe.name,
+        result: `你制作了${result.name}。`,
+        notes: `耗时 ${Math.round((recipe.minutes ?? 120) / 60 * 10) / 10} 小时`,
+        score: 60 + (this.skills[recipe.skillId] ?? 0) * 4,
+      });
+      this.mapLog.unshift({ day: beforeDay, time: beforeTime, title: recipe.name, text: `制作完成：${result.name}`, mode: 'craft' });
+      this.finishIfGameOver();
+      return true;
+    },
+    toggleGenerator() {
+      if (this.isGameOver || !this.isAtHome) return false;
+      const generator = this.inventory.find((item) => item.id === 'generator' && item.count > 0);
+      const knowsGenerator = this.inventory.some((item) => item.id === 'how_to_use_generators' && item.count > 0) || (this.skills.electrical ?? 0) >= 3;
+      if (!generator || !knowsGenerator) return false;
+      if (this.base.generatorOn) {
+        this.base.generatorOn = false;
+        this.world.powerOn = this.day < this.world.powerShutoffDay;
+        return true;
+      }
+      if (this.base.generatorFuel <= 0) {
+        if (!this.removeItem('gas_can', 1)) return false;
+        this.base.generatorFuel = 3;
+      }
+      this.base.generatorOn = true;
+      this.world.powerOn = true;
+      this.world.noise = Math.min(100, this.world.noise + 18);
+      this.world.threat = Math.min(100, this.world.threat + 8);
+      this.mapLog.unshift({ day: this.day, time: this.clockLabel, title: '启动发电机', text: '据点恢复供电，但引擎低鸣会持续吸引附近尸群。', mode: 'base' });
+      this.survivalStats.actions += 1;
+      this.advanceSimulation({ minutes: 20, mode: 'active', noiseDelta: 4, threatDelta: 2 });
+      this.finishIfGameOver();
+      return true;
+    },
+    drinkBaseWater() {
+      if (this.isGameOver || !this.isAtHome || (this.base.waterReserve ?? 0) <= 0) return false;
+      this.base.waterReserve -= 1;
+      applyVitalMods(this.vitals, { thirst: -28 });
+      this.survivalStats.actions += 1;
+      this.advanceSimulation({ minutes: 10, mode: 'rest', noiseDelta: -1 });
+      this.finishIfGameOver();
       return true;
     },
     clearMapState() {
@@ -397,12 +684,14 @@ export const useGameStore = defineStore('game', {
       this.vehicle = { status: 'none', fuel: 0, name: '徒步', condition: 0 };
       this.movesRemaining = 1;
       this.mapLog = [];
+      this.searchedSceneObjectIds = [];
+      this.nodeSearchCounts = {};
     },
     initializeMapState(force = false) {
       if (this.currentNodeId && !force) {
         this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, this.currentNodeId, ...neighborsForNode(this.currentNodeId)]);
         if (!this.inspectedNodeId) this.inspectedNodeId = this.currentNodeId;
-        if (!this.movesRemaining) this.movesRemaining = this.movementAllowance();
+        this.movesRemaining = this.movementAllowance();
         return true;
       }
       const spawnNode = mapNodes.find((node) => node.id === this.spawnLocation?.id) ?? mapNodes.find((node) => node.id === 'muldraugh');
@@ -413,6 +702,12 @@ export const useGameStore = defineStore('game', {
       this.knownNodeIds = uniqueValidNodeIds([spawnNode.id, ...neighborsForNode(spawnNode.id)]);
       this.vehicle = normalizeVehicle(this.vehicle);
       this.movesRemaining = this.movementAllowance();
+      this.world = normalizeWorldState(this.world, {
+        day: this.day,
+        spawnId: this.spawnLocation?.id,
+        nodeDanger: spawnNode.danger,
+        shelterDefense: this.shelter?.defense ?? 0,
+      });
       this.activeEvent = null;
       this.mapLog = [{
         day: this.day,
@@ -430,7 +725,7 @@ export const useGameStore = defineStore('game', {
       return 1;
     },
     canMoveToNode(nodeId) {
-      return this.movesRemaining > 0 && neighborsForNode(this.currentNodeId).includes(nodeId);
+      return !this.isGameOver && this.vitals.endurance > 4 && neighborsForNode(this.currentNodeId).includes(nodeId);
     },
     inspectMapNode(nodeId) {
       const node = mapNodes.find((entry) => entry.id === nodeId);
@@ -439,28 +734,19 @@ export const useGameStore = defineStore('game', {
       return true;
     },
     moveToNode(nodeId) {
+      if (this.isGameOver) return false;
       const node = mapNodes.find((entry) => entry.id === nodeId);
       if (!node || !this.canMoveToNode(nodeId)) return false;
       const from = mapNodes.find((entry) => entry.id === this.currentNodeId);
-      this.currentNodeId = node.id;
-      this.inspectedNodeId = node.id;
-      this.visitedNodeIds = uniqueValidNodeIds([...this.visitedNodeIds, node.id]);
-      this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, node.id, ...neighborsForNode(node.id)]);
-      const usingVehicle = this.vehicle?.status !== 'none' && (this.vehicle.fuel ?? 0) > 0;
-      if (usingVehicle) {
-        this.vehicle.fuel = Math.max(0, (this.vehicle.fuel ?? 0) - 1);
-        if (this.vehicle.fuel <= 0) this.vehicle.status = this.vehicle.status === 'working' ? 'damaged' : this.vehicle.status;
-      }
-      this.movesRemaining = Math.max(0, this.movesRemaining - 1);
-      this.mapLog.unshift({
-        day: this.day,
-        title: `${from?.name ?? '未知地点'} → ${node.name}`,
-        text: this.movesRemaining > 0
-          ? `你推进到${node.name}。今天还可以继续移动 ${this.movesRemaining} 步。`
-          : `你推进到${node.name}，今天的移动结束。`,
-      });
-
-      if (this.movesRemaining > 0) return true;
+      const travelVehicle = normalizeVehicle(this.vehicle);
+      const previousMapState = {
+        currentNodeId: this.currentNodeId,
+        inspectedNodeId: this.inspectedNodeId,
+        visitedNodeIds: [...this.visitedNodeIds],
+        knownNodeIds: [...this.knownNodeIds],
+        vehicle: { ...this.vehicle },
+        movesRemaining: this.movesRemaining,
+      };
       const outcome = resolveMapMove({
         day: this.day,
         node,
@@ -469,20 +755,40 @@ export const useGameStore = defineStore('game', {
         traits: this.selectedTraits,
         vitals: this.vitals,
         skills: this.skills,
-        vehicle: this.vehicle,
+        vehicle: travelVehicle,
+        world: this.world,
       });
-      this.applyMapOutcome(outcome, 'move');
-      return true;
+      outcome.title = `${from?.name ?? '未知地点'} → ${node.name}`;
+      this.currentNodeId = node.id;
+      this.inspectedNodeId = node.id;
+      this.visitedNodeIds = uniqueValidNodeIds([...this.visitedNodeIds, node.id]);
+      this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, node.id, ...neighborsForNode(node.id)]);
+      const usingVehicle = this.vehicle?.status !== 'none' && (this.vehicle.fuel ?? 0) > 0;
+      if (usingVehicle) {
+        this.vehicle.fuel = Math.max(0, (this.vehicle.fuel ?? 0) - 1);
+      }
+      this.movesRemaining = this.movementAllowance();
+      if (this.applyMapOutcome(outcome, 'move', true)) return true;
+      this.currentNodeId = previousMapState.currentNodeId;
+      this.inspectedNodeId = previousMapState.inspectedNodeId;
+      this.visitedNodeIds = previousMapState.visitedNodeIds;
+      this.knownNodeIds = previousMapState.knownNodeIds;
+      this.vehicle = previousMapState.vehicle;
+      this.movesRemaining = previousMapState.movesRemaining;
+      return false;
     },
     resolveNodeAction(actionId) {
+      if (this.isGameOver) return false;
       if (!this.currentNodeId) this.initializeMapState();
       const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
       const action = mapNodeActions.find((entry) => entry.id === actionId);
-      if (!node || !action || !(node.actions ?? []).includes(actionId)) return false;
+      const availableAction = this.currentNodeActions.find((entry) => entry.id === actionId);
+      if (!node || !action || !availableAction || availableAction.disabled) return false;
       const outcome = resolveMapNodeAction({
         actionId,
         node,
         day: this.day,
+        clockMinutes: this.clockMinutes,
         inventory: this.inventory,
         tags: this.hiddenTags,
         traits: this.selectedTraits,
@@ -490,11 +796,19 @@ export const useGameStore = defineStore('game', {
         skills: this.skills,
         profession: this.profession,
         vehicle: this.vehicle,
+        world: this.world,
+        body: this.body,
+        base: this.base,
+        equippedWeaponId: this.equippedWeaponId,
+        searchCount: this.nodeSearchCounts[node.id] ?? 0,
       });
-      this.applyMapOutcome(outcome, 'action');
+      if (!outcome || (outcome.minutes === 0 && outcome.score === 0)) return false;
+      if (!this.applyMapOutcome(outcome, 'action')) return false;
+      if (actionId === 'search') this.nodeSearchCounts[node.id] = (this.nodeSearchCounts[node.id] ?? 0) + 1;
       return true;
     },
-    resolveSceneSearch(searchable, collectedItems = []) {
+    resolveSceneSearch(searchable, collectedItems = [], searchKey = '') {
+      if (this.isGameOver || (searchKey && this.searchedSceneObjectIds.includes(searchKey))) return false;
       if (!this.currentNodeId) this.initializeMapState();
       const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
       if (!node || !(node.actions ?? []).includes('search')) return false;
@@ -502,6 +816,7 @@ export const useGameStore = defineStore('game', {
         actionId: 'search',
         node,
         day: this.day,
+        clockMinutes: this.clockMinutes,
         inventory: this.inventory,
         tags: this.hiddenTags,
         traits: this.selectedTraits,
@@ -509,12 +824,17 @@ export const useGameStore = defineStore('game', {
         skills: this.skills,
         profession: this.profession,
         vehicle: this.vehicle,
+        world: this.world,
+        body: this.body,
+        base: this.base,
+        equippedWeaponId: this.equippedWeaponId,
         manualLoot: {
           sourceName: searchable?.name ?? node.name,
           collectedItems,
         },
       });
-      this.applyMapOutcome(outcome, 'search');
+      if (!this.applyMapOutcome(outcome, 'search')) return false;
+      if (searchKey) this.markSceneSearchableSearched(searchKey);
       return true;
     },
     markSceneSearchableSearched(searchKey) {
@@ -522,9 +842,26 @@ export const useGameStore = defineStore('game', {
       this.searchedSceneObjectIds = [...this.searchedSceneObjectIds, searchKey].slice(-240);
       return true;
     },
-    applyMapOutcome(outcome, mode = 'action') {
-      outcome.consume?.forEach((itemId) => this.removeItem(itemId, 1));
-      outcome.add?.forEach((item) => this.addItem(item, item.count ?? 1, true));
+    applyMapOutcome(outcome, mode = 'action', allowTerminalCommit = false) {
+      if (!outcome || (this.isGameOver && !allowTerminalCommit)) return false;
+      const projectedInventory = this.inventory.map((item) => ({ ...cloneCatalogRecord(item), count: item.count }));
+      for (const itemId of outcome.consume ?? []) {
+        const item = projectedInventory.find((entry) => entry.id === itemId || entry.name === itemId);
+        if (!item || item.count < 1) return false;
+        item.count -= 1;
+      }
+      for (const item of outcome.add ?? []) {
+        const quantity = positiveInteger(item?.count ?? 1);
+        if (!item || !quantity || !Number.isFinite(Number(item.space)) || Number(item.space) < 0) return false;
+        const existing = projectedInventory.find((entry) => entry.id === item.id);
+        if (existing) existing.count += quantity;
+        else projectedInventory.push({ ...cloneCatalogRecord(item), count: quantity });
+      }
+      const committedInventory = projectedInventory.filter((item) => item.count > 0);
+      const projectedUsedSpace = committedInventory.reduce((sum, item) => sum + item.space * item.count, 0);
+      if (projectedUsedSpace > inventoryCapacityForState(this.$state, committedInventory)) return false;
+      this.inventory = committedInventory;
+      if (this.equippedWeaponId && !this.inventory.some((item) => item.id === this.equippedWeaponId)) this.equippedWeaponId = null;
       outcome.removeTags?.forEach((tag) => {
         this.hiddenTags = this.hiddenTags.filter((entry) => entry !== tag);
       });
@@ -532,12 +869,25 @@ export const useGameStore = defineStore('game', {
         if (tag && !this.hiddenTags.includes(tag)) this.hiddenTags.push(tag);
       });
       if (outcome.vehicle) this.vehicle = normalizeVehicle(outcome.vehicle);
+      outcome.wounds?.filter(Boolean).forEach((wound) => {
+        if (!this.body.wounds.some((entry) => entry.id === wound.id)) this.body.wounds.push({ ...wound });
+      });
+      if (outcome.baseDelta) {
+        this.base.defense = Math.max(0, Math.min(20, this.base.defense + (outcome.baseDelta.defense ?? 0)));
+        this.base.barricades = Math.max(0, Math.min(20, this.base.barricades + (outcome.baseDelta.barricades ?? 0)));
+      }
       if (outcome.revealNodeIds?.length) this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, ...outcome.revealNodeIds]);
       if (outcome.scoutDepth) this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, ...nodeNeighborhood(this.currentNodeId, outcome.scoutDepth)]);
       this.vitals = applyVitalDelta(this.vitals, outcome.vitals);
+      this.survivalStats.actions += 1;
+      this.survivalStats.zombiesKilled += Math.max(0, Number(outcome.kills) || 0);
+      if (mode === 'move') this.survivalStats.distanceTravelled += 1;
       const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
+      const actionDay = this.day;
+      const actionTime = this.clockLabel;
       this.history.push({
-        day: this.day,
+        day: actionDay,
+        time: actionTime,
         title: outcome.title,
         log: node ? `${node.name} · ${node.resourceHint}` : '地图行动',
         action: outcome.action ?? outcome.title,
@@ -546,34 +896,90 @@ export const useGameStore = defineStore('game', {
         score: outcome.score,
       });
       this.mapLog.unshift({
-        day: this.day,
+        day: actionDay,
+        time: actionTime,
         title: outcome.title,
         text: outcome.result,
         mode,
       });
       this.mapLog = this.mapLog.slice(0, 80);
       if (outcome.highlight) this.ending = { ...(this.ending || {}), highlight: outcome.highlight };
-      this.day += 1;
+      this.advanceSimulation({
+        minutes: outcome.minutes ?? 120,
+        mode: outcome.mode ?? 'active',
+        noiseDelta: outcome.noiseDelta ?? 0,
+        threatDelta: outcome.threatDelta ?? 0,
+      });
       this.activeEvent = null;
       this.movesRemaining = this.movementAllowance();
-      if (this.isGameOver) {
-        this.ending = createEnding({
-          day: this.day - 1,
-          victory: this.isVictory,
-          vitals: this.vitals,
-          skills: this.skills,
-          profession: this.profession,
-          survivorName: this.survivorName,
-          spawnLocation: this.spawnLocation,
-          shelter: this.shelter,
-          inventory: this.inventory,
-          history: this.history,
-          traits: this.selectedTraits,
-          highlight: this.ending?.highlight,
+      this.finishIfGameOver();
+      return true;
+    },
+    advanceSimulation({ minutes = 0, mode = 'active', noiseDelta = 0, threatDelta = 0 } = {}) {
+      const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
+      const result = advanceSurvivalState({
+        day: this.day,
+        clockMinutes: this.clockMinutes,
+        minutes,
+        vitals: this.vitals,
+        world: this.world,
+        body: this.body,
+        base: this.base,
+        traits: this.selectedTraits,
+        nodeDanger: node?.danger ?? 3,
+        atHome: this.isAtHome,
+        mode,
+        noiseDelta,
+        threatDelta,
+      });
+      this.day = result.day;
+      this.clockMinutes = result.clockMinutes;
+      this.vitals = result.vitals;
+      this.world = result.world;
+      this.body = result.body;
+      this.base = result.base;
+      this.survivalStats.hoursSurvived += result.elapsedHours;
+      result.notices.forEach((notice) => {
+        this.mapLog.unshift({
+          day: this.day,
+          time: this.clockLabel,
+          title: '世界状态变化',
+          text: notice,
+          mode: 'world',
         });
-      }
+      });
+      this.mapLog = this.mapLog.slice(0, 80);
+      if (this.body.wounds.length && !this.hiddenTags.includes('受伤')) this.hiddenTags.push('受伤');
+      if (!this.body.wounds.length) this.hiddenTags = this.hiddenTags.filter((tag) => tag !== '受伤');
+      if (this.body.infectionLevel > 0 && !this.hiddenTags.includes('感染征兆')) this.hiddenTags.push('感染征兆');
+      if (this.body.infectionLevel <= 0) this.hiddenTags = this.hiddenTags.filter((tag) => tag !== '感染征兆');
+      return result;
+    },
+    finishIfGameOver() {
+      if (!this.isGameOver) return false;
+      const previousHighlight = this.ending?.highlight;
+      this.ending = createEnding({
+        day: Math.max(1, Math.min(this.day, this.maxDay + 5)),
+        maxDay: this.maxDay,
+        victory: this.isVictory,
+        vitals: this.vitals,
+        skills: this.skills,
+        profession: this.profession,
+        survivorName: this.survivorName,
+        spawnLocation: this.spawnLocation,
+        shelter: this.shelter,
+        inventory: this.inventory,
+        history: this.history,
+        traits: this.selectedTraits,
+        highlight: previousHighlight,
+        body: this.body,
+        world: this.world,
+        stats: this.survivalStats,
+      });
+      return true;
     },
     ensureActiveEvent() {
+      if (this.isGameOver) return false;
       if (!this.activeEvent) {
         this.activeEvent = createDayEvent({
           day: this.day,
@@ -585,9 +991,10 @@ export const useGameStore = defineStore('game', {
           shelter: this.shelter,
         });
       }
+      return true;
     },
     submitAction(actionText, optionId = null) {
-      this.ensureActiveEvent();
+      if (this.isGameOver || !this.ensureActiveEvent()) return false;
       const outcome = resolveAction({
         day: this.day,
         actionText,
@@ -622,33 +1029,20 @@ export const useGameStore = defineStore('game', {
       });
       if (outcome.highlight) this.ending = { ...(this.ending || {}), highlight: outcome.highlight };
 
-      this.day += 1;
+      this.survivalStats.actions += 1;
+      this.advanceSimulation({ minutes: 8 * 60, mode: optionId === 'rest' ? 'rest' : 'active' });
       this.activeEvent = null;
 
-      if (this.isGameOver) {
-        this.ending = createEnding({
-          day: this.day - 1,
-          victory: this.isVictory,
-          vitals: this.vitals,
-          skills: this.skills,
-          profession: this.profession,
-          survivorName: this.survivorName,
-          spawnLocation: this.spawnLocation,
-          shelter: this.shelter,
-          inventory: this.inventory,
-          history: this.history,
-          traits: this.selectedTraits,
-          highlight: this.ending?.highlight,
-        });
-      } else {
+      if (!this.finishIfGameOver()) {
         this.ensureActiveEvent();
       }
+      return true;
     },
     saveArchive(nickname = '匿名幸存者') {
-      if (!this.ending) return;
-      this.archives.unshift({
+      if (!this.ending?.title) return false;
+      const snapshot = {
         id: crypto.randomUUID(),
-        nickname,
+        nickname: typeof nickname === 'string' ? nickname.slice(0, 32) : '匿名幸存者',
         createdAt: Date.now(),
         ending: this.ending,
         profession: this.profession,
@@ -656,8 +1050,10 @@ export const useGameStore = defineStore('game', {
         spawnLocation: this.spawnLocation,
         traits: this.selectedTraits,
         scenario: this.scenario,
-      });
+      };
+      this.archives.unshift(cloneSnapshot(snapshot));
       this.archives = this.archives.slice(0, 24);
+      return true;
     },
   },
 });
@@ -940,6 +1336,144 @@ function clampVital(key, value) {
 
 function clampSkill(value) {
   return Math.max(0, Math.min(10, Math.round(value)));
+}
+
+function positiveInteger(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : 0;
+}
+
+function clampInteger(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, Math.round(number)));
+}
+
+function normalizeInventory(rawInventory) {
+  const counts = new Map();
+  rawInventory.forEach((entry) => {
+    const catalogItem = marketItems.find((item) => item.id === entry?.id || item.name === entry?.name);
+    if (!catalogItem) return;
+    const count = clampInteger(entry?.count, 0, 999, 0);
+    if (!count) return;
+    counts.set(catalogItem.id, Math.min(999, (counts.get(catalogItem.id) ?? 0) + count));
+  });
+  return [...counts.entries()].map(([id, count]) => ({
+    ...cloneCatalogRecord(marketItems.find((item) => item.id === id)),
+    count,
+  }));
+}
+
+function normalizeHistory(history) {
+  if (!Array.isArray(history)) return [];
+  return history
+    .filter((entry) => entry && typeof entry === 'object')
+    .map((entry) => ({
+      day: clampInteger(entry.day, 1, 999, 1),
+      time: typeof entry.time === 'string' ? entry.time.slice(0, 8) : '',
+      title: typeof entry.title === 'string' ? entry.title.slice(0, 100) : '生存记录',
+      log: typeof entry.log === 'string' ? entry.log.slice(0, 300) : '',
+      action: typeof entry.action === 'string' ? entry.action.slice(0, 120) : '',
+      result: typeof entry.result === 'string' ? entry.result.slice(0, 800) : '',
+      notes: typeof entry.notes === 'string' ? entry.notes.slice(0, 300) : '',
+      score: clampInteger(entry.score, 0, 100, 0),
+    }))
+    .slice(-500);
+}
+
+function legacyWound(type, severity, knoxInfection) {
+  return {
+    id: `legacy-${type}-wound`,
+    bodyPart: 'left_arm',
+    type,
+    severity,
+    bleeding: true,
+    bandaged: false,
+    disinfected: false,
+    infected: false,
+    knoxInfection,
+    ageHours: 1,
+    source: '旧版存档迁移',
+  };
+}
+
+function normalizeNodeSearchCounts(counts) {
+  if (!counts || typeof counts !== 'object' || Array.isArray(counts)) return {};
+  const validIds = new Set(mapNodes.map((node) => node.id));
+  return Object.fromEntries(
+    Object.entries(counts)
+      .filter(([id]) => validIds.has(id))
+      .map(([id, count]) => [id, clampInteger(count, 0, 3, 0)])
+      .filter(([, count]) => count > 0)
+  );
+}
+
+function normalizeArchives(archives) {
+  if (!Array.isArray(archives)) return [];
+  return archives
+    .filter((entry) => entry && typeof entry === 'object' && entry.ending && typeof entry.ending === 'object')
+    .map((entry, index) => ({
+      ...entry,
+      id: typeof entry.id === 'string' && entry.id ? entry.id : `legacy-archive-${index}-${clampInteger(entry.createdAt, 0, Number.MAX_SAFE_INTEGER, 0)}`,
+      nickname: typeof entry.nickname === 'string' ? entry.nickname.slice(0, 32) : '匿名幸存者',
+      createdAt: clampInteger(entry.createdAt, 0, Number.MAX_SAFE_INTEGER, 0),
+      scenario: scenarios.find((scenario) => scenario.id === entry.scenario?.id) ?? scenarios[0],
+      profession: professions.find((profession) => profession.id === entry.profession?.id) ?? null,
+      spawnLocation: spawnLocations.find((location) => location.id === entry.spawnLocation?.id) ?? spawnLocations[0],
+      survivorName: typeof entry.survivorName === 'string' ? entry.survivorName.slice(0, 48) : '',
+    }))
+    .slice(0, 24);
+}
+
+function recipeStatus(recipe, state) {
+  if (!recipe) return { canCraft: false, missing: ['配方不存在'] };
+  const missing = [];
+  const itemCount = (id) => state.inventory.find((item) => item.id === id)?.count ?? 0;
+  recipe.ingredients.forEach((ingredient) => {
+    const available = itemCount(ingredient.itemId);
+    if (available < ingredient.count) {
+      const item = marketItems.find((entry) => entry.id === ingredient.itemId);
+      missing.push(`${item?.name ?? ingredient.itemId} ${available}/${ingredient.count}`);
+    }
+  });
+  (recipe.tools ?? []).forEach((toolId) => {
+    if (itemCount(toolId) < 1) missing.push(`工具：${marketItems.find((item) => item.id === toolId)?.name ?? toolId}`);
+  });
+  if (recipe.anyTools?.length && !recipe.anyTools.some((toolId) => itemCount(toolId) > 0)) {
+    missing.push(`任一工具：${recipe.anyTools.map((toolId) => marketItems.find((item) => item.id === toolId)?.name ?? toolId).join('/')}`);
+  }
+  const skillLevel = state.skills?.[recipe.skillId] ?? 0;
+  if (skillLevel < (recipe.minSkill ?? 0)) missing.push(`${skillDefinitions.find((skill) => skill.id === recipe.skillId)?.label ?? recipe.skillId} ${skillLevel}/${recipe.minSkill}`);
+  const consumedSpace = recipe.ingredients.reduce((sum, ingredient) => {
+    const item = marketItems.find((entry) => entry.id === ingredient.itemId);
+    return sum + (item?.space ?? 0) * ingredient.count;
+  }, 0);
+  const result = marketItems.find((item) => item.id === recipe.resultId);
+  const outputSpace = (result?.space ?? 0) * (recipe.resultCount ?? 1);
+  const usedSpace = state.inventory.reduce((sum, item) => sum + item.space * item.count, 0);
+  const maxSpace = inventoryCapacityForState(state, state.inventory);
+  if (usedSpace - consumedSpace + outputSpace > maxSpace) missing.push('制作后空间不足');
+  return {
+    ...recipe,
+    result,
+    missing,
+    canCraft: missing.length === 0,
+  };
+}
+
+function inventoryCapacityForState(state, inventory = []) {
+  const base = state.shelter?.space ?? 30;
+  const strengthBonus = Math.max(0, (state.skills?.strength ?? 5) - 5) * 3;
+  const bagBonus = Math.max(0, ...inventory.map((item) => item.effects?.capacity ?? 0));
+  const total = base + strengthBonus + bagBonus;
+  if (state.selectedTraits?.some((trait) => trait.id === 'organized')) return Math.floor(total * 1.3);
+  if (state.selectedTraits?.some((trait) => trait.id === 'disorganized')) return Math.floor(total * 0.7);
+  return total;
+}
+
+function cloneSnapshot(value) {
+  if (globalThis.structuredClone) return globalThis.structuredClone(value);
+  return JSON.parse(JSON.stringify(value));
 }
 
 export function drawShelterChoices(count = 3, locationId = null) {

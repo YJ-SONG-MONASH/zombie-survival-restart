@@ -9,5 +9,4 @@ import { RouterView } from 'vue-router';
 import { useGameStore } from './stores/game.js';
 
 const game = useGameStore();
-game.loadPersistedState();
 </script>

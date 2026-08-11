@@ -3,16 +3,55 @@
     <header class="map-command-bar">
       <div class="map-identity">
         <p>{{ game.survivorName || '无名幸存者' }} · {{ game.profession?.name }} · {{ game.spawnLocation?.name }}</p>
-        <h1>第 {{ game.day }} 天</h1>
-        <span>{{ currentNode?.name ?? '未展开地图' }} · 剩余移动 {{ game.movesRemaining }} 步 · 还需 {{ Math.max(0, game.maxDay - game.day + 1) }} 天</span>
+        <div class="map-dayline">
+          <h1>第 {{ game.day }} 天</h1>
+          <strong>{{ game.clockLabel }} · {{ game.activeWeather.icon }} {{ game.activeWeather.label }}</strong>
+        </div>
+        <span>{{ currentNode?.name ?? '未展开地图' }} · {{ game.world?.temperatureC ?? game.activeWeather.temperatureC }}°C · {{ evacuationStatus }}</span>
+        <div class="map-world-strip" aria-label="世界状态">
+          <span class="world-status-chip status-weather">
+            <b>{{ game.activeWeather.icon }}</b>
+            {{ game.activeWeather.label }} {{ game.world?.temperatureC ?? game.activeWeather.temperatureC }}°C
+          </span>
+          <span :class="['world-status-chip', game.world?.powerOn ? 'good' : 'danger']">
+            <b>ϟ</b>{{ game.world?.powerOn ? '电力在线' : '电力中断' }}
+          </span>
+          <span :class="['world-status-chip', game.world?.waterOn ? 'good' : 'danger']">
+            <b>≈</b>{{ game.world?.waterOn ? '供水在线' : '供水中断' }}
+          </span>
+          <span :class="['world-status-chip', worldSignalTone(game.world?.noise)]">
+            <b>⌁</b>噪声 {{ Math.round(game.world?.noise ?? 0) }} · {{ noiseLabel }}
+          </span>
+          <span :class="['world-status-chip', worldSignalTone(game.world?.threat)]">
+            <b>☣</b>尸群 {{ Math.round(game.world?.threat ?? 0) }} · {{ threatLabel }}
+          </span>
+        </div>
       </div>
 
-      <div class="map-vitals">
-        <label v-for="vital in vitalsForDisplay" :key="vital.id" :class="{ danger: vital.danger }">
-          <span>{{ vital.fallbackIcon }} {{ vital.label }}</span>
-          <progress :value="vital.value" max="100"></progress>
-          <b>{{ vital.value }}</b>
-        </label>
+      <div class="map-survival-readout">
+        <div class="map-vitals">
+          <label
+            v-for="vital in vitalsForDisplay"
+            :key="vital.id"
+            :class="[`vital-${vital.id}`, { danger: vital.danger, 'mobile-secondary-vital': !['health', 'endurance'].includes(vital.id) }]"
+          >
+            <span>{{ vital.fallbackIcon }} {{ vital.label }}</span>
+            <progress :value="vital.value" max="100"></progress>
+            <b>{{ vital.value }}</b>
+          </label>
+        </div>
+        <div class="map-moodle-strip" aria-label="当前生存状态">
+          <span v-if="!game.moodles.length" class="moodle-stable"><b>✓</b> 状态稳定</span>
+          <span
+            v-for="moodle in game.moodles"
+            :key="moodle.id"
+            :class="['moodle-chip', `tone-${moodle.tone}`]"
+            :title="moodle.detail"
+          >
+            <b>{{ moodleIcon(moodle.id) }}</b>
+            {{ moodle.label }}
+          </span>
+        </div>
       </div>
     </header>
 
@@ -63,13 +102,18 @@
           <button
             v-for="action in game.currentNodeActions"
             :key="action.id"
-            class="map-action-chip"
+            :class="['map-action-chip', { blocked: action.disabled }]"
+            :disabled="action.disabled || game.isGameOver"
+            :title="action.disabledReason || action.description"
             @click="runNodeAction(action.id)"
           >
-            {{ action.label }}
+            <strong>{{ action.label }}</strong>
+            <small>{{ formatDuration(action.minutes) }}</small>
+            <em v-if="action.disabledReason">{{ action.disabledReason }}</em>
           </button>
           <button class="map-action-chip inspect-chip" @click="inspectNode(currentNode)">
-            查看地点
+            <strong>查看地点</strong>
+            <small>不耗时</small>
           </button>
         </div>
       </aside>
@@ -77,6 +121,7 @@
       <nav class="map-drawer-tabs" aria-label="地图侧栏">
         <button :class="{ active: activeDrawer === 'location' }" @click="toggleDrawer('location')">地点</button>
         <button :class="{ active: activeDrawer === 'inventory' }" @click="toggleDrawer('inventory')">背包</button>
+        <button :class="{ active: activeDrawer === 'survival' }" @click="toggleDrawer('survival')">生存</button>
         <button :class="{ active: activeDrawer === 'skills' }" @click="toggleDrawer('skills')">技能</button>
         <button :class="{ active: activeDrawer === 'log' }" @click="toggleDrawer('log')">记录</button>
       </nav>
@@ -285,15 +330,33 @@
             <span>燃料 {{ game.vehicle?.fuel ?? 0 }}</span>
             <span>状态 {{ vehicleStatusLabel }}</span>
           </div>
-          <h3>背包</h3>
+          <div class="inventory-capacity-heading">
+            <h3>背包</h3>
+            <strong>{{ game.usedSpace }} / {{ game.maxSpace }} 格</strong>
+          </div>
+          <progress class="inventory-capacity-meter" :value="game.usedSpace" :max="Math.max(1, game.maxSpace)"></progress>
+          <p class="equipped-weapon-line">
+            主手：<strong>{{ game.equippedWeapon?.name ?? '徒手' }}</strong>
+          </p>
           <p v-if="game.inventory.length === 0">空空如也</p>
           <ul v-else class="map-inventory-list">
-            <li v-for="item in game.inventory" :key="item.id">
-              <span class="item-icon inventory-icon" aria-hidden="true">
-                <img :src="itemIconSrc(item)" :alt="item.name" @error="markInventoryIconMissing" />
-                <span></span>
-              </span>
-              {{ item.name }} x{{ item.count }}
+            <li v-for="item in game.inventory" :key="item.id" :class="{ equipped: game.equippedWeapon?.id === item.id }">
+              <div class="inventory-item-main">
+                <span class="item-icon inventory-icon" aria-hidden="true">
+                  <img :src="itemIconSrc(item)" :alt="item.name" @error="markInventoryIconMissing" />
+                  <span></span>
+                </span>
+                <span>
+                  <strong>{{ item.name }} x{{ item.count }}</strong>
+                  <small>{{ item.space }} 格/件 · {{ item.description }}</small>
+                </span>
+              </div>
+              <div v-if="canUseInventoryItem(item) || isWeapon(item)" class="inventory-item-actions">
+                <button v-if="canUseInventoryItem(item)" class="secondary" @click="useInventoryItem(item)">使用</button>
+                <button v-if="isWeapon(item)" class="secondary" @click="toggleWeapon(item)">
+                  {{ game.equippedWeapon?.id === item.id ? '卸下' : '装备' }}
+                </button>
+              </div>
             </li>
           </ul>
           <h3>状态</h3>
@@ -301,6 +364,92 @@
           <div v-else class="tag-list drawer-tag-list">
             <span v-for="tag in game.hiddenTags" :key="tag">{{ tag }}</span>
           </div>
+        </section>
+
+        <section v-else-if="activeDrawer === 'survival'" class="drawer-section survival-drawer-section">
+          <section class="survival-drawer-block evacuation-objective-card">
+            <p class="panel-kicker">EVACUATION WINDOW</p>
+            <h3>第 {{ game.maxDay }}–{{ game.evacuationDeadline }} 天抵达撤离区</h3>
+            <p>目标：谷地检查点或路易斯维尔外环。提前抵达可以整备，错过窗口则本局失败。</p>
+            <strong>{{ evacuationStatus }}</strong>
+          </section>
+
+          <section class="survival-drawer-block">
+            <div class="drawer-subheading">
+              <h3>Moodle</h3>
+              <span>{{ game.moodles.length || '稳定' }}</span>
+            </div>
+            <p v-if="!game.moodles.length" class="survival-empty-state">目前没有明显负面状态。</p>
+            <div v-else class="survival-moodle-grid">
+              <article v-for="moodle in game.moodles" :key="moodle.id" :class="[`tone-${moodle.tone}`]">
+                <b>{{ moodleIcon(moodle.id) }}</b>
+                <span><strong>{{ moodle.label }}</strong><small>{{ moodle.detail }}</small></span>
+              </article>
+            </div>
+          </section>
+
+          <section class="survival-drawer-block">
+            <div class="drawer-subheading">
+              <h3>身体与伤口</h3>
+              <span>疼痛 {{ Math.round(game.body?.pain ?? 0) }} · 感染 {{ Math.round(game.body?.infectionLevel ?? 0) }}%</span>
+            </div>
+            <p v-if="!game.woundList.length" class="survival-empty-state">没有可见伤口。</p>
+            <article v-for="wound in game.woundList" :key="wound.id" class="wound-card">
+              <div>
+                <strong>{{ wound.bodyPartLabel }} · {{ wound.typeLabel }}</strong>
+                <small>{{ wound.source }} · 严重度 {{ wound.severity.toFixed(1) }}</small>
+              </div>
+              <div class="wound-tags">
+                <span v-if="wound.bleeding" class="danger">流血</span>
+                <span v-if="wound.bandaged" class="good">已包扎</span>
+                <span v-if="wound.disinfected" class="good">已消毒</span>
+                <span v-if="wound.infected" class="warn">伤口感染</span>
+                <span v-if="wound.knoxInfection" class="danger">疑似 Knox 感染</span>
+              </div>
+            </article>
+          </section>
+
+          <section class="survival-drawer-block">
+            <div class="drawer-subheading">
+              <h3>基地</h3>
+              <span>{{ game.isAtHome ? '当前位于据点' : '远离据点' }}</span>
+            </div>
+            <dl class="base-status-grid">
+              <div><dt>避难所</dt><dd>{{ game.shelter?.name ?? '无' }}</dd></div>
+              <div><dt>防御</dt><dd>{{ Math.round(game.base?.defense ?? 0) }}</dd></div>
+              <div><dt>路障</dt><dd>{{ game.base?.barricades ?? 0 }}</dd></div>
+              <div><dt>发电机</dt><dd>{{ game.base?.generatorOn ? `运行 · 燃料 ${game.base?.generatorFuel ?? 0}` : '关闭' }}</dd></div>
+              <div><dt>储水</dt><dd>{{ game.base?.waterReserve ?? 0 }}</dd></div>
+            </dl>
+            <div class="base-action-grid">
+              <div>
+                <button class="secondary" :disabled="Boolean(generatorDisabledReason)" @click="toggleBaseGenerator">
+                  {{ game.base?.generatorOn ? '关闭发电机' : '启动发电机' }}
+                </button>
+                <small>{{ generatorDisabledReason || (game.base?.generatorOn ? '停止噪声并切回公共电网状态' : '恢复供电，但会制造持续噪声') }}</small>
+              </div>
+              <div>
+                <button class="secondary" :disabled="Boolean(baseWaterDisabledReason)" @click="drinkStoredWater">饮用储水</button>
+                <small>{{ baseWaterDisabledReason || '消耗 1 份储水并降低口渴' }}</small>
+              </div>
+            </div>
+          </section>
+
+          <section class="survival-drawer-block">
+            <div class="drawer-subheading">
+              <h3>制作</h3>
+              <span>{{ game.recipeList.filter((recipe) => recipe.canCraft).length }} 项可制作</span>
+            </div>
+            <article v-for="recipe in game.recipeList" :key="recipe.id" :class="['recipe-card', { blocked: !recipe.canCraft }]">
+              <div>
+                <strong>{{ recipe.name }}</strong>
+                <small>{{ formatDuration(recipe.minutes) }} · 产出 {{ recipe.result?.name ?? recipe.resultId }}</small>
+                <p>{{ recipe.description }}</p>
+                <em>{{ recipe.canCraft ? '材料与技能已满足' : recipe.missing.join(' · ') }}</em>
+              </div>
+              <button class="secondary" :disabled="!recipe.canCraft || game.isGameOver" @click="craftSurvivalRecipe(recipe)">制作</button>
+            </article>
+          </section>
         </section>
 
         <section v-else-if="activeDrawer === 'skills'" class="drawer-section">
@@ -376,7 +525,10 @@
             <h2>搜索 {{ locationSearch.searchable.name }}</h2>
             <span>{{ currentNode?.name }} · {{ locationSearch.searchable.description }}</span>
           </div>
-          <strong>{{ locationSearchProgressText }}</strong>
+          <div class="location-search-summary">
+            <strong>{{ locationSearchProgressText }}</strong>
+            <small>暂存 {{ locationStagedSpace }} 格 · 剩余 {{ locationRemainingSpace }} 格</small>
+          </div>
         </header>
 
         <div class="loot-grid location-loot-grid" aria-label="地点物资搜索区">
@@ -405,10 +557,12 @@
                 <span>{{ lootItem(slot)?.fallbackIcon ?? '??' }}</span>
               </span>
               <strong>{{ lootItem(slot)?.name ?? '未知物资' }}</strong>
-              <em>{{ slot.status === 'taken' ? `${slot.space} 格` : '背包已满' }}</em>
+              <em>{{ slot.status === 'taken' ? `暂存 · ${slot.space} 格` : '空间不足，未拿取' }}</em>
             </template>
           </button>
         </div>
+
+        <p v-if="locationSearch.error" class="location-search-error">{{ locationSearch.error }}</p>
 
         <footer class="location-search-actions">
           <button class="secondary" :disabled="locationSearch.started || locationSearch.searchingSlotId" @click="cancelLocationSearch">放弃搜索</button>
@@ -431,7 +585,7 @@
         <dl class="resolution-meta">
           <div>
             <dt>时间</dt>
-            <dd>{{ resolutionReport.dayText }}</dd>
+            <dd>{{ resolutionReport.timeText }}</dd>
           </div>
           <div>
             <dt>位置</dt>
@@ -446,7 +600,7 @@
         <div class="resolution-columns">
           <section>
             <h3>状态变化</h3>
-            <p v-if="!resolutionReport.vitalChanges.length">状态没有明显变化。</p>
+            <p v-if="!resolutionReport.vitalChanges.length && !resolutionReport.woundChanges.length">状态没有明显变化。</p>
             <span
               v-for="change in resolutionReport.vitalChanges"
               :key="change.id"
@@ -454,11 +608,18 @@
             >
               {{ change.label }} {{ signed(change.delta) }} → {{ change.value }}
             </span>
+            <span
+              v-for="change in resolutionReport.woundChanges"
+              :key="change.label"
+              :class="['resolution-pill', change.tone]"
+            >
+              {{ change.label }}
+            </span>
           </section>
 
           <section>
-            <h3>资源变化</h3>
-            <p v-if="!resolutionReport.inventoryChanges.length && !resolutionReport.tagChanges.length && !resolutionReport.vehicleChange">没有资源变化。</p>
+            <h3>资源与环境</h3>
+            <p v-if="!resolutionReport.inventoryChanges.length && !resolutionReport.tagChanges.length && !resolutionReport.vehicleChange && !resolutionReport.worldChanges.length">没有资源或环境变化。</p>
             <span
               v-for="change in resolutionReport.inventoryChanges"
               :key="change.id"
@@ -475,6 +636,13 @@
             </span>
             <span v-if="resolutionReport.vehicleChange" class="resolution-pill warn">
               {{ resolutionReport.vehicleChange }}
+            </span>
+            <span
+              v-for="change in resolutionReport.worldChanges"
+              :key="change.label"
+              :class="['resolution-pill', change.tone]"
+            >
+              {{ change.label }}
             </span>
           </section>
         </div>
@@ -597,11 +765,45 @@ const selectedScenePassiveResult = computed(() => {
 const selectedNestedSearchables = computed(() => nestedSearchablesForSceneElement(selectedSceneElement.value, inspectedDetail.value));
 const locationHiddenSlots = computed(() => locationSearch.value?.slots.filter((slot) => slot.status === 'hidden') ?? []);
 const locationSearchedSlots = computed(() => locationSearch.value?.slots.filter((slot) => slot.status !== 'hidden') ?? []);
+const locationStagedSlots = computed(() => locationSearch.value?.slots.filter((slot) => slot.status === 'taken') ?? []);
+const locationStagedSpace = computed(() => locationStagedSlots.value.reduce((sum, slot) => sum + slot.space, 0));
+const locationRemainingSpace = computed(() => Math.max(0, game.remainingSpace - locationStagedSpace.value));
 const locationSearchProgressText = computed(() => {
   if (!locationSearch.value) return '';
   return `${locationSearchedSlots.value.length}/${locationSearch.value.slots.length}`;
 });
 const canSearchAllLocationSlots = computed(() => Boolean(locationSearch.value && locationHiddenSlots.value.length && !locationSearch.value.searchingSlotId));
+const noiseLabel = computed(() => signalLabel(game.world?.noise, ['安静', '可闻', '嘈杂', '刺耳']));
+const threatLabel = computed(() => signalLabel(game.world?.threat, ['零散', '游荡', '聚集', '逼近']));
+const evacuationStatus = computed(() => {
+  const atEvacuation = ['valley_checkpoint', 'louisville_outskirts'].includes(game.currentNodeId);
+  if (game.isVictory) return '已进入撤离区，救援正在接应';
+  if (game.day < game.maxDay) {
+    return `${atEvacuation ? '已抵达撤离区' : '向谷地检查点/外环推进'} · 窗口还有 ${game.maxDay - game.day} 天`;
+  }
+  if (game.day <= game.evacuationDeadline) {
+    return `${atEvacuation ? '已抵达撤离区' : '撤离窗口开放'} · 剩 ${game.evacuationDeadline - game.day + 1} 天`;
+  }
+  return '撤离窗口已经关闭';
+});
+const generatorDisabledReason = computed(() => {
+  if (game.isGameOver) return '本局已经结束';
+  if (!game.isAtHome) return '需要返回初始据点';
+  if (!game.inventory.some((item) => item.id === 'generator' && item.count > 0)) return '背包中没有发电机';
+  const knowsGenerator = game.inventory.some((item) => item.id === 'how_to_use_generators' && item.count > 0)
+    || (game.skills.electrical ?? 0) >= 3;
+  if (!knowsGenerator) return '需要《如何使用发电机》或电工 3';
+  if (!game.base?.generatorOn && (game.base?.generatorFuel ?? 0) <= 0 && !game.inventory.some((item) => item.id === 'gas_can' && item.count > 0)) {
+    return '需要一桶汽油';
+  }
+  return '';
+});
+const baseWaterDisabledReason = computed(() => {
+  if (game.isGameOver) return '本局已经结束';
+  if (!game.isAtHome) return '需要返回初始据点';
+  if ((game.base?.waterReserve ?? 0) <= 0) return '据点没有储水';
+  return '';
+});
 const recentMapLog = computed(() => game.mapLog.slice(0, 5));
 const vehicleLabel = computed(() => game.vehicle?.name ?? '徒步');
 const vehicleStatusLabel = computed(() => {
@@ -611,6 +813,7 @@ const vehicleStatusLabel = computed(() => {
 });
 const drawerTitle = computed(() => {
   if (activeDrawer.value === 'inventory') return { kicker: 'BAG / STATUS', title: '背包与状态' };
+  if (activeDrawer.value === 'survival') return { kicker: 'SURVIVAL / BODY / BASE', title: '生存管理' };
   if (activeDrawer.value === 'skills') return { kicker: 'SKILLS / TRAITS', title: '技能与特性' };
   if (activeDrawer.value === 'log') return { kicker: 'MAP LOG', title: '记录' };
   return {
@@ -619,10 +822,10 @@ const drawerTitle = computed(() => {
   };
 });
 const moveConsequenceText = computed(() => {
-  const vehicleText = game.vehicle?.status !== 'none' && (game.vehicle?.fuel ?? 0) > 0
-    ? `消耗 1 燃料，今日剩余移动 ${Math.max(0, game.movesRemaining - 1)} 步`
-    : '消耗今天 1 次移动并推进一天';
-  return `${vehicleText}，会消耗基础食水并结算区域风险`;
+  const usingVehicle = game.vehicle?.status !== 'none' && (game.vehicle?.fuel ?? 0) > 0;
+  const moveMinutes = game.vehicle?.status === 'working' && usingVehicle ? 60 : game.vehicle?.status === 'damaged' && usingVehicle ? 90 : 180;
+  const vehicleText = usingVehicle ? `消耗 1 燃料，耗时 ${formatDuration(moveMinutes)}` : `徒步耗时 ${formatDuration(moveMinutes)}`;
+  return `${vehicleText}，期间会推进生理需求并结算区域风险`;
 });
 
 onMounted(() => {
@@ -688,6 +891,7 @@ function openLocationSearch(searchable = selectedSearchTarget.value) {
     slots: createLocationSearchSlots(searchable, currentNode.value),
     searchingSlotId: null,
     started: false,
+    error: '',
     initialSnapshot: captureGameSnapshot(),
   };
   sceneInspectFeedback.value = '';
@@ -713,15 +917,65 @@ function runNodeAction(actionId) {
   showResolutionReport(before);
 }
 
+function canUseInventoryItem(item) {
+  return ['food', 'medical', 'morale'].includes(item?.category);
+}
+
+function isWeapon(item) {
+  return Boolean(item?.tags?.includes('weapon'));
+}
+
+function useInventoryItem(item) {
+  const before = captureGameSnapshot();
+  if (!game.useItem(item.id)) return;
+  showResolutionReport(before, {
+    title: `使用 ${item.name}`,
+    result: `${item.name}已经使用，身体与背包状态已更新。`,
+  });
+}
+
+function toggleWeapon(item) {
+  game.equipWeapon(item.id);
+}
+
+function craftSurvivalRecipe(recipe) {
+  const before = captureGameSnapshot();
+  if (!game.craftRecipe(recipe.id)) return;
+  showResolutionReport(before, {
+    title: `制作 ${recipe.name}`,
+    result: `制作完成：${recipe.result?.name ?? recipe.resultId}。`,
+  });
+}
+
+function toggleBaseGenerator() {
+  const wasOn = Boolean(game.base?.generatorOn);
+  const before = captureGameSnapshot();
+  if (!game.toggleGenerator()) return;
+  showResolutionReport(before, {
+    title: wasOn ? '关闭发电机' : '启动发电机',
+    result: wasOn ? '发电机已经停止，持续噪声随之下降。' : '据点恢复供电，但发电机噪声会吸引附近尸群。',
+  });
+}
+
+function drinkStoredWater() {
+  const before = captureGameSnapshot();
+  if (!game.drinkBaseWater()) return;
+  showResolutionReport(before, {
+    title: '饮用据点储水',
+    result: '你喝掉一份储水，缓解了口渴。',
+  });
+}
+
 async function searchLocationSlot(slot) {
   if (!locationSearch.value || locationSearch.value.searchingSlotId || slot.status !== 'hidden') return;
   slot.status = 'searching';
   locationSearch.value.searchingSlotId = slot.id;
   locationSearch.value.started = true;
+  locationSearch.value.error = '';
   await new Promise((resolve) => globalThis.setTimeout(resolve, 800));
   const item = lootItem(slot);
-  const collected = item ? game.collectLootItem(item) : false;
-  slot.status = collected ? 'taken' : 'revealed';
+  const staged = Boolean(item && item.space <= locationRemainingSpace.value);
+  slot.status = staged ? 'taken' : 'revealed';
   locationSearch.value.searchingSlotId = null;
 }
 
@@ -734,12 +988,15 @@ async function searchAllLocationSlots() {
   });
   locationSearch.value.searchingSlotId = 'bulk';
   locationSearch.value.started = true;
+  locationSearch.value.error = '';
   await new Promise((resolve) => globalThis.setTimeout(resolve, 800));
+  let remainingSpace = locationRemainingSpace.value;
   slots.forEach((slot) => {
     if (slot.status !== 'searching') return;
     const item = lootItem(slot);
-    const collected = item ? game.collectLootItem(item) : false;
-    slot.status = collected ? 'taken' : 'revealed';
+    const staged = Boolean(item && item.space <= remainingSpace);
+    if (staged) remainingSpace -= item.space;
+    slot.status = staged ? 'taken' : 'revealed';
   });
   locationSearch.value.searchingSlotId = null;
 }
@@ -756,8 +1013,11 @@ function finishLocationSearch() {
     .filter((slot) => slot.status === 'taken')
     .map((slot) => lootItem(slot))
     .filter(Boolean);
-  game.markSceneSearchableSearched(search.searchKey);
-  game.resolveSceneSearch(search.searchable, collectedItems);
+  const resolved = game.resolveSceneSearch(search.searchable, collectedItems, search.searchKey);
+  if (!resolved) {
+    search.error = '搜索结算失败：地点状态已经变化或当前无法执行搜索。请保留窗口并重试。';
+    return;
+  }
   locationSearch.value = null;
   selectedSearchTarget.value = null;
   showResolutionReport(search.initialSnapshot, { title: `搜索 ${search.searchable.name}` });
@@ -940,13 +1200,15 @@ function createLocationSearchSlots(searchable, node) {
   const quality = searchable?.quality ?? 'green';
   const targetCount = searchSlotCountByQuality[quality] ?? 5;
   const slots = [];
-  const guaranteedItem = pickLocationSearchItem(searchable, node, quality);
+  const searchKey = searchKeyFor(searchable);
+  const rng = createSearchRandom(game.world?.seed, searchKey);
+  const guaranteedItem = pickLocationSearchItem(searchable, node, quality, rng);
   if (guaranteedItem) slots.push(createLocationSearchSlot(guaranteedItem, slots.length, searchable, 'marked'));
   let attempts = 0;
   while (slots.length < targetCount && attempts < targetCount * 30) {
     attempts += 1;
-    const tier = pickLocationLootTier();
-    const item = pickLocationSearchItem(searchable, node, tier);
+    const tier = pickLocationLootTier(rng);
+    const item = pickLocationSearchItem(searchable, node, tier, rng);
     if (item) slots.push(createLocationSearchSlot(item, slots.length, searchable, 'random'));
   }
   return slots;
@@ -954,7 +1216,7 @@ function createLocationSearchSlots(searchable, node) {
 
 function createLocationSearchSlot(item, index, searchable, source) {
   return {
-    id: `area-${searchable.id}-${index}-${item.id}-${Math.random().toString(36).slice(2, 7)}`,
+    id: `area-${searchable.id}-${index}-${item.id}`,
     itemId: item.id,
     status: 'hidden',
     space: item.space,
@@ -964,9 +1226,26 @@ function createLocationSearchSlot(item, index, searchable, source) {
   };
 }
 
-function pickLocationLootTier() {
+function createSearchRandom(worldSeed, searchKey) {
+  const normalizedSeed = Number.isFinite(Number(worldSeed)) ? Math.trunc(Number(worldSeed)) : 0;
+  const input = `${normalizedSeed}:${searchKey}`;
+  let state = (2166136261 ^ (normalizedSeed >>> 0)) >>> 0;
+  for (let index = 0; index < input.length; index += 1) {
+    state ^= input.charCodeAt(index);
+    state = Math.imul(state, 16777619) >>> 0;
+  }
+  return () => {
+    state = (state + 0x6D2B79F5) >>> 0;
+    let mixed = state;
+    mixed = Math.imul(mixed ^ (mixed >>> 15), mixed | 1);
+    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function pickLocationLootTier(rng) {
   const totalWeight = lootTierWeights.reduce((sum, entry) => sum + entry.weight, 0);
-  let roll = Math.random() * totalWeight;
+  let roll = rng() * totalWeight;
   for (const entry of lootTierWeights) {
     roll -= entry.weight;
     if (roll < 0) return entry.tier;
@@ -974,12 +1253,12 @@ function pickLocationLootTier() {
   return lootTierWeights[lootTierWeights.length - 1].tier;
 }
 
-function pickLocationSearchItem(searchable, node, tier) {
+function pickLocationSearchItem(searchable, node, tier, rng) {
   const candidates = marketItems.filter((item) => item.tier === tier);
   const pool = candidates.length ? candidates : marketItems;
   const weighted = pool.map((item) => ({ item, weight: locationItemWeight(item, searchable, node) }));
   const totalWeight = weighted.reduce((sum, entry) => sum + entry.weight, 0);
-  let roll = Math.random() * totalWeight;
+  let roll = rng() * totalWeight;
   for (const entry of weighted) {
     roll -= entry.weight;
     if (roll < 0) return entry.item;
@@ -1049,10 +1328,20 @@ function footprintForSpace(space) {
 function captureGameSnapshot() {
   return {
     day: game.day,
+    clockMinutes: game.clockMinutes,
+    clockLabel: game.clockLabel,
     vitals: { ...game.vitals },
     inventory: Object.fromEntries(game.inventory.map((item) => [item.id, { count: item.count, name: item.name }])),
     hiddenTags: [...game.hiddenTags],
     vehicle: { ...game.vehicle },
+    world: { ...game.world },
+    body: {
+      ...game.body,
+      wounds: game.woundList.map((wound) => ({ ...wound })),
+    },
+    base: { ...game.base },
+    stats: { ...game.survivalStats },
+    equippedWeaponId: game.equippedWeaponId,
     currentNodeId: game.currentNodeId,
     movesRemaining: game.movesRemaining,
   };
@@ -1065,11 +1354,13 @@ function showResolutionReport(before, context = {}) {
 function buildResolutionReport(before, after, context = {}) {
   const latestHistory = game.history[game.history.length - 1];
   const latestMapLog = game.mapLog[0];
+  const elapsedMinutes = Math.max(0, (after.day - before.day) * 24 * 60 + (after.clockMinutes - before.clockMinutes));
   return {
     title: context.title ?? latestHistory?.title ?? latestMapLog?.title ?? '行动结算',
-    result: latestHistory?.result ?? latestMapLog?.text ?? '行动已经结算。',
-    notes: latestHistory?.notes ?? latestMapLog?.text ?? '',
+    result: context.result ?? latestHistory?.result ?? latestMapLog?.text ?? '行动已经结算。',
+    notes: context.notes ?? latestHistory?.notes ?? latestMapLog?.text ?? '',
     dayText: after.day === before.day ? `第 ${after.day} 天` : `第 ${before.day} 天 → 第 ${after.day} 天`,
+    timeText: `第 ${before.day} 天 ${before.clockLabel} → 第 ${after.day} 天 ${after.clockLabel}（${formatDuration(elapsedMinutes)}）`,
     vitalChanges: vitalDefinitions
       .map((vital) => {
         const delta = (after.vitals[vital.id] ?? 0) - (before.vitals[vital.id] ?? 0);
@@ -1084,9 +1375,11 @@ function buildResolutionReport(before, after, context = {}) {
         };
       })
       .filter(Boolean),
+    woundChanges: woundDiff(before.body, after.body),
     inventoryChanges: inventoryDiff(before.inventory, after.inventory),
     tagChanges: tagDiff(before.hiddenTags, after.hiddenTags),
     vehicleChange: vehicleDiff(before.vehicle, after.vehicle),
+    worldChanges: worldDiff(before, after),
   };
 }
 
@@ -1119,6 +1412,57 @@ function vehicleDiff(before, after) {
   return `交通：${before.name ?? '徒步'}(${before.status}/${before.fuel}) → ${after.name ?? '徒步'}(${after.status}/${after.fuel})`;
 }
 
+function woundDiff(before = {}, after = {}) {
+  const beforeWounds = before.wounds ?? [];
+  const afterWounds = after.wounds ?? [];
+  const beforeById = new Map(beforeWounds.map((wound) => [wound.id, wound]));
+  const afterById = new Map(afterWounds.map((wound) => [wound.id, wound]));
+  const changes = [];
+  afterWounds.forEach((wound) => {
+    const previous = beforeById.get(wound.id);
+    const label = `${wound.bodyPartLabel ?? wound.bodyPart} ${wound.typeLabel ?? wound.type}`;
+    if (!previous) {
+      changes.push({ label: `新增伤口：${label}`, tone: 'bad' });
+      return;
+    }
+    if (!previous.bandaged && wound.bandaged) changes.push({ label: `已包扎：${label}`, tone: 'good' });
+    if (!previous.disinfected && wound.disinfected) changes.push({ label: `已消毒：${label}`, tone: 'good' });
+    if (!previous.infected && wound.infected) changes.push({ label: `伤口感染：${label}`, tone: 'bad' });
+    if ((wound.severity ?? 0) < (previous.severity ?? 0)) changes.push({ label: `伤势缓解：${label}`, tone: 'good' });
+  });
+  beforeWounds.forEach((wound) => {
+    if (!afterById.has(wound.id)) changes.push({ label: `伤口恢复：${wound.bodyPartLabel ?? wound.bodyPart} ${wound.typeLabel ?? wound.type}`, tone: 'good' });
+  });
+  const infectionDelta = Math.round((after.infectionLevel ?? 0) - (before.infectionLevel ?? 0));
+  if (infectionDelta) changes.push({ label: `感染 ${signed(infectionDelta)} → ${Math.round(after.infectionLevel ?? 0)}%`, tone: infectionDelta > 0 ? 'bad' : 'good' });
+  const painDelta = Math.round((after.pain ?? 0) - (before.pain ?? 0));
+  if (painDelta) changes.push({ label: `疼痛 ${signed(painDelta)} → ${Math.round(after.pain ?? 0)}`, tone: painDelta > 0 ? 'bad' : 'good' });
+  return changes;
+}
+
+function worldDiff(before, after) {
+  const changes = [];
+  const addNumeric = (label, beforeValue, afterValue, positiveIsBad = true) => {
+    const delta = Math.round((afterValue ?? 0) - (beforeValue ?? 0));
+    if (!delta) return;
+    const bad = positiveIsBad ? delta > 0 : delta < 0;
+    changes.push({ label: `${label} ${signed(delta)} → ${Math.round(afterValue ?? 0)}`, tone: bad ? 'bad' : 'good' });
+  };
+  addNumeric('尸群威胁', before.world?.threat, after.world?.threat);
+  addNumeric('噪声', before.world?.noise, after.world?.noise);
+  addNumeric('击杀', before.stats?.zombiesKilled, after.stats?.zombiesKilled, false);
+  addNumeric('基地防御', before.base?.defense, after.base?.defense, false);
+  addNumeric('路障', before.base?.barricades, after.base?.barricades, false);
+  addNumeric('储水', before.base?.waterReserve, after.base?.waterReserve, false);
+  if (before.world?.powerOn !== after.world?.powerOn) changes.push({ label: after.world?.powerOn ? '电力恢复' : '电力中断', tone: after.world?.powerOn ? 'good' : 'bad' });
+  if (before.world?.waterOn !== after.world?.waterOn) changes.push({ label: after.world?.waterOn ? '供水恢复' : '供水中断', tone: after.world?.waterOn ? 'good' : 'bad' });
+  if (before.base?.generatorOn !== after.base?.generatorOn) changes.push({ label: after.base?.generatorOn ? '发电机启动' : '发电机关闭', tone: after.base?.generatorOn ? 'warn' : 'good' });
+  if (before.equippedWeaponId !== after.equippedWeaponId) {
+    changes.push({ label: `主手：${game.equippedWeapon?.name ?? '徒手'}`, tone: 'good' });
+  }
+  return changes;
+}
+
 function closeResolutionReport() {
   resolutionReport.value = null;
   if (game.isGameOver) router.push('/ending');
@@ -1126,6 +1470,37 @@ function closeResolutionReport() {
 
 function signed(value) {
   return value > 0 ? `+${value}` : `${value}`;
+}
+
+function formatDuration(minutes = 0) {
+  const value = Math.max(0, Math.round(Number(minutes) || 0));
+  if (value < 60) return `${value} 分钟`;
+  const hours = Math.floor(value / 60);
+  const remainder = value % 60;
+  return remainder ? `${hours} 小时 ${remainder} 分` : `${hours} 小时`;
+}
+
+function signalLabel(value = 0, labels = []) {
+  const number = Math.max(0, Math.min(100, Number(value) || 0));
+  return labels[number >= 75 ? 3 : number >= 50 ? 2 : number >= 25 ? 1 : 0] ?? '';
+}
+
+function worldSignalTone(value = 0) {
+  const number = Number(value) || 0;
+  return number >= 70 ? 'danger' : number >= 45 ? 'warn' : 'good';
+}
+
+function moodleIcon(id) {
+  return {
+    hungry: '◒',
+    thirsty: '◇',
+    tired: '☾',
+    pain: '✚',
+    infection: '☣',
+    wet: '☂',
+    encumbered: '▣',
+    horde: '!',
+  }[id] ?? '•';
 }
 
 function canMove(nodeId) {
@@ -1150,7 +1525,7 @@ function moveRiskText(node) {
   if (!node) return '';
   if (node.danger >= 5) return '高危区域可能带来受伤、恐慌和额外消耗。建议确认背包里有食水、绷带或可撤退路线。';
   if (node.danger >= 3) return '中等风险区域通常会消耗耐力和时间，可能遇到路障、尸群或噪音事件。';
-  return '低风险不代表安全。移动仍会推进一天，并结算饥饿、口渴、疲劳和区域压力。';
+  return '低风险不代表安全。移动仍会推进时间，并结算饥饿、口渴、疲劳和区域压力。';
 }
 
 function shelterNames(ids = []) {

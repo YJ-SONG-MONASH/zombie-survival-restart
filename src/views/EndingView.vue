@@ -27,6 +27,22 @@
           <dt>出生点</dt>
           <dd>{{ game.ending.spawnName }}</dd>
         </div>
+        <div>
+          <dt>击倒僵尸</dt>
+          <dd>{{ Math.round(game.ending.stats?.zombiesKilled ?? 0) }}</dd>
+        </div>
+        <div>
+          <dt>完成行动</dt>
+          <dd>{{ Math.round(game.ending.stats?.actions ?? 0) }}</dd>
+        </div>
+        <div>
+          <dt>迁移节点</dt>
+          <dd>{{ Math.round(game.ending.stats?.distanceTravelled ?? 0) }}</dd>
+        </div>
+        <div>
+          <dt>制作物品</dt>
+          <dd>{{ Math.round(game.ending.stats?.crafted ?? 0) }}</dd>
+        </div>
         <div v-for="vital in endingVitals" :key="vital.id">
           <dt>{{ vital.label }}</dt>
           <dd>{{ vital.value }}</dd>
@@ -60,8 +76,24 @@
 
       <section class="inventory-summary">
         <h2>最终背包</h2>
-        <p v-if="game.ending.inventory.length === 0">背包已空</p>
-        <span v-for="item in game.ending.inventory" :key="item.name">{{ item.icon }} {{ item.name }} x{{ item.count }}</span>
+        <p v-if="!game.ending.inventory?.length">背包已空</p>
+        <span v-for="item in game.ending.inventory ?? []" :key="item.name">{{ item.icon }} {{ item.name }} x{{ item.count }}</span>
+      </section>
+
+      <section class="inventory-summary">
+        <h2>身体记录</h2>
+        <p v-if="!game.ending.wounds?.length">最终没有留下未愈伤口</p>
+        <span v-for="(wound, index) in game.ending.wounds ?? []" :key="`${wound.bodyPart}-${wound.type}-${index}`">
+          {{ bodyPartLabels[wound.bodyPart] ?? wound.bodyPart }} · {{ woundTypeLabels[wound.type] ?? wound.type }}
+        </span>
+        <span v-if="game.ending.infectionLevel">感染 {{ Math.round(game.ending.infectionLevel) }}%</span>
+      </section>
+
+      <section class="highlight-box">
+        <h2>最后五次决定</h2>
+        <p v-for="entry in finalDecisions" :key="`${entry.day}-${entry.time}-${entry.title}`">
+          第{{ entry.day }}天 {{ entry.time || '' }} · {{ entry.title }}：{{ entry.result }}
+        </p>
       </section>
 
       <form class="share-form" @submit.prevent="saveArchive">
@@ -82,6 +114,7 @@ import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { vitalDefinitions } from '../data/zombie.js';
 import { useGameStore } from '../stores/game.js';
+import { bodyPartLabels, woundTypeLabels } from '../services/survival.js';
 
 const router = useRouter();
 const game = useGameStore();
@@ -90,6 +123,7 @@ const endingVitals = computed(() => vitalDefinitions.map((vital) => ({
   ...vital,
   value: game.ending?.vitals?.[vital.id] ?? 0,
 })));
+const finalDecisions = computed(() => [...game.history].slice(-5).reverse());
 
 function saveArchive() {
   game.saveArchive(nickname.value.trim() || game.survivorName || game.profession?.name || '匿名幸存者');
