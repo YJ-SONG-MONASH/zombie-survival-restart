@@ -135,14 +135,42 @@ describe('v0.4 storage ownership and atomic transfer', () => {
     expect(game.addItem(item('generator'), 1, true)).toBe(true);
     expect(game.addItem(item('plank'), 8, true)).toBe(true);
     expect(game.addItem(item('water_bottle'), 8, true)).toBe(true);
+    expect(game.addItem(item('baseball_bat'), 1, true)).toBe(true);
+    expect(game.addItem(item('bandage'), 1, true)).toBe(true);
+    expect(game.addItem(item('canned_soup'), 1, true)).toBe(true);
     const beforeCount = game.inventory.reduce((sum, entry) => sum + entry.count, 0);
 
     game.initializeMapState();
 
     expect(game.usedSpace).toBeLessThanOrEqual(game.maxSpace);
+    expect(game.usedSpace).toBeLessThan(game.maxSpace * 0.85);
     expect(game.equippedBagStackId).toBe(game.inventory.find((entry) => entry.id === 'hiking_bag')?.stackId);
+    expect(game.inventory.some((entry) => entry.id === 'baseball_bat')).toBe(true);
+    expect(game.inventory.some((entry) => entry.id === 'bandage')).toBe(true);
+    expect(game.inventory.some((entry) => entry.id === 'canned_soup')).toBe(true);
+    expect(game.inventory.some((entry) => entry.id === 'water_bottle')).toBe(true);
     expect(game.baseInventory.some((entry) => ['generator', 'plank'].includes(entry.id))).toBe(true);
     expect([...game.inventory, ...game.baseInventory].reduce((sum, entry) => sum + entry.count, 0)).toBe(beforeCount);
+  });
+
+  it('still reserves loot space for a minimum-capacity survivor', () => {
+    game.resetGame();
+    game.shelter = clone([...shelters].sort((left, right) => right.space - left.space)[0]);
+    game.skills.strength = 0;
+    game.selectedTraits = [{ id: 'disorganized' }];
+    expect(game.addItem(item('water_bottle'), 2, true)).toBe(true);
+    expect(game.addItem(item('canned_soup'), 2, true)).toBe(true);
+    expect(game.addItem(item('bandage'), 1, true)).toBe(true);
+    expect(game.addItem(item('kitchen_knife'), 1, true)).toBe(true);
+
+    game.initializeMapState();
+
+    expect(game.maxSpace).toBe(6);
+    expect(game.usedSpace).toBeLessThan(game.maxSpace * 0.85);
+    expect(game.inventory.some((entry) => entry.id === 'water_bottle')).toBe(true);
+    expect(game.inventory.some((entry) => entry.id === 'bandage')).toBe(true);
+    expect(game.inventory.some((entry) => entry.id === 'kitchen_knife')).toBe(true);
+    expect(game.baseInventory.some((entry) => entry.id === 'canned_soup')).toBe(true);
   });
 });
 
@@ -255,8 +283,8 @@ describe('v0.4 save migration', () => {
 
     game.loadPersistedState();
 
-    expect(SAVE_VERSION).toBe(6);
-    expect(game.saveVersion).toBe(6);
+    expect(SAVE_VERSION).toBe(7);
+    expect(game.saveVersion).toBe(7);
     expect(game.baseInventory).toEqual([]);
     expect(game.vehicleInventory).toEqual([]);
     expect(game.inventory.every((entry) => entry.stackId && entry.conditionState)).toBe(true);

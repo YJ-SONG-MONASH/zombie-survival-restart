@@ -305,7 +305,10 @@ function normalizeGenerationContext(context) {
     searchable,
     node,
     searchMinutes: source.searchMinutes,
-    catalog: catalogItems(source.catalog),
+    // Prepared meals are player-made outcomes. Letting generic world loot
+    // spawn them would undercut the food-preparation loop and can make a
+    // freshly cooked dish appear in an untouched cupboard days later.
+    catalog: catalogItems(source.catalog).filter((item) => !item.tags?.includes('prepared')),
   };
 }
 

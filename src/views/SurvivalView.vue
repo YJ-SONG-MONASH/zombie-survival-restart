@@ -704,8 +704,8 @@
             <dl class="base-status-grid local-zombie-stats">
               <div><dt>活动数量</dt><dd>{{ localZombieState.population ?? '未知' }}</dd></div>
               <div><dt>区域上限</dt><dd>{{ localZombieState.cap ?? '未知' }}</dd></div>
-              <div><dt>最近清场</dt><dd>{{ localZombieState.clearedDay ? `第 ${localZombieState.clearedDay} 天` : '尚无记录' }}</dd></div>
-              <div><dt>临时安全</dt><dd>{{ localZombieState.population === 0 ? '已清场' : currentNodeTemporarilySecured ? securedUntilLabel : '未建立' }}</dd></div>
+              <div><dt>最近清场</dt><dd>{{ initialSafehousePerimeter ? '开局已设防' : localZombieState.clearedDay ? `第 ${localZombieState.clearedDay} 天` : '尚无记录' }}</dd></div>
+              <div><dt>临时安全</dt><dd>{{ initialSafehousePerimeter ? '据点周边' : localZombieState.population === 0 ? '已清场' : currentNodeTemporarilySecured ? securedUntilLabel : '未建立' }}</dd></div>
             </dl>
             <div v-if="encounterActive" class="drawer-encounter-warning" role="alert">
               <b>遭遇进行中</b>
@@ -772,6 +772,96 @@
                 <button class="secondary" :disabled="Boolean(baseWaterDisabledReason)" @click="drinkStoredWater">饮用储水</button>
                 <small>{{ baseWaterDisabledReason || '消耗 1 份储水并降低口渴' }}</small>
               </div>
+            </div>
+          </section>
+
+          <section class="survival-drawer-block food-preparation-block">
+            <div class="drawer-subheading">
+              <div>
+                <p class="panel-kicker">KITCHEN / PREPARATION</p>
+                <h3>烹饪与备餐</h3>
+              </div>
+              <span>{{ foodPreparationReadyCount }} / {{ foodPreparationCards.length }} 可用</span>
+            </div>
+            <p class="food-preparation-intro">从随身背包或据点仓储指定原料批次。旧食材会优先出现在默认选择里，成品仍会继续腐败。</p>
+            <p
+              v-if="foodPreparationFeedback"
+              :class="['food-preparation-feedback', `tone-${foodPreparationFeedbackTone}`]"
+              aria-live="polite"
+            >
+              {{ foodPreparationFeedback }}
+            </p>
+
+            <div class="food-preparation-list">
+              <article
+                v-for="recipe in foodPreparationCards"
+                :key="recipe.id"
+                :class="['food-preparation-card', { blocked: !recipe.preview.ok }]"
+              >
+                <header class="food-preparation-heading">
+                  <div>
+                    <strong>{{ recipe.name }}</strong>
+                    <small>产出 {{ itemName(recipe.resultId) }} ×{{ recipe.resultCount }}</small>
+                  </div>
+                  <b>{{ formatDuration(recipe.minutes) }}</b>
+                </header>
+                <p>{{ recipe.description }}</p>
+
+                <dl class="food-preparation-requirements">
+                  <div><dt>热源</dt><dd>{{ recipe.requiresHeat ? '持续供电' : '无需加热' }}</dd></div>
+                  <div><dt>用水</dt><dd>{{ foodWaterRequirementText(recipe) }}</dd></div>
+                  <div><dt>工具</dt><dd>{{ foodToolRequirementText(recipe) }}</dd></div>
+                  <div><dt>技能</dt><dd>烹饪 {{ recipe.minCookingSkill || 0 }} / {{ game.skills.cooking ?? 0 }}</dd></div>
+                </dl>
+
+                <div class="food-ingredient-grid">
+                  <label v-for="ingredient in recipe.ingredientViews" :key="ingredient.key">
+                    <span>{{ itemName(ingredient.itemId) }} ×{{ ingredient.count }}</span>
+                    <select
+                      :value="ingredient.selectedKey"
+                      :aria-label="`${recipe.name}的${itemName(ingredient.itemId)}批次`"
+                      :disabled="foodPreparationBusyRecipeId === recipe.id || game.isGameOver"
+                      @change="setFoodIngredientChoice(recipe.id, ingredient.key, $event.target.value)"
+                    >
+                      <option value="">没有可选批次</option>
+                      <option v-for="candidate in ingredient.candidates" :key="candidate.value" :value="candidate.value">
+                        {{ candidate.label }}
+                      </option>
+                    </select>
+                    <small :class="ingredient.selectedCandidate?.freshnessTone ? `tone-${ingredient.selectedCandidate.freshnessTone}` : ''">
+                      {{ ingredient.selectedCandidate?.freshnessText || '尚未选择原料批次' }}
+                    </small>
+                  </label>
+                </div>
+
+                <label class="food-destination-select">
+                  <span>成品存放</span>
+                  <select
+                    :value="recipe.destinationId"
+                    :disabled="foodPreparationBusyRecipeId === recipe.id || game.isGameOver"
+                    @change="setFoodDestination(recipe.id, $event.target.value)"
+                  >
+                    <option value="base">据点仓储</option>
+                    <option value="carry">随身背包</option>
+                  </select>
+                </label>
+
+                <div class="food-preparation-costs" aria-label="烹饪代价">
+                  <span>噪音 +{{ recipe.noiseDelta }}</span>
+                  <span>烹饪 +{{ recipe.skillXp }} XP</span>
+                </div>
+
+                <footer class="food-preparation-actions">
+                  <small :class="{ ready: recipe.preview.ok }">{{ foodPreparationStatusText(recipe) }}</small>
+                  <button
+                    class="secondary"
+                    :disabled="!recipe.preview.ok || Boolean(foodPreparationBusyRecipeId) || game.isGameOver"
+                    @click="prepareFoodRecipe(recipe.id)"
+                  >
+                    {{ foodPreparationBusyRecipeId === recipe.id ? '正在备餐…' : `开始制作 · ${formatDuration(recipe.minutes)}` }}
+                  </button>
+                </footer>
+              </article>
             </div>
           </section>
 
@@ -1057,6 +1147,32 @@
           <p class="exploration-persistence-note">未拿走的物资会留在原处；暂时离开后，回来可以继续挑选。</p>
         </section>
 
+        <section v-if="resolutionReport.preparation" class="cooking-resolution" aria-label="烹饪过程与数值变化">
+          <div class="cooking-resolution-facts">
+            <span>
+              <small>实际耗时</small>
+              <strong>{{ resolutionReport.preparation.durationText }}</strong>
+            </span>
+            <span class="wide">
+              <small>消耗原料</small>
+              <strong>{{ resolutionReport.preparation.consumedText }}</strong>
+            </span>
+            <span>
+              <small>获得成品</small>
+              <strong>{{ resolutionReport.preparation.outputText }}</strong>
+            </span>
+            <span>
+              <small>噪音 / 技能</small>
+              <strong>{{ resolutionReport.preparation.noiseText }} · {{ resolutionReport.preparation.skillText }}</strong>
+            </span>
+            <span>
+              <small>供水</small>
+              <strong>{{ resolutionReport.preparation.waterText }}</strong>
+            </span>
+          </div>
+          <p class="cooking-persistence-note">成品已进入指定容器并会继续腐败；旧原料不会恢复为全新鲜。</p>
+        </section>
+
         <div class="resolution-columns">
           <section>
             <h3>状态变化</h3>
@@ -1086,7 +1202,7 @@
 
           <section>
             <h3>资源与环境</h3>
-            <p v-if="!resolutionReport.inventoryChanges.length && !resolutionReport.tagChanges.length && !resolutionReport.vehicleChange && !resolutionReport.worldChanges.length">没有资源或环境变化。</p>
+            <p v-if="!resolutionReport.preparation && !resolutionReport.inventoryChanges.length && !resolutionReport.tagChanges.length && !resolutionReport.vehicleChange && !resolutionReport.worldChanges.length">没有资源或环境变化。</p>
             <span
               v-for="change in resolutionReport.inventoryChanges"
               :key="change.id"
@@ -1153,8 +1269,16 @@ const tacticalSheetExpanded = ref(false);
 const selectedTacticalWeaponId = ref('');
 const lastAutoOpenedTacticalKey = ref('');
 const tacticalStartRequested = ref(false);
+const foodPreparationDrafts = ref({});
+const foodPreparationBusyRecipeId = ref('');
+const foodPreparationFeedback = ref('');
+const foodPreparationFeedbackTone = ref('neutral');
 let locationSearchSessionToken = 0;
 let locationSearchCommandSequence = 0;
+let foodPreparationCommandSequence = 0;
+const foodPreparationSessionToken = typeof globalThis.crypto?.randomUUID === 'function'
+  ? globalThis.crypto.randomUUID()
+  : `session-${Date.now().toString(36)}`;
 const tacticalActionFallbacks = [
   { id: 'push', label: '推开', estimatedOutcome: '争取身位，打断贴身尸体', staminaCost: 5, noiseDelta: 1 },
   { id: 'melee', label: '近战攻击', estimatedOutcome: '用当前主手攻击贴身目标', staminaCost: 6, noiseLabel: '随武器' },
@@ -1217,9 +1341,70 @@ const localZombieState = computed(() => {
     population: finiteRoundedOrNull(state.population ?? state.count),
     cap: finiteRoundedOrNull(state.cap ?? state.capacity),
     clearedDay: finiteRoundedOrNull(state.clearedDay),
+    lastCombatMinutes: finiteRoundedOrNull(state.lastCombatMinutes),
     securedUntilMinute: finiteRoundedOrNull(state.securedUntilMinute ?? state.evasionUntilMinutes),
   };
 });
+const initialSafehousePerimeter = computed(() => Boolean(
+  game.day === 1
+  && localZombieState.value.population === 0
+  && localZombieState.value.clearedDay === 1
+  && (localZombieState.value.lastCombatMinutes === null || localZombieState.value.lastCombatMinutes === 0)
+  && game.currentNodeId
+  && game.currentNodeId === game.spawnLocation?.id
+));
+const foodSourceContainers = computed(() => {
+  const containers = Array.isArray(game.storageContainers) ? game.storageContainers : [];
+  return containers.filter((container) => ['carry', 'base'].includes(container.id));
+});
+const foodPreparationCards = computed(() => {
+  const options = Array.isArray(game.foodPreparationOptions) ? game.foodPreparationOptions : [];
+  return options.map((option) => {
+    const draft = foodPreparationDrafts.value[option.id] ?? {};
+    const ingredientViews = (option.ingredients ?? []).map((ingredient, index) => {
+      const key = `${ingredient.itemId}:${index}`;
+      const candidates = foodIngredientCandidates(ingredient.itemId);
+      const savedKey = draft.ingredientChoices?.[key] ?? '';
+      const suggested = (option.suggestedIngredientSelections ?? [])
+        .map((selection) => candidates.find((candidate) => candidate.containerId === selection.containerId && candidate.stackId === selection.stackId))
+        .find(Boolean);
+      const selectedKey = candidates.some((candidate) => candidate.value === savedKey)
+        ? savedKey
+        : suggested?.value ?? candidates[0]?.value ?? '';
+      const selectedCandidate = candidates.find((candidate) => candidate.value === selectedKey) ?? null;
+      return {
+        ...ingredient,
+        key,
+        candidates,
+        selectedKey,
+        selectedCandidate,
+      };
+    });
+    const ingredientSelections = ingredientViews
+      .filter((ingredient) => ingredient.selectedCandidate)
+      .map((ingredient) => ({
+        containerId: ingredient.selectedCandidate.containerId,
+        stackId: ingredient.selectedCandidate.stackId,
+        count: Math.max(1, Math.round(Number(ingredient.count) || 1)),
+      }));
+    const destinationId = ['carry', 'base'].includes(draft.destinationId) ? draft.destinationId : 'base';
+    const request = {
+      recipeId: option.id,
+      ingredientSelections,
+      destinationId,
+      expectedRevision: game.foodPreparationRevision,
+      commandId: `food-preview:${option.id}:${game.foodPreparationRevision}`,
+    };
+    return {
+      ...option,
+      destinationId,
+      ingredientViews,
+      ingredientSelections,
+      preview: game.previewFoodPreparation(request),
+    };
+  });
+});
+const foodPreparationReadyCount = computed(() => foodPreparationCards.value.filter((recipe) => recipe.preview.ok).length);
 const currentNodeSecured = computed(() => {
   if (typeof game.isCurrentNodeSecured === 'boolean') return game.isCurrentNodeSecured;
   const until = normalizedSecuredUntilMinute.value;
@@ -1387,6 +1572,7 @@ const localZombiePopulationLabel = computed(() => {
 });
 const localZombieStatusLabel = computed(() => {
   if (encounterActive.value) return '遭遇中';
+  if (initialSafehousePerimeter.value) return '开局设防';
   if (localZombieState.value.population === 0) return '已经清场';
   if (currentNodeTemporarilySecured.value) return '临时安全';
   if (localZombieState.value.population === null) return '情报未知';
@@ -1394,11 +1580,14 @@ const localZombieStatusLabel = computed(() => {
 });
 const localZombieHeadline = computed(() => encounterActive.value
   ? `遭遇中 · ${encounterPopulation.value} 只`
+  : initialSafehousePerimeter.value
+    ? '安全屋周边已封闭'
   : localZombieState.value.population === null
     ? '本地尸群情报未知'
     : `本地尸群 ${localZombiePopulationLabel.value}`);
 const localZombieDetail = computed(() => {
   if (encounterActive.value) return `${encounterNodeName.value} · 清场或脱离后再整备`;
+  if (initialSafehousePerimeter.value) return '开局防线只覆盖据点附近；离开后仍要面对街区尸群';
   if (localZombieState.value.population === 0) {
     return localZombieState.value.clearedDay
       ? `第 ${localZombieState.value.clearedDay} 天完成清场，当前区域没有活动尸体`
@@ -2134,6 +2323,192 @@ function craftSurvivalRecipe(recipe) {
   });
 }
 
+function foodIngredientCandidates(itemId) {
+  return foodSourceContainers.value.flatMap((container) => (container.items ?? [])
+    .filter((item) => item.id === itemId && Number(item.count) > 0)
+    .map((item) => {
+      const freshnessText = item.freshness
+        ? [item.freshness.label, item.freshness.detail].filter(Boolean).join(' · ')
+        : '状态未记录';
+      return {
+        value: JSON.stringify([container.id, item.stackId]),
+        containerId: container.id,
+        containerName: container.id === 'carry' ? '随身' : '据点',
+        stackId: item.stackId,
+        itemId: item.id,
+        name: item.name ?? itemName(item.id),
+        count: Math.max(0, Math.round(Number(item.count) || 0)),
+        freshnessText,
+        freshnessTone: item.freshness?.tone ?? 'neutral',
+        label: `${container.id === 'carry' ? '随身' : '据点'} · ${item.name ?? itemName(item.id)} ×${Math.max(0, Math.round(Number(item.count) || 0))} · ${freshnessText}`,
+      };
+    }));
+}
+
+function setFoodIngredientChoice(recipeId, ingredientKey, value) {
+  const current = foodPreparationDrafts.value[recipeId] ?? {};
+  foodPreparationDrafts.value = {
+    ...foodPreparationDrafts.value,
+    [recipeId]: {
+      ...current,
+      ingredientChoices: {
+        ...(current.ingredientChoices ?? {}),
+        [ingredientKey]: String(value ?? ''),
+      },
+    },
+  };
+  foodPreparationFeedback.value = '';
+  foodPreparationFeedbackTone.value = 'neutral';
+}
+
+function setFoodDestination(recipeId, destinationId) {
+  const current = foodPreparationDrafts.value[recipeId] ?? {};
+  foodPreparationDrafts.value = {
+    ...foodPreparationDrafts.value,
+    [recipeId]: {
+      ...current,
+      destinationId: ['carry', 'base'].includes(destinationId) ? destinationId : 'base',
+    },
+  };
+  foodPreparationFeedback.value = '';
+  foodPreparationFeedbackTone.value = 'neutral';
+}
+
+function foodWaterRequirementText(recipe) {
+  const units = Math.max(0, Math.round(Number(recipe.waterUnits) || 0));
+  if (!units) return '无需用水';
+  const source = {
+    municipal: '市政供水',
+    reserve: '据点储水',
+    none: '当前无水',
+  }[recipe.waterSource] ?? '待确认';
+  return `${units} 份 · ${source}`;
+}
+
+function foodToolRequirementText(recipe) {
+  const tools = Array.isArray(recipe.tools) ? recipe.tools.filter(Boolean) : [];
+  if (tools.length) return tools.map(itemName).join(' + ');
+  const anyTools = Array.isArray(recipe.anyTools) ? recipe.anyTools.filter(Boolean) : [];
+  if (anyTools.length) return `任一：${anyTools.map(itemName).join(' / ')}`;
+  return '无需工具';
+}
+
+function foodPreparationStatusText(recipe) {
+  if (recipe.preview?.ok) return '当前批次与环境均满足，可以开始';
+  return foodPreparationReasonText(recipe.preview?.reason || recipe.disabledReason);
+}
+
+function foodPreparationReasonText(reason) {
+  const labels = {
+    not_running: '生存流程尚未开始',
+    active_tactical_encounter: '遭遇中无法备餐',
+    not_at_home: '需要返回初始据点',
+    node_not_secured: '据点附近尚未安全',
+    insufficient_safe_window: '安全窗口不足以完成这道配方',
+    power_unavailable: '供电无法覆盖整个烹饪过程',
+    water_unavailable: '缺少可用供水或据点储水',
+    tool_missing: '缺少配方要求的工具',
+    skill_too_low: '烹饪技能等级不足',
+    ingredient_missing: '缺少所需原料',
+    ingredient_rotten: '选中的原料已经腐烂',
+    ingredient_mismatch: '请选择每一份指定原料',
+    invalid_selection: '原料批次选择无效',
+    stack_missing: '所选批次已不存在或数量不足',
+    capacity_exceeded: '目标容器没有足够空间',
+    stale_revision: '物资刚刚变化，请重新确认批次',
+    duplicate_command: '这次备餐已经处理，不会重复消耗',
+    recipe_missing: '找不到这道配方',
+    unknown_recipe: '未知配方',
+    invalid_destination: '成品存放位置无效',
+    output_missing: '成品资料缺失',
+    invalid_duration: '配方耗时数据无效',
+    invalid_command: '备餐指令无效',
+    invalid_request: '当前选择无法提交',
+    projection_failed: '无法预估本次备餐，请重试',
+    invalid_projection: '备餐结果校验失败，物资未消耗',
+  };
+  return labels[reason] ?? '当前无法完成这道配方';
+}
+
+function nextFoodPreparationCommandId(recipeId) {
+  foodPreparationCommandSequence += 1;
+  return `food-ui:${foodPreparationSessionToken}:${recipeId}:r${game.foodPreparationRevision}:c${foodPreparationCommandSequence}`.slice(0, 180);
+}
+
+async function prepareFoodRecipe(recipeId) {
+  if (foodPreparationBusyRecipeId.value || game.isGameOver) return;
+  const recipe = foodPreparationCards.value.find((entry) => entry.id === recipeId);
+  if (!recipe) {
+    foodPreparationFeedback.value = '找不到这道配方。';
+    foodPreparationFeedbackTone.value = 'danger';
+    return;
+  }
+
+  foodPreparationBusyRecipeId.value = recipeId;
+  foodPreparationFeedback.value = '';
+  foodPreparationFeedbackTone.value = 'neutral';
+  try {
+    const command = {
+      recipeId,
+      ingredientSelections: recipe.ingredientSelections.map((selection) => ({ ...selection })),
+      destinationId: recipe.destinationId,
+      expectedRevision: game.foodPreparationRevision,
+      commandId: nextFoodPreparationCommandId(recipeId),
+    };
+    const preview = game.previewFoodPreparation(command);
+    if (!preview?.ok) {
+      foodPreparationFeedback.value = foodPreparationReasonText(preview?.reason);
+      foodPreparationFeedbackTone.value = 'danger';
+      return;
+    }
+
+    const before = captureGameSnapshot();
+    const consumedText = recipe.ingredientViews
+      .filter((ingredient) => ingredient.selectedCandidate)
+      .map((ingredient) => {
+        const selected = ingredient.selectedCandidate;
+        return `${selected.containerName} ${selected.name} ×${ingredient.count}（${selected.freshnessText}）`;
+      })
+      .join('、') || '无原料记录';
+    const result = game.prepareFood(command);
+    if (!result?.ok) {
+      foodPreparationFeedback.value = foodPreparationReasonText(result?.reason);
+      foodPreparationFeedbackTone.value = 'danger';
+      return;
+    }
+
+    const outputName = result.preparedStack?.name ?? itemName(result.resultId) ?? recipe.name;
+    const destinationText = result.destinationId === 'carry' ? '随身背包' : '据点仓储';
+    const waterText = {
+      reserve: `据点储水 −${Math.max(0, Number(result.waterUnits) || 0)}`,
+      municipal: '使用市政供水',
+      none: '未消耗水',
+    }[result.waterSource] ?? '供水已结算';
+    const noiseText = `噪音 ${signed(Math.round(Number(result.noiseDelta) || 0))}`;
+    const skillText = `烹饪 +${formatNumber(result.skillXp)} XP`;
+    const outputText = `${outputName} ×${Math.max(1, Math.round(Number(result.resultCount) || 1))} → ${destinationText}`;
+    foodPreparationFeedback.value = `${recipe.name}完成，成品已放入${destinationText}。`;
+    foodPreparationFeedbackTone.value = 'good';
+    showResolutionReport(before, {
+      title: `烹饪 · ${recipe.name}`,
+      result: `你完成了${outputName}，原料批次、时间与环境代价已同步结算。`,
+      notes: `${formatDuration(result.minutes)} · ${waterText} · ${noiseText}`,
+      preparation: {
+        durationText: formatDuration(result.minutes),
+        consumedText,
+        outputText,
+        noiseText,
+        skillText,
+        waterText,
+      },
+    });
+  } finally {
+    await nextTick();
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 280));
+    foodPreparationBusyRecipeId.value = '';
+  }
+}
+
 function toggleBaseGenerator() {
   const wasOn = Boolean(game.base?.generatorOn);
   const before = captureGameSnapshot();
@@ -2585,6 +2960,14 @@ function buildResolutionReport(before, after, context = {}) {
       injuryText: woundChanges.length ? `${woundChanges.length} 项伤势变化` : '无新增伤势',
       skillText: totalSkillXp > 0 ? `经验 +${formatNumber(totalSkillXp)}` : '无经验变化',
       metrics: explorationMetricDiff(before, after),
+    } : null,
+    preparation: context.preparation ? {
+      durationText: context.preparation.durationText ?? formatDuration(elapsedMinutes),
+      consumedText: context.preparation.consumedText ?? '无原料记录',
+      outputText: context.preparation.outputText ?? '成品已入库',
+      noiseText: context.preparation.noiseText ?? '噪音 0',
+      skillText: context.preparation.skillText ?? '烹饪 +0 XP',
+      waterText: context.preparation.waterText ?? '未消耗水',
     } : null,
   };
 }

@@ -97,6 +97,22 @@ describe('persistent deterministic world loot', () => {
     expect(otherKey.slots.map((slot) => slot.item.stackId)).not.toEqual(original.slots.map((slot) => slot.item.stackId));
   });
 
+  it('keeps player-prepared meals out of generic world loot generation', () => {
+    const preparedMeal = {
+      id: 'prepared_meal',
+      name: 'Prepared meal',
+      category: 'food',
+      tier: 'gold',
+      space: 1,
+      tags: ['food', 'prepared', 'perishable'],
+    };
+    const mixed = createWorldLootContainer(baseContext({ catalog: [...catalog, preparedMeal] }));
+    const preparedOnly = createWorldLootContainer(baseContext({ catalog: [preparedMeal] }));
+
+    expect(mixed.slots.every((slot) => slot.item.id !== preparedMeal.id)).toBe(true);
+    expect(preparedOnly.slots).toEqual([]);
+  });
+
   it('allows the caller to tune the one-time search duration without changing generated loot', () => {
     const standard = createWorldLootContainer(baseContext());
     const tuned = createWorldLootContainer(baseContext({ searchMinutes: 25 }));

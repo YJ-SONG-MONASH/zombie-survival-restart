@@ -54,10 +54,11 @@
           <p>SAFEHOUSE SEARCH</p>
           <h1>搜索物资</h1>
           <span>{{ game.shelter.name }} · {{ qualityMeta(game.shelter.quality).label }} · {{ game.shelter.hidden }}</span>
+          <small>这里显示的是据点仓储容量，不是角色负重。开始生存时会自动整理一套随身装备，其余物资留在据点。</small>
         </div>
         <aside>
           <strong>{{ game.takenLootCount }}</strong>
-          <span>已带走 / {{ game.lootSlots.length }} 个可疑物资</span>
+          <span>已存入据点 / {{ game.lootSlots.length }} 个可疑物资</span>
         </aside>
       </section>
 
@@ -103,8 +104,9 @@
       </div>
 
       <section class="loot-inventory">
-        <h2>已带走物资</h2>
-        <p v-if="!game.inventory.length">背包还是空的。</p>
+        <h2>据点起始物资</h2>
+        <p>开始后会优先随身携带武器、饮水、食物和医疗用品；重型工具与多余补给会保留在据点仓储。</p>
+        <p v-if="!game.inventory.length">据点仓储还是空的。</p>
         <span v-for="item in game.inventory" :key="item.stackId ?? item.id" class="inventory-item">
           <span class="item-icon inventory-icon" aria-hidden="true">
             <img :src="itemIconSrc(item)" :alt="item.name" @error="markInventoryIconMissing" />
@@ -115,7 +117,7 @@
         </span>
       </section>
 
-      <button class="primary-action loot-start-action" @click="startSurvival">开始生存</button>
+      <button class="primary-action loot-start-action" @click="startSurvival">整理随身装备并开始生存</button>
     </template>
   </section>
 </template>
@@ -247,8 +249,8 @@ function itemEffects(item) {
 }
 
 function lootStatusText(slot) {
-  if (slot.status === 'taken') return `${slot.space} 格`;
-  return `${slot.space} 格 · 背包已满`;
+  if (slot.status === 'taken') return `${slot.space} 格 · 已存入据点`;
+  return `${slot.space} 格 · 据点仓储已满`;
 }
 
 function tierMeta(tierId) {
@@ -276,8 +278,8 @@ function lootAriaLabel(slot) {
   const item = lootItem(slot);
   if (!item) return `未知物资，${slot.space} 格`;
   return slot.status === 'taken'
-    ? `${item.name}，${item.space} 格`
-    : `${item.name}，${item.space} 格，背包已满，未带走`;
+    ? `${item.name}，${item.space} 格，已存入据点`
+    : `${item.name}，${item.space} 格，据点仓储已满，未存入`;
 }
 
 function startSurvival() {

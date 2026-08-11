@@ -77,6 +77,12 @@ import {
   summarizeWorldLootContainer,
 } from '../services/world-loot.js';
 import {
+  FOOD_PREPARATION_RECIPES,
+  listFoodPreparationOptions,
+  previewFoodPreparation as previewFoodPreparationProjection,
+  resolveFoodPreparation,
+} from '../services/food-preparation.js';
+import {
   START_MINUTE,
   advanceSurvivalState,
   bodyPartLabels,
@@ -95,7 +101,7 @@ import {
   woundTypeLabels,
 } from '../services/survival.js';
 
-export const SAVE_VERSION = 6;
+export const SAVE_VERSION = 7;
 
 const defaultState = () => ({
   saveVersion: SAVE_VERSION,
@@ -137,6 +143,8 @@ const defaultState = () => ({
   searchedSceneObjectIds: [],
   legacyDepletedSceneObjectIds: [],
   worldLootContainers: {},
+  foodPreparationRevision: 0,
+  foodPreparationCommandIds: [],
   nodeSearchCounts: {},
   nodeZombieStates: {},
   activeTacticalEncounter: null,
@@ -292,6 +300,7 @@ export const useGameStore = defineStore('game', {
       });
     },
     recipeList: (state) => craftingRecipes.map((recipe) => recipeStatus(recipe, state)),
+    foodPreparationOptions: (state) => listFoodPreparationOptions(foodPreparationContextForState(state)),
     inspectedMapNode: (state) => mapNodes.find((node) => node.id === state.inspectedNodeId) ?? null,
     inspectedNodeDetail: (state) => mapNodeDetails[state.inspectedNodeId] ?? null,
     visibleMapNodeList: (state) => buildVisibleMapNodes(state),
@@ -425,6 +434,8 @@ export const useGameStore = defineStore('game', {
       if (!hasOwn('nextEncounterSequence')) this.nextEncounterSequence = 1;
       if (!hasOwn('firearmLoads')) this.firearmLoads = {};
       if (!hasOwn('worldLootContainers')) this.worldLootContainers = {};
+      if (!hasOwn('foodPreparationRevision')) this.foodPreparationRevision = 0;
+      if (!hasOwn('foodPreparationCommandIds')) this.foodPreparationCommandIds = [];
       if (!hasOwn('legacyDepletedSceneObjectIds')) {
         const rawSaveVersion = Number(rawState.saveVersion);
         this.legacyDepletedSceneObjectIds = !Number.isFinite(rawSaveVersion) || rawSaveVersion < 6
@@ -635,6 +646,8 @@ export const useGameStore = defineStore('game', {
         shelterDefense: this.shelter?.defense ?? 0,
       });
       this.worldLootContainers = normalizeWorldLootContainersForState(this.$state, this.worldLootContainers);
+      this.foodPreparationRevision = clampInteger(this.foodPreparationRevision, 0, 1_000_000_000, 0);
+      this.foodPreparationCommandIds = normalizeFoodPreparationCommandIds(this.foodPreparationCommandIds);
       this.nodeZombieStates = normalizeNodeZombieStates(this.nodeZombieStates, {
         nodes: mapNodes,
         seed: this.world.seed,
@@ -1078,6 +1091,149 @@ export const useGameStore = defineStore('game', {
       });
       this.finishIfGameOver();
       return true;
+    },
+    previewFoodPreparation(request = {}) {
+      const gate = foodPreparationAccessFailure(this);
+      if (gate) return foodPreparationFailure(this.$state, gate);
+      const recipe = FOOD_PREPARATION_RECIPES.find((entry) => entry.id === request?.recipeId);
+      if (!recipe) return foodPreparationFailure(this.$state, 'recipe_missing');
+      const context = foodPreparationContextForState(this.$state, recipe.id);
+      let preview;
+      try {
+        preview = previewFoodPreparationProjection(context, request);
+      } catch {
+        return foodPreparationFailure(this.$state, 'projection_failed');
+      }
+      if (!preview?.ok) return foodPreparationFailure(this.$state, preview?.reason ?? 'invalid_request', preview);
+      const minutes = preparationMinutes(preview, recipe);
+      if (!minutes) return foodPreparationFailure(this.$state, 'invalid_duration');
+      if (!this.canPerformWorldAction('food_preparation', minutes)) {
+        return foodPreparationFailure(this.$state, 'insufficient_safe_window', preview);
+      }
+      if (foodRecipeRequiresPower(recipe) && poweredMinutesForInterval({
+        day: this.day,
+        clockMinutes: this.clockMinutes,
+        elapsedMinutes: minutes,
+        world: this.world,
+        base: this.base,
+      }) < minutes) {
+        return foodPreparationFailure(this.$state, 'power_unavailable', preview);
+      }
+      return {
+        ...preview,
+        committed: false,
+        revision: context.revision,
+      };
+    },
+    prepareFood(command = {}) {
+      const commandId = normalizeFoodPreparationCommandId(command?.commandId);
+      const expectedRevision = Number(command?.expectedRevision);
+      if (!commandId || !Number.isInteger(expectedRevision) || expectedRevision < 0 || expectedRevision > 1_000_000_000) {
+        return foodPreparationFailure(this.$state, 'invalid_command');
+      }
+      if (this.foodPreparationCommandIds.includes(commandId)) {
+        return foodPreparationFailure(this.$state, 'duplicate_command', { replayed: true });
+      }
+      if (expectedRevision !== this.foodPreparationRevision) {
+        return foodPreparationFailure(this.$state, 'stale_revision');
+      }
+      const gate = foodPreparationAccessFailure(this);
+      if (gate) return foodPreparationFailure(this.$state, gate);
+      const recipe = FOOD_PREPARATION_RECIPES.find((entry) => entry.id === command?.recipeId);
+      if (!recipe) return foodPreparationFailure(this.$state, 'recipe_missing');
+      const context = foodPreparationContextForState(this.$state, recipe.id);
+      let preview;
+      let resolved;
+      try {
+        preview = previewFoodPreparationProjection(context, command);
+        if (!preview?.ok) return foodPreparationFailure(this.$state, preview?.reason ?? 'invalid_request', preview);
+        const previewMinutes = preparationMinutes(preview, recipe);
+        if (!previewMinutes) return foodPreparationFailure(this.$state, 'invalid_duration');
+        if (!this.canPerformWorldAction('food_preparation', previewMinutes)) {
+          return foodPreparationFailure(this.$state, 'insufficient_safe_window', preview);
+        }
+        if (foodRecipeRequiresPower(recipe) && poweredMinutesForInterval({
+          day: this.day,
+          clockMinutes: this.clockMinutes,
+          elapsedMinutes: previewMinutes,
+          world: this.world,
+          base: this.base,
+        }) < previewMinutes) {
+          return foodPreparationFailure(this.$state, 'power_unavailable', preview);
+        }
+        resolved = resolveFoodPreparation(context, command);
+      } catch {
+        return foodPreparationFailure(this.$state, 'projection_failed');
+      }
+      if (!resolved?.ok) return foodPreparationFailure(this.$state, resolved?.reason ?? 'invalid_request', resolved);
+
+      const minutes = preparationMinutes(resolved, recipe);
+      const nextState = resolved.nextState;
+      if (!validFoodPreparationProjection(nextState, context, commandId, minutes, preview)) {
+        return foodPreparationFailure(this.$state, 'invalid_projection');
+      }
+      if (!this.canPerformWorldAction('food_preparation', minutes)) {
+        return foodPreparationFailure(this.$state, 'insufficient_safe_window', resolved);
+      }
+      if (foodRecipeRequiresPower(recipe) && poweredMinutesForInterval({
+        day: this.day,
+        clockMinutes: this.clockMinutes,
+        elapsedMinutes: minutes,
+        world: this.world,
+        base: this.base,
+      }) < minutes) {
+        return foodPreparationFailure(this.$state, 'power_unavailable', resolved);
+      }
+
+      const actionDay = this.day;
+      const actionTime = this.clockLabel;
+      this.inventory = cloneInventory(nextState.containers.carry);
+      this.baseInventory = cloneInventory(nextState.containers.base);
+      this.base.waterReserve = clampInteger(nextState.baseWaterReserve, 0, 30, this.base.waterReserve);
+      this.nextItemSequence = clampInteger(nextState.nextItemSequence, 1, 1_000_000_000, this.nextItemSequence);
+      this.foodPreparationRevision = clampInteger(nextState.revision, 0, 1_000_000_000, this.foodPreparationRevision + 1);
+      this.foodPreparationCommandIds = normalizeFoodPreparationCommandIds(nextState.appliedCommandIds);
+      this.reconcileEquipment();
+      this.survivalStats.actions += 1;
+      this.survivalStats.crafted += 1;
+      const progression = this.grantSkillXp({ cooking: Math.max(0, Number(resolved.skillXp) || 0) });
+      const levelUpText = levelUpSummary(progression);
+      const preparedName = resolved.preparedStack?.name
+        ?? marketItems.find((item) => item.id === resolved.resultId)?.name
+        ?? recipe.name;
+      const waterText = resolved.waterSource === 'reserve'
+        ? '消耗据点储水'
+        : resolved.waterSource === 'municipal' ? '使用市政供水' : '';
+      this.history.push({
+        day: actionDay,
+        time: actionTime,
+        title: recipe.name,
+        log: '烹饪与食物准备',
+        action: recipe.name,
+        result: `你完成了${preparedName}。`,
+        notes: [`耗时 ${formatFoodPreparationDuration(minutes)}`, waterText, levelUpText].filter(Boolean).join(' / '),
+        score: Math.min(100, 58 + (this.skills.cooking ?? 0) * 4),
+      });
+      this.mapLog.unshift({
+        day: actionDay,
+        time: actionTime,
+        title: recipe.name,
+        text: [`制作完成：${preparedName}。`, waterText, levelUpText].filter(Boolean).join(' '),
+        mode: 'cooking',
+      });
+      this.mapLog = this.mapLog.slice(0, 80);
+      this.advanceSimulation({
+        minutes,
+        mode: 'active',
+        noiseDelta: Number(resolved.noiseDelta) || 0,
+        threatDelta: Number(resolved.threatDelta) || 0,
+      });
+      this.finishIfGameOver();
+      return {
+        ...resolved,
+        committed: true,
+        progression,
+      };
     },
     craftRecipe(recipeId) {
       if (this.isGameOver) return false;
@@ -2233,24 +2389,25 @@ const defaultLootSlotsByQuality = {
 
 function createLootSlotsForShelter(shelter) {
   const profile = shelterLootProfiles[shelter?.id] ?? {};
+  const lootCatalog = marketItems.filter((item) => !item.tags?.includes('prepared'));
   const guarantees = [...universalLootGuaranteesForShelter(shelter), ...(profile.guaranteed ?? [])];
   const qualityTarget = defaultLootSlotsByQuality[shelter?.quality] ?? 12;
   const targetCount = Math.max(profile.slotCount ?? qualityTarget, qualityTarget, guarantees.length);
   const slots = guarantees
-    .map((entry, index) => createLootSlot(pickGuaranteedItem(entry, profile), index, 'guaranteed'))
+    .map((entry, index) => createLootSlot(pickGuaranteedItem(entry, profile, lootCatalog), index, 'guaranteed'))
     .filter(Boolean);
 
   let attempts = 0;
   while (slots.length < targetCount && attempts < targetCount * 40) {
     attempts += 1;
     const tier = pickLootTier();
-    const item = pickWeightedItem(marketItems.filter((entry) => entry.tier === tier), profile);
+    const item = pickWeightedItem(lootCatalog.filter((entry) => entry.tier === tier), profile);
     const slot = createLootSlot(item, slots.length, 'random');
     if (slot) slots.push(slot);
   }
 
   while (slots.length < targetCount) {
-    const slot = createLootSlot(pickWeightedItem(marketItems, profile), slots.length, 'random');
+    const slot = createLootSlot(pickWeightedItem(lootCatalog, profile), slots.length, 'random');
     if (!slot) break;
     slots.push(slot);
   }
@@ -2301,9 +2458,9 @@ function createLootSlot(item, index, source) {
   };
 }
 
-function pickGuaranteedItem(entry, profile) {
-  if (entry.itemId) return marketItems.find((item) => item.id === entry.itemId);
-  let candidates = marketItems;
+function pickGuaranteedItem(entry, profile, lootCatalog = marketItems) {
+  if (entry.itemId) return lootCatalog.find((item) => item.id === entry.itemId);
+  let candidates = lootCatalog;
   if (entry.itemIds) candidates = candidates.filter((item) => entry.itemIds.includes(item.id));
   if (entry.tier) candidates = candidates.filter((item) => item.tier === entry.tier);
   if (entry.category) candidates = candidates.filter((item) => item.category === entry.category);
@@ -2818,14 +2975,18 @@ function splitStartingStorage(state) {
     equippedBagStackId,
   };
   let capacity = carryStorageCapacity({ ...context, inventory: containers.carry });
+  // A fresh survivor should leave home with room to loot instead of starting
+  // at the absolute carry limit. Keep roughly one quarter of the pack free;
+  // low-priority and bulky setup supplies stay in the base inventory.
+  let targetCarrySpace = Math.max(1, Math.floor(capacity * 0.75));
   let safety = 0;
-  while (storageUsedSpace(containers.carry) > capacity && safety < 1000) {
+  while (storageUsedSpace(containers.carry) > targetCarrySpace && safety < 1000) {
     safety += 1;
     const candidate = [...containers.carry]
       .filter((item) => item.stackId !== equippedBagStackId)
       .sort((left, right) => startingCarryPriority(left) - startingCarryPriority(right))[0];
     if (!candidate) break;
-    const excess = storageUsedSpace(containers.carry) - capacity;
+    const excess = storageUsedSpace(containers.carry) - targetCarrySpace;
     const unitSpace = Math.max(0.01, Number(candidate.space) || 1);
     const quantity = Math.min(candidate.count, Math.max(1, Math.ceil(excess / unitSpace)));
     const projected = projectStorageTransfer({ ...context, containers, equippedBagStackId }, {
@@ -2838,6 +2999,7 @@ function splitStartingStorage(state) {
     containers = projected.containers;
     equippedBagStackId = projected.nextEquippedBagStackId;
     capacity = projected.capacities.carry;
+    targetCarrySpace = Math.max(1, Math.floor(capacity * 0.75));
   }
   const weapon = containers.carry.find((item) => item.stackId === state.equippedWeaponStackId && !isWeaponBroken(item.conditionState))
     ?? containers.carry.find((item) => item.id === state.equippedWeaponId && item.tags?.includes('weapon') && !isWeaponBroken(item.conditionState))
@@ -2854,8 +3016,9 @@ function splitStartingStorage(state) {
 function startingCarryPriority(item) {
   if (item.tags?.includes('bag')) return 15;
   if (item.tags?.includes('weapon')) return 90;
+  if (item.tags?.includes('water')) return 88;
   if (item.category === 'medical') return 85;
-  if (item.category === 'food' || item.tags?.includes('water')) return 80;
+  if (item.category === 'food') return 80;
   if (item.category === 'ammo') return 70;
   if (item.tags?.includes('tool')) return 55;
   if (item.tags?.includes('heavy') || item.tags?.includes('generator')) return 5;
@@ -3051,6 +3214,133 @@ function poweredMinutesForInterval({ day, clockMinutes, elapsedMinutes, world, b
     }
   }
   return powered;
+}
+
+function foodPreparationContextForState(state, recipeId = null) {
+  const cookingSkill = clampInteger(state.skills?.cooking, 0, 10, 0);
+  const recipe = recipeId
+    ? FOOD_PREPARATION_RECIPES.find((entry) => entry.id === recipeId)
+    : null;
+  const intervalMinutes = Math.max(
+    0,
+    recipe ? foodPreparationRecipeMinutes(recipe, cookingSkill) : Math.max(
+      0,
+      ...FOOD_PREPARATION_RECIPES.map((entry) => foodPreparationRecipeMinutes(entry, cookingSkill)),
+    ),
+  );
+  const inventory = Array.isArray(state.inventory) ? state.inventory : [];
+  const baseInventory = Array.isArray(state.baseInventory) ? state.baseInventory : [];
+  return {
+    catalog: marketItems,
+    containers: {
+      carry: cloneInventory(inventory),
+      base: cloneInventory(baseInventory),
+    },
+    capacities: {
+      carry: inventoryCapacityForState(state, inventory),
+      base: baseStorageCapacity(state.shelter),
+    },
+    cookingSkill,
+    nowMinutes: worldMinutesForState(state),
+    powerAvailableMinutes: poweredMinutesForInterval({
+      day: state.day,
+      clockMinutes: state.clockMinutes,
+      elapsedMinutes: intervalMinutes,
+      world: state.world,
+      base: state.base,
+    }),
+    municipalWaterOn: Boolean(state.world?.waterOn),
+    baseWaterReserve: clampInteger(state.base?.waterReserve, 0, 30, 0),
+    revision: clampInteger(state.foodPreparationRevision, 0, 1_000_000_000, 0),
+    appliedCommandIds: normalizeFoodPreparationCommandIds(state.foodPreparationCommandIds),
+    nextItemSequence: clampInteger(state.nextItemSequence, 1, 1_000_000_000, 1),
+  };
+}
+
+function normalizeFoodPreparationCommandIds(rawIds) {
+  if (!Array.isArray(rawIds)) return [];
+  return [...new Set(rawIds
+    .filter((id) => typeof id === 'string' && id.trim())
+    .map((id) => id.trim().slice(0, 180)))]
+    .slice(-64);
+}
+
+function normalizeFoodPreparationCommandId(value) {
+  return typeof value === 'string' ? value.trim().slice(0, 180) : '';
+}
+
+function foodPreparationAccessFailure(store) {
+  if (store.runPhase !== 'running') return 'not_running';
+  if (store.activeTacticalEncounter && !isTacticalEncounterTerminal(store.activeTacticalEncounter)) {
+    return 'active_tactical_encounter';
+  }
+  if (!store.currentNodeId || store.currentNodeId !== store.spawnLocation?.id) return 'not_at_home';
+  const zombieState = store.nodeZombieStates?.[store.currentNodeId];
+  if (!zombieState || !isNodeSecured(zombieState, worldMinutesForState(store.$state))) return 'node_not_secured';
+  return '';
+}
+
+function foodPreparationFailure(state, reason, details = {}) {
+  const safeDetails = details && typeof details === 'object' ? cloneSnapshot(details) : {};
+  return {
+    ...safeDetails,
+    ok: false,
+    committed: false,
+    reason: typeof reason === 'string' && reason ? reason : 'invalid_request',
+    replayed: Boolean(safeDetails.replayed),
+    revision: clampInteger(state?.foodPreparationRevision, 0, 1_000_000_000, 0),
+  };
+}
+
+function preparationMinutes(result, recipe) {
+  const minutes = Number(result?.minutes ?? recipe?.baseMinutes ?? recipe?.minutes);
+  if (!Number.isFinite(minutes) || minutes <= 0) return 0;
+  return Math.min(3 * 24 * 60, Math.round(minutes));
+}
+
+function foodPreparationRecipeMinutes(recipe, cookingSkill) {
+  const baseMinutes = Number(recipe?.baseMinutes ?? recipe?.minutes);
+  if (!Number.isFinite(baseMinutes) || baseMinutes <= 0) return 0;
+  const reduction = Math.min(0.25, clampInteger(cookingSkill, 0, 10, 0) * 0.025);
+  return Math.max(10, Math.round(baseMinutes * (1 - reduction)));
+}
+
+function foodRecipeRequiresPower(recipe) {
+  return Boolean(recipe?.heatRequired ?? recipe?.requiresHeat);
+}
+
+function validFoodPreparationProjection(nextState, context, commandId, minutes, preview) {
+  if (!nextState || typeof nextState !== 'object' || Array.isArray(nextState)) return false;
+  if (!nextState.containers || typeof nextState.containers !== 'object' || Array.isArray(nextState.containers)) return false;
+  if (!Array.isArray(nextState.containers.carry) || !Array.isArray(nextState.containers.base)) return false;
+  if (!minutes || minutes !== preparationMinutes(preview, null)) return false;
+  if (nextState.revision !== context.revision + 1) return false;
+  if (!Number.isInteger(nextState.nextItemSequence) || nextState.nextItemSequence < context.nextItemSequence || nextState.nextItemSequence > 1_000_000_000) return false;
+  if (!Number.isInteger(nextState.baseWaterReserve) || nextState.baseWaterReserve < 0 || nextState.baseWaterReserve > 30) return false;
+  const commandIds = normalizeFoodPreparationCommandIds(nextState.appliedCommandIds);
+  if (commandIds.length !== nextState.appliedCommandIds?.length || commandIds.at(-1) !== commandId) return false;
+  if (!validProjectedFoodInventory(nextState.containers.carry) || !validProjectedFoodInventory(nextState.containers.base)) return false;
+  if (storageUsedSpace(nextState.containers.carry) > context.capacities.carry) return false;
+  if (storageUsedSpace(nextState.containers.base) > context.capacities.base) return false;
+  return true;
+}
+
+function validProjectedFoodInventory(inventory) {
+  const stackIds = new Set();
+  return inventory.every((item) => {
+    if (!item || typeof item !== 'object' || !marketItems.some((entry) => entry.id === item.id)) return false;
+    if (!Number.isInteger(item.count) || item.count <= 0 || item.count > 999_999) return false;
+    if (typeof item.stackId !== 'string' || !item.stackId || stackIds.has(item.stackId)) return false;
+    stackIds.add(item.stackId);
+    return Boolean(item.conditionState && typeof item.conditionState === 'object');
+  });
+}
+
+function formatFoodPreparationDuration(minutes) {
+  const value = Math.max(0, Math.round(Number(minutes) || 0));
+  if (value >= 60 && value % 60 === 0) return `${value / 60} 小时`;
+  if (value >= 60) return `${Math.floor(value / 60)} 小时 ${value % 60} 分钟`;
+  return `${value} 分钟`;
 }
 
 function firearmAmmoId(weaponId) {

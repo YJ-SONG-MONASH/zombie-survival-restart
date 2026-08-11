@@ -3738,6 +3738,248 @@ input:focus {
   min-height: 38px;
 }
 
+.food-preparation-block {
+  border-color: rgba(200, 180, 107, 0.4);
+  background:
+    linear-gradient(135deg, rgba(92, 67, 24, 0.16), transparent 42%),
+    rgba(0, 0, 0, 0.24);
+}
+
+.food-preparation-block .drawer-subheading > div,
+.food-preparation-heading > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.food-preparation-block .drawer-subheading > div {
+  flex: 1 1 auto;
+}
+
+.food-preparation-block .drawer-subheading > span {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.food-preparation-block .drawer-subheading h3,
+.food-preparation-block .drawer-subheading p {
+  margin: 0;
+}
+
+.food-preparation-intro {
+  color: var(--survival-muted) !important;
+  font-size: 0.74rem;
+  line-height: 1.45 !important;
+}
+
+.food-preparation-feedback {
+  padding: 8px 10px;
+  border-left: 3px solid #94a3b8;
+  color: #e2e8f0 !important;
+  background: rgba(30, 41, 59, 0.34);
+  font-size: 0.74rem;
+}
+
+.food-preparation-feedback.tone-good {
+  border-color: #4ade80;
+  color: #dcfce7 !important;
+  background: rgba(20, 83, 45, 0.26);
+}
+
+.food-preparation-feedback.tone-danger {
+  border-color: #f87171;
+  color: #fecaca !important;
+  background: rgba(127, 29, 29, 0.28);
+}
+
+.food-preparation-list {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.food-preparation-card {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid rgba(200, 180, 107, 0.38);
+  border-radius: 7px;
+  background:
+    linear-gradient(145deg, rgba(200, 180, 107, 0.08), transparent 48%),
+    rgba(5, 8, 4, 0.55);
+}
+
+.food-preparation-card.blocked {
+  border-color: rgba(100, 116, 139, 0.3);
+  background: rgba(15, 23, 42, 0.34);
+}
+
+.food-preparation-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.food-preparation-heading strong {
+  color: #fffbe1;
+  overflow-wrap: anywhere;
+}
+
+.food-preparation-heading small {
+  color: #d6c987;
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.food-preparation-heading > b {
+  padding: 5px 7px;
+  border: 1px solid rgba(200, 180, 107, 0.38);
+  border-radius: 5px;
+  color: #fde68a;
+  background: rgba(86, 69, 25, 0.34);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.food-preparation-card > p {
+  color: #b9c49a;
+  font-size: 0.73rem;
+  line-height: 1.45;
+}
+
+.food-preparation-requirements {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+}
+
+.food-preparation-requirements > div {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid rgba(122, 143, 92, 0.22);
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.24);
+}
+
+.food-preparation-requirements dt {
+  color: #94a3b8;
+  font-size: 0.64rem;
+}
+
+.food-preparation-requirements dd {
+  margin: 3px 0 0;
+  color: #e0dfc4;
+  font-size: 0.7rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.food-ingredient-grid {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.food-ingredient-grid label,
+.food-destination-select {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: #d9d7bd;
+  font-size: 0.72rem;
+}
+
+.food-ingredient-grid select,
+.food-destination-select select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 7px 30px 7px 9px;
+  border: 1px solid rgba(122, 143, 92, 0.38);
+  border-radius: 5px;
+  color: #f1f5f9;
+  background: #151b11;
+  font: inherit;
+}
+
+.food-ingredient-grid select:focus-visible,
+.food-destination-select select:focus-visible {
+  border-color: var(--survival-accent);
+  outline: 2px solid rgba(200, 180, 107, 0.24);
+  outline-offset: 1px;
+}
+
+.food-ingredient-grid select:disabled,
+.food-destination-select select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.food-ingredient-grid label > small {
+  color: #94a3b8;
+  font-size: 0.66rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.food-ingredient-grid label > small.tone-good {
+  color: #86efac;
+}
+
+.food-ingredient-grid label > small.tone-warn {
+  color: #fde68a;
+}
+
+.food-ingredient-grid label > small.tone-danger {
+  color: #fca5a5;
+}
+
+.food-destination-select {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+}
+
+.food-preparation-costs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.food-preparation-costs span {
+  padding: 4px 7px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 999px;
+  color: #cbd5e1;
+  background: rgba(15, 23, 42, 0.56);
+  font-size: 0.66rem;
+}
+
+.food-preparation-actions {
+  display: grid;
+  gap: 7px;
+}
+
+.food-preparation-actions > small {
+  min-width: 0;
+  color: #fca5a5;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.food-preparation-actions > small.ready {
+  color: #86efac;
+}
+
+.food-preparation-actions button {
+  min-height: 44px;
+}
+
 .wound-tags {
   display: flex;
   flex-wrap: wrap;
@@ -5163,6 +5405,59 @@ input:focus {
   font-size: 0.78rem;
 }
 
+.cooking-resolution {
+  display: grid;
+  gap: 10px;
+  padding: 11px;
+  border: 1px solid rgba(200, 180, 107, 0.4);
+  border-radius: 7px;
+  background:
+    linear-gradient(135deg, rgba(200, 180, 107, 0.1), transparent 54%),
+    rgba(0, 0, 0, 0.28);
+}
+
+.cooking-resolution-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.cooking-resolution-facts > span {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(122, 143, 92, 0.25);
+  border-radius: 6px;
+  background: rgba(5, 8, 4, 0.54);
+}
+
+.cooking-resolution-facts > span.wide {
+  grid-column: span 2;
+}
+
+.cooking-resolution-facts small {
+  color: #94a3b8;
+  font-size: 0.68rem;
+}
+
+.cooking-resolution-facts strong {
+  min-width: 0;
+  color: #fffbe1;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.cooking-persistence-note {
+  padding: 8px 10px;
+  border-left: 3px solid #86efac;
+  color: #dcfce7 !important;
+  background: rgba(20, 83, 45, 0.22);
+  font-size: 0.78rem;
+}
+
 .resolution-columns h3,
 .resolution-columns p {
   margin: 0 0 8px;
@@ -5655,6 +5950,7 @@ input:focus {
   }
 
   .exploration-resolution-facts,
+  .cooking-resolution-facts,
   .exploration-metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -6024,13 +6320,46 @@ input:focus {
   }
 
   .exploration-resolution-facts,
+  .cooking-resolution-facts,
   .exploration-metric-grid {
     gap: 6px;
   }
 
   .exploration-resolution-facts > span,
+  .cooking-resolution-facts > span,
   .exploration-metric-grid > div {
     padding: 7px;
+  }
+
+  .food-preparation-block {
+    padding: 10px;
+  }
+
+  .food-preparation-card {
+    gap: 9px;
+    padding: 9px;
+  }
+
+  .food-preparation-heading {
+    gap: 7px;
+  }
+
+  .food-ingredient-grid select,
+  .food-destination-select select,
+  .food-preparation-actions button {
+    min-height: 48px;
+  }
+
+  .food-destination-select {
+    grid-template-columns: 1fr;
+  }
+
+  .cooking-resolution-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .cooking-resolution-facts > span.wide {
+    grid-column: span 1;
   }
 
   .tactical-encounter-drawer {
