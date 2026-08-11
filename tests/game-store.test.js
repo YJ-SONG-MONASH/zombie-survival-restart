@@ -403,7 +403,17 @@ describe('game store invariants', () => {
 
     expect(game.day).toBe(2);
     expect(game.nodeZombieStates.muldraugh.count).toBeGreaterThan(0);
-    expect(game.currentEncounter).not.toBeNull();
+    expect(game.baseInteriorSafe).toBe(true);
+    expect(game.currentEncounter).toBeNull();
+    expect(game.storageContainers.find((entry) => entry.id === 'base')?.accessible).toBe(true);
+    expect(game.currentNodeActions.find((action) => action.id === 'sleep')?.disabled).toBe(false);
+
+    game.baseSecurity.openings[0].integrity = 0;
+    expect(game.baseInteriorSafe).toBe(false);
+    expect(game.currentEncounter).toEqual(expect.objectContaining({
+      active: true,
+      population: game.nodeZombieStates.muldraugh.count,
+    }));
     expect(game.mapLog.some((entry) => entry.text?.includes('尸群迁入了这个地区'))).toBe(true);
   });
 

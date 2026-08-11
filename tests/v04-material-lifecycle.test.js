@@ -81,6 +81,7 @@ describe('v0.4 storage ownership and atomic transfer', () => {
     expect(game.addItem(item('water_bottle'), 1, true)).toBe(true);
     const stack = game.inventory[0];
     game.ensureNodeZombieState(game.currentNodeId).count = 8;
+    game.baseSecurity.openings[0].integrity = 0;
     const before = clone(game.$state);
 
     const result = game.transferItem({ fromId: 'carry', toId: 'base', stackId: stack.stackId, quantity: 1 });
@@ -286,8 +287,8 @@ describe('v0.4 save migration', () => {
 
     game.loadPersistedState();
 
-    expect(SAVE_VERSION).toBe(8);
-    expect(game.saveVersion).toBe(8);
+    expect(SAVE_VERSION).toBe(9);
+    expect(game.saveVersion).toBe(9);
     expect(game.baseInventory).toEqual([]);
     expect(game.vehicleInventory).toEqual([]);
     expect(game.inventory.every((entry) => entry.stackId && entry.conditionState)).toBe(true);

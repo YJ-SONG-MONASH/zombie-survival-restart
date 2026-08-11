@@ -59,6 +59,7 @@ describe('v0.3 active encounter command gate', () => {
     vi.stubGlobal('localStorage', memoryStorage());
     game = useGameStore();
     setActiveEncounter(game);
+    game.baseSecurity.openings[0].integrity = 0;
     expect(game.currentEncounter).toEqual(expect.objectContaining({ active: true, population: 8 }));
   });
 

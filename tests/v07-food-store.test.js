@@ -187,7 +187,7 @@ describe('v0.7 food preparation Store integration', () => {
     expect(game.base.generatorFuel).toBe(2);
   });
 
-  it('rejects away, tactical, and expiring-safe-window commands with complete zero mutation', () => {
+  it('rejects away, tactical, and breached-perimeter commands with complete zero mutation', () => {
     const baseCommand = commandFor(game, 'cook_meat');
     const neighbor = mapNodes.find((node) => node.id !== game.currentNodeId && game.currentNeighborNodes.some((entry) => entry.id === node.id));
     game.currentNodeId = neighbor.id;
@@ -203,7 +203,8 @@ describe('v0.7 food preparation Store integration', () => {
     const local = game.ensureNodeZombieState(game.currentNodeId);
     local.count = 2;
     local.evasionUntilMinutes = game.totalWorldMinutes + 1;
-    expectRejectedWithoutMutation(game, () => game.prepareFood(baseCommand), 'insufficient_safe_window');
+    game.baseSecurity.openings[0].integrity = 0;
+    expectRejectedWithoutMutation(game, () => game.prepareFood(baseCommand), 'node_not_secured');
   });
 
   it('consumes the exact selected carry lot and a base tool without touching an identical base lot', () => {
@@ -282,8 +283,8 @@ describe('v0.7 food preparation save migration', () => {
 
     restored.loadPersistedState();
 
-    expect(SAVE_VERSION).toBe(8);
-    expect(restored.saveVersion).toBe(8);
+    expect(SAVE_VERSION).toBe(9);
+    expect(restored.saveVersion).toBe(9);
     expect(restored.foodPreparationRevision).toBe(0);
     expect(restored.foodPreparationCommandIds).toEqual([]);
     const restoredMeat = restored.inventory.find((entry) => entry.id === 'fresh_meat');

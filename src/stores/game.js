@@ -101,8 +101,16 @@ import {
   weatherDefinitions,
   woundTypeLabels,
 } from '../services/survival.js';
+import {
+  advanceBaseSecurity,
+  createBaseSecurity,
+  normalizeBaseSecurity,
+  previewBaseWork as previewBaseWorkProjection,
+  resolveBaseWork,
+  summarizeBaseSecurity,
+} from '../services/base-security.js';
 
-export const SAVE_VERSION = 8;
+export const SAVE_VERSION = 9;
 
 const TARGETED_TACTICAL_ACTION_IDS = new Set(['push', 'melee', 'stomp', 'fire']);
 
@@ -156,6 +164,7 @@ const defaultState = () => ({
   world: createWorldState(),
   body: createBodyState(),
   base: createBaseState(),
+  baseSecurity: createBaseSecurity({ totalMinutes: START_MINUTE }),
   equippedWeaponId: null,
   equippedWeaponStackId: null,
   equippedBagStackId: null,
@@ -258,7 +267,14 @@ export const useGameStore = defineStore('game', {
         day: state.day,
       });
     },
+    baseSecuritySummary: (state) => decorateBaseSecuritySummary(
+      summarizeBaseSecurity(state.baseSecurity, baseSecurityContextForState(state))
+    ),
+    baseInteriorSafe() {
+      return Boolean(this.baseSecuritySummary?.interiorSafe);
+    },
     isCurrentNodeSecured() {
+      if (this.isAtHome) return this.baseInteriorSafe;
       return Boolean(this.currentZombieState && isNodeSecured(this.currentZombieState, this.totalWorldMinutes));
     },
     currentEncounter() {
@@ -323,13 +339,23 @@ export const useGameStore = defineStore('game', {
       const node = mapNodes.find((entry) => entry.id === state.currentNodeId);
       const zombieState = node ? state.nodeZombieStates?.[node.id] : null;
       const totalMinutes = worldMinutesForState(state);
-      const secured = zombieState ? isNodeSecured(zombieState, totalMinutes) : true;
+      const normallySecured = zombieState ? isNodeSecured(zombieState, totalMinutes) : true;
+      const protectedAtHome = Boolean(
+        node?.id === state.spawnLocation?.id
+        && baseInteriorSafetyForState(state)
+      );
+      const secured = node?.id === state.spawnLocation?.id ? protectedAtHome : normallySecured;
       const encounterActive = Boolean(zombieState && zombieState.count > 0 && !secured);
-      const evasionSecured = Boolean(zombieState && zombieState.count > 0 && secured);
-      const actionIds = [...(node?.actions ?? ['search', 'scout', 'rest'])];
+      const evasionSecured = Boolean(
+        node?.id !== state.spawnLocation?.id
+        && zombieState
+        && zombieState.count > 0
+        && normallySecured
+      );
+      const actionIds = [...(node?.actions ?? ['search', 'scout', 'rest'])].filter((id) => id !== 'fortify');
       if ((node?.danger ?? 0) >= 2 || (zombieState?.count ?? 0) > 0) actionIds.push('evade', 'combat_melee', 'combat_firearm');
       if (node?.type === 'wilds') actionIds.push('forage');
-      if (state.currentNodeId === state.spawnLocation?.id) actionIds.push('fortify', 'sleep');
+      if (state.currentNodeId === state.spawnLocation?.id) actionIds.push('sleep');
       else if ((node?.danger ?? 9) <= 2 && !actionIds.includes('rest')) actionIds.push('rest', 'sleep');
       return [...new Set(actionIds)]
         .map((id) => {
@@ -348,10 +374,6 @@ export const useGameStore = defineStore('game', {
               .filter((item) => item.count > 0 && item.tags?.includes('firearm') && !isWeaponBroken(item.conditionState))
               .some((firearm) => state.inventory.some((item) => item.id === (firearm.id === 'shotgun' ? 'shotgun_shells' : '9mm_rounds') && item.count > 0));
             if (!hasUsableFirearm && !disabledReason) disabledReason = '需要枪械和对应弹药';
-          }
-          if (id === 'fortify') {
-            const has = (itemId) => state.inventory.some((item) => item.id === itemId && item.count > 0);
-            if ((!has('hammer') || !has('plank') || !has('nails')) && !disabledReason) disabledReason = '需要锤子、木板和钉子';
           }
           if (id === 'vehicle' && storageUsedSpace(state.vehicleInventory) > 0 && !disabledReason) {
             const localVehicle = vehicleAtCurrentNodeForState(state);
@@ -433,6 +455,13 @@ export const useGameStore = defineStore('game', {
       if (!hasOwn('base')) this.base = createBaseState(shelter);
       if (this.base?.generatorOn && !Object.prototype.hasOwnProperty.call(rawState.base ?? {}, 'installedGeneratorStackId')) {
         this.base = { ...this.base, installedGeneratorStackId: '__legacy_auto__' };
+      }
+      if (!hasOwn('baseSecurity')) {
+        this.baseSecurity = createBaseSecurity({
+          shelter,
+          totalMinutes: worldMinutesForState(this.$state),
+          legacyBarricades: rawState?.base?.barricades ?? this.base?.barricades ?? 0,
+        });
       }
       if (!hasOwn('survivalStats')) this.survivalStats = createSurvivalStats();
       if (!hasOwn('equippedWeaponId')) this.equippedWeaponId = null;
@@ -724,6 +753,11 @@ export const useGameStore = defineStore('game', {
       } else if (!this.baseInventory.some((item) => item.stackId === this.base.installedGeneratorStackId && item.id === 'generator')) {
         this.base.installedGeneratorStackId = null;
       }
+      this.baseSecurity = normalizeBaseSecurity(this.baseSecurity, {
+        shelter: this.shelter,
+        totalMinutes: worldMinutesForState(this.$state),
+      });
+      syncLegacyBaseProjection(this.$state);
       this.world.powerOn = this.day < this.world.powerShutoffDay || (this.base.generatorOn && this.base.generatorFuel > 0);
       this.world.waterOn = this.day < this.world.waterShutoffDay;
       this.survivalStats = normalizeSurvivalStats(this.survivalStats);
@@ -812,6 +846,11 @@ export const useGameStore = defineStore('game', {
       this.searchingSlotId = null;
       this.clearMapState();
       this.base = createBaseState(this.shelter);
+      this.baseSecurity = createBaseSecurity({
+        shelter: this.shelter,
+        totalMinutes: worldMinutesForState(this.$state),
+      });
+      syncLegacyBaseProjection(this.$state);
       this.world = createWorldState({
         day: this.day,
         spawnId: this.spawnLocation?.id,
@@ -1342,6 +1381,100 @@ export const useGameStore = defineStore('game', {
       this.finishIfGameOver();
       return { ok: true, restored, stackId: weapon.stackId };
     },
+    previewBaseWork(command = {}) {
+      const accessFailure = baseWorkAccessFailure(this);
+      if (accessFailure) return baseWorkStoreFailure(this.$state, accessFailure);
+      let result;
+      try {
+        result = previewBaseWorkProjection(this.baseSecurity, command, baseWorkContextForState(this.$state, true));
+      } catch {
+        return baseWorkStoreFailure(this.$state, 'projection_failed');
+      }
+      if (!result?.ok) return baseWorkStoreFailure(this.$state, result?.reason ?? 'invalid_command', result);
+      return {
+        ...result,
+        committed: false,
+        summary: decorateBaseSecuritySummary(summarizeBaseSecurity(
+          result.nextState.baseSecurity,
+          baseSecurityContextForState(this.$state),
+        )),
+      };
+    },
+    performBaseWork(command = {}) {
+      const accessFailure = baseWorkAccessFailure(this);
+      if (accessFailure) return baseWorkStoreFailure(this.$state, accessFailure);
+      const context = baseWorkContextForState(this.$state, true);
+      let result;
+      try {
+        result = resolveBaseWork(this.baseSecurity, command, context);
+      } catch {
+        return baseWorkStoreFailure(this.$state, 'projection_failed');
+      }
+      if (!result?.ok) return baseWorkStoreFailure(this.$state, result?.reason ?? 'invalid_command', result);
+      if (!validBaseWorkProjection(result, this.$state, command)) {
+        return baseWorkStoreFailure(this.$state, 'invalid_projection');
+      }
+
+      const beforeState = cloneSnapshot(this.$state);
+      const actionDay = this.day;
+      const actionTime = this.clockLabel;
+      const openingBefore = this.baseSecuritySummary.openings.find((entry) => entry.id === result.openingId);
+      try {
+        this.inventory = cloneInventory(result.nextState.containers.carry);
+        this.baseInventory = cloneInventory(result.nextState.containers.base);
+        this.baseSecurity = normalizeBaseSecurity(result.nextState.baseSecurity, {
+          shelter: this.shelter,
+          totalMinutes: this.totalWorldMinutes,
+        });
+        syncLegacyBaseProjection(this.$state);
+        this.reconcileEquipment();
+        this.survivalStats.actions += 1;
+        const progression = this.grantSkillXp(result.kind === 'repair'
+          ? { carpentry: result.skillXp, maintenance: Math.max(1, Math.round(result.skillXp * 0.45)) }
+          : { carpentry: result.skillXp, maintenance: Math.max(1, Math.round(result.skillXp * 0.4)) });
+        const openingName = openingBefore?.label ?? result.openingId;
+        const workLabel = result.kind === 'repair' ? '维修' : '加固';
+        const effectText = result.kind === 'repair'
+          ? `结构恢复 ${result.integrityDelta} 点`
+          : `路障增加 ${result.barricadeDelta} 点`;
+        const levelUpText = levelUpSummary(progression);
+        this.history.push({
+          day: actionDay,
+          time: actionTime,
+          title: `${workLabel}${openingName}`,
+          log: '据点防线维护',
+          action: `${workLabel}${openingName}`,
+          result: `${openingName}${effectText}。`,
+          notes: [`耗时 ${formatFoodPreparationDuration(result.minutes)}`, '消耗木板 ×1、钉子 ×1', levelUpText].filter(Boolean).join(' / '),
+          score: Math.min(100, 55 + (this.skills.carpentry ?? 0) * 4),
+        });
+        this.mapLog.unshift({
+          day: actionDay,
+          time: actionTime,
+          title: `${workLabel}${openingName}`,
+          text: [`${effectText}，锤子仍可继续使用。`, levelUpText].filter(Boolean).join(' '),
+          mode: 'base_security',
+        });
+        this.mapLog = this.mapLog.slice(0, 80);
+        const simulation = this.advanceSimulation({
+          minutes: result.minutes,
+          mode: 'active',
+          noiseDelta: result.noiseDelta,
+          threatDelta: Math.max(0, Math.round(result.noiseDelta / 4)),
+        });
+        this.finishIfGameOver();
+        return {
+          ...result,
+          committed: true,
+          progression,
+          incidents: cloneSnapshot(simulation.baseSecurity?.incidents ?? []),
+          summary: cloneSnapshot(this.baseSecuritySummary),
+        };
+      } catch {
+        this.$state = beforeState;
+        return baseWorkStoreFailure(this.$state, 'commit_failed');
+      }
+    },
     toggleGenerator() {
       if (this.isGameOver || !this.isAtHome) return false;
       if (!this.canPerformWorldAction('base', 20)) return false;
@@ -1494,7 +1627,12 @@ export const useGameStore = defineStore('game', {
       const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
       if (!node) return false;
       const zombieState = this.ensureNodeZombieState(node.id);
-      if (!zombieState || zombieState.count <= 0 || isNodeSecured(zombieState, this.totalWorldMinutes)) return false;
+      const breachedHomeRequiresCombat = node.id === this.spawnLocation?.id && !this.baseInteriorSafe;
+      if (
+        !zombieState
+        || zombieState.count <= 0
+        || (isNodeSecured(zombieState, this.totalWorldMinutes) && !breachedHomeRequiresCombat)
+      ) return false;
       if (this.activeTacticalEncounter && !isTacticalEncounterTerminal(this.activeTacticalEncounter)) {
         return this.activeTacticalEncounter.nodeId === node.id;
       }
@@ -1757,6 +1895,7 @@ export const useGameStore = defineStore('game', {
       if (zombieState.count <= 0) return true;
       const encounterActions = new Set(['combat', 'evade', 'equip']);
       if (encounterActions.has(kind)) return true;
+      if (this.isAtHome) return this.baseInteriorSafe;
       const now = this.totalWorldMinutes;
       if (!isNodeSecured(zombieState, now)) return false;
       if (!requireFullWindow) return true;
@@ -1764,6 +1903,11 @@ export const useGameStore = defineStore('game', {
       return now + duration <= zombieState.evasionUntilMinutes;
     },
     initializeMapState(force = false) {
+      this.baseSecurity = normalizeBaseSecurity(this.baseSecurity, {
+        shelter: this.shelter,
+        totalMinutes: worldMinutesForState(this.$state),
+      });
+      syncLegacyBaseProjection(this.$state);
       if (this.currentNodeId && !force) {
         this.nodeZombieStates = normalizeNodeZombieStates(this.nodeZombieStates, {
           nodes: mapNodes,
@@ -1901,6 +2045,7 @@ export const useGameStore = defineStore('game', {
     },
     resolveNodeAction(actionId) {
       if (this.isGameOver) return false;
+      if (actionId === 'fortify') return false;
       if (!this.currentNodeId) this.initializeMapState();
       const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
       const action = mapNodeActions.find((entry) => entry.id === actionId);
@@ -2200,6 +2345,16 @@ export const useGameStore = defineStore('game', {
     },
     advanceSimulation({ minutes = 0, mode = 'active', noiseDelta = 0, threatDelta = 0 } = {}) {
       const previousDay = this.day;
+      const startTotalMinutes = worldMinutesForState(this.$state);
+      const startingExteriorPopulation = Math.max(
+        0,
+        Math.round(Number(this.nodeZombieStates?.[this.spawnLocation?.id]?.count) || 0),
+      );
+      const startingSecurityPressure = {
+        threat: this.world?.threat,
+        noise: this.world?.noise,
+        generatorOn: Boolean(this.base?.generatorOn),
+      };
       const elapsedMinutes = Math.max(0, Math.round(Number(minutes) || 0));
       const poweredRefrigerationMinutes = poweredMinutesForInterval({
         day: this.day,
@@ -2238,12 +2393,42 @@ export const useGameStore = defineStore('game', {
         poweredMinutes: poweredRefrigerationMinutes,
       });
       this.worldLootContainers = advanceWorldLootConditionStates(this.worldLootContainers, elapsedMinutes);
+      const endTotalMinutes = worldMinutesForState(this.$state);
+      const securityAdvance = advanceBaseSecurity(this.baseSecurity, {
+        fromTotalMinutes: startTotalMinutes,
+        toTotalMinutes: endTotalMinutes,
+        worldSeed: this.world?.seed,
+        day: previousDay,
+        threat: startingSecurityPressure.threat,
+        noise: startingSecurityPressure.noise,
+        generatorOn: startingSecurityPressure.generatorOn,
+        exteriorPopulation: startingExteriorPopulation,
+        shelterDefense: this.shelter?.defense ?? 0,
+      });
+      this.baseSecurity = securityAdvance.nextState;
+      syncLegacyBaseProjection(this.$state);
+      const baseSecurityNoticeTexts = new Set();
+      securityAdvance.incidents.forEach((incident) => {
+        const opening = this.baseSecuritySummary.openings.find((entry) => entry.id === incident.openingId);
+        const incidentText = formatBaseSecurityIncident(incident, opening?.label ?? incident.openingId);
+        baseSecurityNoticeTexts.add(incidentText);
+        result.notices.push(incidentText);
+        this.mapLog.unshift({
+          day: Math.floor(incident.hour / 24) + 1,
+          time: formatClock((incident.hour % 24) * 60),
+          title: incident.breached ? '据点防线出现破口' : '尸群冲击据点',
+          text: incidentText,
+          mode: 'base_security',
+        });
+      });
+      result.baseSecurity = cloneSnapshot(securityAdvance);
       if (this.day > previousDay) {
         const migratedCount = this.refreshNodeZombieMigration();
         if (migratedCount > 0) result.notices.push(`尸群迁入了这个地区，附近重新出现约 ${migratedCount} 只游荡者。`);
       }
       this.survivalStats.hoursSurvived += result.elapsedHours;
       result.notices.forEach((notice) => {
+        if (baseSecurityNoticeTexts.has(notice)) return;
         this.mapLog.unshift({
           day: this.day,
           time: this.clockLabel,
@@ -2853,14 +3038,184 @@ function uniqueRuntimeStackId(rawId, usedIds) {
   return candidate;
 }
 
+function baseSecurityContextForState(state) {
+  const exteriorPopulation = Math.max(
+    0,
+    Math.round(Number(state.nodeZombieStates?.[state.spawnLocation?.id]?.count) || 0),
+  );
+  return {
+    shelter: state.shelter,
+    shelterDefense: state.shelter?.defense ?? 0,
+    totalMinutes: worldMinutesForState(state),
+    day: state.day,
+    threat: state.world?.threat,
+    noise: state.world?.noise,
+    generatorOn: Boolean(state.base?.generatorOn),
+    exteriorPopulation,
+  };
+}
+
+function baseInteriorSafetyForState(state) {
+  const summary = summarizeBaseSecurity(state.baseSecurity, baseSecurityContextForState(state));
+  return Boolean(summary.interiorSafe || summary.exteriorPopulation <= 0);
+}
+
+function decorateBaseSecuritySummary(rawSummary) {
+  const summary = rawSummary && typeof rawSummary === 'object' ? cloneSnapshot(rawSummary) : {};
+  const structuralInteriorSafe = Boolean(summary.interiorSafe);
+  const interiorSafe = structuralInteriorSafe || (Number(summary.exteriorPopulation) || 0) <= 0;
+  const pressure = Math.max(0, Math.round(Number(summary.currentPressure) || 0));
+  const statusLabel = summary.status === 'breached'
+    ? interiorSafe ? '防线有破口 · 外围已清空' : '防线破口 · 尸群正在逼近'
+    : summary.status === 'damaged' ? '防线受损' : '防线完整';
+  const statusTone = summary.status === 'breached'
+    ? interiorSafe ? 'warn' : 'danger'
+    : summary.status === 'damaged' ? 'warn' : 'good';
+  const pressureBand = pressure >= 75 ? '极高' : pressure >= 50 ? '高' : pressure >= 25 ? '中' : pressure > 0 ? '低' : '无';
+  const pressureLabel = `${pressure} · ${pressureBand}`;
+  const sources = summary.currentPressureSources ?? {};
+  const pressureSource = [
+    `外围 ${Math.max(0, Math.round(Number(sources.exteriorPopulation) || 0))} 只`,
+    `威胁 ${Math.max(0, Math.round(Number(sources.threat) || 0))}`,
+    `噪声 ${Math.max(0, Math.round(Number(sources.noise) || 0))}`,
+    Number(sources.generator) > 0 ? '发电机运转' : '',
+  ].filter(Boolean).join(' / ');
+  const lastIncident = summary.lastIncident;
+  return {
+    ...summary,
+    structuralInteriorSafe,
+    interiorSafe,
+    statusLabel,
+    statusTone,
+    pressure,
+    pressureLabel,
+    pressureSource,
+    lastIncidentLabel: lastIncident
+      ? formatBaseSecurityIncident(lastIncident, summary.openings?.find((entry) => entry.id === lastIncident.openingId)?.label ?? lastIncident.openingId)
+      : '',
+    openings: (Array.isArray(summary.openings) ? summary.openings : []).map((opening) => {
+      const status = opening.integrity <= 0
+        ? 'breached'
+        : opening.integrity < opening.maxIntegrity ? 'damaged' : opening.barricade > 0 ? 'fortified' : 'intact';
+      const matchingIncident = lastIncident?.openingId === opening.id ? lastIncident : null;
+      return {
+        ...opening,
+        status,
+        statusLabel: status === 'breached' ? '破口' : status === 'damaged' ? '受损' : status === 'fortified' ? '已加固' : '完整',
+        statusTone: status === 'breached' ? 'danger' : status === 'damaged' ? 'warn' : 'good',
+        lastImpactLabel: matchingIncident
+          ? formatBaseSecurityIncident(matchingIncident, opening.label)
+          : '',
+      };
+    }),
+  };
+}
+
+function syncLegacyBaseProjection(state) {
+  if (!state.base || typeof state.base !== 'object') state.base = createBaseState(state.shelter);
+  const summary = summarizeBaseSecurity(state.baseSecurity, baseSecurityContextForState(state));
+  state.base.defense = summary.legacyBaseProjection.defense;
+  state.base.barricades = summary.legacyBaseProjection.barricades;
+  return summary.legacyBaseProjection;
+}
+
+function baseWorkContextForState(state, accessAllowed = false) {
+  return {
+    containers: {
+      carry: cloneInventory(Array.isArray(state.inventory) ? state.inventory : []),
+      base: cloneInventory(Array.isArray(state.baseInventory) ? state.baseInventory : []),
+    },
+    catalog: marketItems,
+    capacities: {
+      carry: inventoryCapacityForState(state, state.inventory),
+      base: baseStorageCapacity(state.shelter),
+    },
+    carpentrySkill: clampInteger(state.skills?.carpentry, 0, 10, 0),
+    totalMinutes: worldMinutesForState(state),
+    accessAllowed: Boolean(accessAllowed),
+    shelter: state.shelter,
+  };
+}
+
+function baseWorkAccessFailure(store) {
+  if (store.isGameOver) return 'game_over';
+  if (store.runPhase !== 'running') return 'not_running';
+  if (store.activeTacticalEncounter && !isTacticalEncounterTerminal(store.activeTacticalEncounter)) {
+    return 'active_tactical_encounter';
+  }
+  if (!store.currentNodeId || store.currentNodeId !== store.spawnLocation?.id) return 'not_at_home';
+  const summary = store.baseSecuritySummary;
+  if ((summary?.breachedCount ?? 0) > 0 && (summary?.exteriorPopulation ?? 0) > 0) {
+    return 'exterior_not_cleared';
+  }
+  return '';
+}
+
+function baseWorkStoreFailure(state, reason, details = {}) {
+  const safeDetails = details && typeof details === 'object' ? cloneSnapshot(details) : {};
+  const normalized = normalizeBaseSecurity(state?.baseSecurity, {
+    shelter: state?.shelter,
+    totalMinutes: worldMinutesForState(state ?? {}),
+  });
+  return {
+    ...safeDetails,
+    ok: false,
+    committed: false,
+    reason: typeof reason === 'string' && reason ? reason : 'invalid_command',
+    replayed: Boolean(safeDetails.replayed),
+    revision: normalized.revision,
+    nextState: {
+      baseSecurity: cloneSnapshot(normalized),
+      containers: {
+        carry: cloneInventory(Array.isArray(state?.inventory) ? state.inventory : []),
+        base: cloneInventory(Array.isArray(state?.baseInventory) ? state.baseInventory : []),
+      },
+    },
+  };
+}
+
+function validBaseWorkProjection(result, state, command) {
+  if (!result?.nextState || typeof result.nextState !== 'object') return false;
+  if (!Array.isArray(result.nextState.containers?.carry) || !Array.isArray(result.nextState.containers?.base)) return false;
+  if (!Number.isInteger(result.minutes) || result.minutes <= 0 || result.minutes > 24 * 60) return false;
+  const current = normalizeBaseSecurity(state.baseSecurity, {
+    shelter: state.shelter,
+    totalMinutes: worldMinutesForState(state),
+  });
+  const projected = normalizeBaseSecurity(result.nextState.baseSecurity, {
+    shelter: state.shelter,
+    totalMinutes: worldMinutesForState(state),
+  });
+  const commandId = typeof command?.commandId === 'string' ? command.commandId.trim().slice(0, 240) : '';
+  if (projected.revision !== Math.min(1_000_000_000, current.revision + 1)) return false;
+  if (!commandId || projected.appliedCommandIds.at(-1) !== commandId) return false;
+  if (storageUsedSpace(result.nextState.containers.carry) > inventoryCapacityForState(state, result.nextState.containers.carry)) return false;
+  if (storageUsedSpace(result.nextState.containers.base) > baseStorageCapacity(state.shelter)) return false;
+  return true;
+}
+
+function formatBaseSecurityIncident(incident, openingLabel = '入口') {
+  const barricadeDamage = Math.max(0, Math.round(Number(incident?.barricadeDamage) || 0));
+  const integrityDamage = Math.max(0, Math.round(Number(incident?.integrityDamage) || 0));
+  const damageText = [
+    barricadeDamage ? `路障损失 ${barricadeDamage}` : '',
+    integrityDamage ? `结构损失 ${integrityDamage}` : '',
+  ].filter(Boolean).join('，') || '防线没有受到有效损伤';
+  const source = incident?.sources ?? {};
+  return `${openingLabel}遭到外围尸群冲击：${damageText}。压力 ${Math.max(0, Math.round(Number(incident?.pressure) || 0))}（外围 ${Math.max(0, Math.round(Number(source.exteriorPopulation) || 0))} 只 / 噪声 ${Math.max(0, Math.round(Number(source.noise) || 0))}）${incident?.breached ? '，入口已经被撞破！' : ''}`;
+}
+
 function storageAccessForState(state) {
   const now = worldMinutesForState(state);
   const zombieState = state.currentNodeId ? state.nodeZombieStates?.[state.currentNodeId] : null;
-  const secured = Boolean(state.currentNodeId && zombieState && isNodeSecured(zombieState, now));
-  const atHome = secured && state.currentNodeId === state.spawnLocation?.id;
+  const normallySecured = Boolean(state.currentNodeId && zombieState && isNodeSecured(zombieState, now));
+  const atHomeNode = Boolean(state.currentNodeId && state.currentNodeId === state.spawnLocation?.id);
+  const protectedAtHome = atHomeNode && baseInteriorSafetyForState(state);
+  const secured = atHomeNode ? protectedAtHome : normallySecured;
+  const atHome = atHomeNode && protectedAtHome;
   const vehicle = normalizeVehicle(state.vehicle, state.currentNodeId);
-  const atTrunk = secured && vehicle.status !== 'none' && vehicle.nodeId === state.currentNodeId;
-  return { carry: true, base: atHome, trunk: atTrunk, secured, vehicle };
+  const atTrunk = secured && normallySecured && vehicle.status !== 'none' && vehicle.nodeId === state.currentNodeId;
+  return { carry: true, base: atHome, trunk: atTrunk, secured, normallySecured, vehicle };
 }
 
 function storageContextForState(state) {
@@ -3373,7 +3728,7 @@ function foodPreparationAccessFailure(store) {
   }
   if (!store.currentNodeId || store.currentNodeId !== store.spawnLocation?.id) return 'not_at_home';
   const zombieState = store.nodeZombieStates?.[store.currentNodeId];
-  if (!zombieState || !isNodeSecured(zombieState, worldMinutesForState(store.$state))) return 'node_not_secured';
+  if (!zombieState || !baseInteriorSafetyForState(store.$state)) return 'node_not_secured';
   return '';
 }
 

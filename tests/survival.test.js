@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { marketItems } from '../src/data/zombie.js';
+import { mapNodes, marketItems } from '../src/data/zombie.js';
+import { resolveNodeAction } from '../src/services/engine.js';
 import {
   DIRTY_BANDAGE_HOURS,
   START_MINUTE,
@@ -27,6 +28,36 @@ const item = (id, count = 1) => ({
 });
 
 describe('survival clock and world simulation', () => {
+  it('lets the minute simulation own rest and sleep recovery exactly once', () => {
+    const node = mapNodes.find((entry) => entry.id === 'muldraugh');
+    const common = {
+      node,
+      day: 1,
+      clockMinutes: START_MINUTE,
+      inventory: [],
+      skills: {},
+      traits: [],
+      vitals: { ...baseVitals(), endurance: 30, fatigue: 80, panic: 50, stress: 50 },
+      world: createWorldState({ day: 1, spawnId: 'muldraugh' }),
+      body: createBodyState(),
+      base: createBaseState(),
+    };
+
+    const rest = resolveNodeAction({ ...common, actionId: 'rest' });
+    const sleep = resolveNodeAction({ ...common, actionId: 'sleep' });
+
+    expect(rest.vitals).toMatchObject({ health: 2, endurance: 0, fatigue: 0, panic: 0, stress: 0 });
+    expect(sleep.vitals).toMatchObject({ health: 1, endurance: 0, fatigue: 0, panic: 0, stress: 0 });
+
+    const recovered = advanceSurvivalState({
+      ...common,
+      minutes: rest.minutes,
+      mode: rest.mode,
+    });
+    expect(recovered.vitals.fatigue).toBe(63);
+    expect(recovered.vitals.endurance).toBeCloseTo(50, 5);
+  });
+
   it('crosses midnight, advances the day, and selects that day weather without mutating inputs', () => {
     const vitals = baseVitals();
     const world = createWorldState({ day: 1, spawnId: 'muldraugh' });

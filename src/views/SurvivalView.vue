@@ -121,7 +121,7 @@
         </div>
         <div v-else class="quick-action-row">
           <button
-            v-for="action in game.currentNodeActions"
+            v-for="action in currentNodeActionsForDisplay"
             :key="action.id"
             :class="['map-action-chip', { blocked: action.disabled }]"
             :disabled="action.disabled || game.isGameOver"
@@ -802,30 +802,118 @@
             </article>
           </section>
 
-          <section class="survival-drawer-block">
-            <div class="drawer-subheading">
-              <h3>基地</h3>
-              <span>{{ game.isAtHome ? '当前位于据点' : '远离据点' }}</span>
-            </div>
-            <dl class="base-status-grid">
-              <div><dt>避难所</dt><dd>{{ game.shelter?.name ?? '无' }}</dd></div>
-              <div><dt>防御</dt><dd>{{ Math.round(game.base?.defense ?? 0) }}</dd></div>
-              <div><dt>路障</dt><dd>{{ game.base?.barricades ?? 0 }}</dd></div>
-              <div><dt>发电机</dt><dd>{{ game.base?.generatorOn ? `运行 · 燃料 ${game.base?.generatorFuel ?? 0}` : '关闭' }}</dd></div>
-              <div><dt>储水</dt><dd>{{ game.base?.waterReserve ?? 0 }}</dd></div>
-            </dl>
-            <div class="base-action-grid">
+          <section :class="['survival-drawer-block', 'base-perimeter-block', `tone-${baseSecurityView.statusTone}`]">
+            <header class="base-perimeter-heading">
               <div>
+                <p class="panel-kicker">BASE / PERIMETER</p>
+                <h3>{{ game.shelter?.name ?? '未命名据点' }}</h3>
+              </div>
+              <span :class="['base-security-badge', `tone-${baseSecurityView.statusTone}`]">{{ baseSecurityView.statusLabel }}</span>
+            </header>
+
+            <div class="base-perimeter-overview">
+              <div class="base-security-score">
+                <span>防线总状态</span>
+                <strong>{{ baseSecurityView.securityPercent }}%</strong>
+                <progress :value="baseSecurityView.securityPercent" max="100"></progress>
+              </div>
+              <dl class="base-pressure-grid">
+                <div>
+                  <dt>外部尸群</dt>
+                  <dd>{{ baseSecurityView.exteriorPopulationLabel }}</dd>
+                </div>
+                <div>
+                  <dt>当前压力</dt>
+                  <dd>{{ baseSecurityView.pressureLabel }}</dd>
+                </div>
+              </dl>
+              <p class="base-pressure-source">压力来源：{{ baseSecurityView.pressureSourceLabel }}</p>
+            </div>
+
+            <div v-if="baseSecurityView.breached" class="base-breach-warning" role="alert">
+              <span>
+                <strong>防线已出现破口</strong>
+                <small>{{ baseSecurityView.breachGuidance }}</small>
+              </span>
+              <button
+                class="danger-action"
+                :disabled="Boolean(baseTacticalDisabledReason)"
+                :title="baseTacticalDisabledReason || '进入逐回合战术战斗'"
+                @click="openBaseTacticalResponse"
+              >
+                打开战术战斗
+              </button>
+            </div>
+            <p v-else-if="baseSecurityView.exteriorPopulation > 0" class="base-interior-safe-note">
+              <b>尸群在外，不影响室内。</b> 防线仍然完整；你可以在室内整理，但持续噪声可能加重下一次冲击。
+            </p>
+
+            <p
+              v-if="baseWorkFeedback"
+              :class="['base-work-feedback', `tone-${baseWorkFeedbackTone}`]"
+              aria-live="polite"
+            >
+              {{ baseWorkFeedback }}
+            </p>
+
+            <div class="base-entry-list" aria-label="据点入口防线">
+              <p v-if="!baseEntryCards.length" class="survival-empty-state">防线状态正在初始化。</p>
+              <article
+                v-for="entry in baseEntryCards"
+                :key="entry.id"
+                :class="['base-entry-card', `tone-${entry.statusTone}`, { breached: entry.breached }]"
+              >
+                <header>
+                  <span>
+                    <strong>{{ entry.label }}</strong>
+                    <small>{{ entry.kindLabel }}</small>
+                  </span>
+                  <b :class="[`tone-${entry.statusTone}`]">{{ entry.statusLabel }}</b>
+                </header>
+
+                <div class="base-entry-meters">
+                  <label>
+                    <span><em>结构</em><b>{{ entry.integrity }} / {{ entry.maxIntegrity }}</b></span>
+                    <progress :value="entry.integrity" :max="entry.maxIntegrity"></progress>
+                  </label>
+                  <label>
+                    <span><em>路障</em><b>{{ entry.barricade }} / {{ entry.maxBarricade }}</b></span>
+                    <progress class="barricade" :value="entry.barricade" :max="entry.maxBarricade"></progress>
+                  </label>
+                </div>
+
+                <p class="base-entry-impact"><b>最近冲击</b>{{ entry.lastImpactLabel }}</p>
+
+                <div class="base-entry-actions">
+                  <div v-for="action in entry.actions" :key="action.kind">
+                    <button
+                      :class="action.kind === 'repair' ? 'secondary' : 'primary-action'"
+                      :disabled="Boolean(action.disabledReason) || Boolean(baseWorkBusyToken)"
+                      :title="action.disabledReason || action.detailText"
+                      @click="performBaseEntryAction(entry, action)"
+                    >
+                      {{ baseWorkBusyToken === `${entry.id}:${action.kind}` ? '施工中…' : action.label }}
+                      <small>{{ formatDuration(action.minutes) }}</small>
+                    </button>
+                    <small>{{ action.detailText }}</small>
+                    <small v-if="action.disabledReason" class="blocked">{{ action.disabledReason }}</small>
+                  </div>
+                </div>
+              </article>
+            </div>
+
+            <footer class="base-utility-strip">
+              <div>
+                <span><b>发电机</b><small>{{ game.base?.generatorOn ? `运行 · 燃料 ${game.base?.generatorFuel ?? 0}` : '关闭' }}</small></span>
                 <button class="secondary" :disabled="Boolean(generatorDisabledReason)" @click="toggleBaseGenerator">
-                  {{ game.base?.generatorOn ? '关闭发电机' : '启动发电机' }}
+                  {{ game.base?.generatorOn ? '关闭' : '启动' }}
                 </button>
-                <small>{{ generatorDisabledReason || (game.base?.generatorOn ? '停止噪声并切回公共电网状态' : '恢复供电，但会制造持续噪声') }}</small>
               </div>
               <div>
-                <button class="secondary" :disabled="Boolean(baseWaterDisabledReason)" @click="drinkStoredWater">饮用储水</button>
-                <small>{{ baseWaterDisabledReason || '消耗 1 份储水并降低口渴' }}</small>
+                <span><b>储水</b><small>{{ game.base?.waterReserve ?? 0 }} 份</small></span>
+                <button class="secondary" :disabled="Boolean(baseWaterDisabledReason)" @click="drinkStoredWater">饮用</button>
               </div>
-            </div>
+            </footer>
           </section>
 
           <section class="survival-drawer-block food-preparation-block">
@@ -1226,6 +1314,28 @@
           <p class="cooking-persistence-note">成品已进入指定容器并会继续腐败；旧原料不会恢复为全新鲜。</p>
         </section>
 
+        <section v-if="resolutionReport.perimeter" class="perimeter-resolution" aria-label="基地防线施工结算">
+          <div class="perimeter-resolution-facts">
+            <span>
+              <small>实际耗时</small>
+              <strong>{{ resolutionReport.perimeter.durationText }}</strong>
+            </span>
+            <span>
+              <small>消耗材料</small>
+              <strong>{{ resolutionReport.perimeter.materialsText }}</strong>
+            </span>
+            <span>
+              <small>入口变化</small>
+              <strong>{{ resolutionReport.perimeter.openingChangeText }}</strong>
+            </span>
+            <span>
+              <small>外围压力</small>
+              <strong>{{ resolutionReport.perimeter.pressureText }}</strong>
+            </span>
+          </div>
+          <p>{{ resolutionReport.perimeter.impactText }}</p>
+        </section>
+
         <div class="resolution-columns">
           <section>
             <h3>状态变化</h3>
@@ -1255,7 +1365,7 @@
 
           <section>
             <h3>资源与环境</h3>
-            <p v-if="!resolutionReport.preparation && !resolutionReport.inventoryChanges.length && !resolutionReport.tagChanges.length && !resolutionReport.vehicleChange && !resolutionReport.worldChanges.length">没有资源或环境变化。</p>
+            <p v-if="!resolutionReport.preparation && !resolutionReport.perimeter && !resolutionReport.inventoryChanges.length && !resolutionReport.tagChanges.length && !resolutionReport.vehicleChange && !resolutionReport.worldChanges.length">没有资源或环境变化。</p>
             <span
               v-for="change in resolutionReport.inventoryChanges"
               :key="change.id"
@@ -1327,12 +1437,19 @@ const foodPreparationDrafts = ref({});
 const foodPreparationBusyRecipeId = ref('');
 const foodPreparationFeedback = ref('');
 const foodPreparationFeedbackTone = ref('neutral');
+const baseWorkBusyToken = ref('');
+const baseWorkFeedback = ref('');
+const baseWorkFeedbackTone = ref('neutral');
 let locationSearchSessionToken = 0;
 let locationSearchCommandSequence = 0;
 let foodPreparationCommandSequence = 0;
+let baseWorkCommandSequence = 0;
 const foodPreparationSessionToken = typeof globalThis.crypto?.randomUUID === 'function'
   ? globalThis.crypto.randomUUID()
   : `session-${Date.now().toString(36)}`;
+const baseWorkSessionToken = typeof globalThis.crypto?.randomUUID === 'function'
+  ? globalThis.crypto.randomUUID()
+  : `base-${Date.now().toString(36)}`;
 const tacticalActionFallbacks = [
   { id: 'push', label: '推开', estimatedOutcome: '争取身位，打断贴身尸体', staminaCost: 5, noiseDelta: 1 },
   { id: 'melee', label: '近战攻击', estimatedOutcome: '用当前主手攻击贴身目标', staminaCost: 6, noiseLabel: '随武器' },
@@ -1750,6 +1867,8 @@ const visibleEdges = computed(() => mapEdges.map(([fromId, toId]) => {
 }).filter((edge) => edge.from && edge.to));
 const currentNode = computed(() => game.currentMapNode);
 const currentNodeType = computed(() => game.currentNodeType);
+const currentNodeActionsForDisplay = computed(() => (Array.isArray(game.currentNodeActions) ? game.currentNodeActions : [])
+  .filter((action) => action?.id !== 'fortify'));
 const neighborNodes = computed(() => game.currentNeighborNodes);
 const neighborVisibleNodes = computed(() => neighborNodes.value.map((node) => nodeById.value[node.id] ?? node));
 const inspectedNode = computed(() => nodeById.value[game.inspectedNodeId] ?? game.inspectedMapNode ?? currentNode.value);
@@ -1925,6 +2044,71 @@ const repairMaterials = computed(() => ['duct_tape', 'wood_glue'].map((id) => {
   const item = carryStorageContainer.value?.items?.find((entry) => entry.id === id);
   return { id, name: item?.name ?? (id === 'duct_tape' ? '胶带' : '木工胶'), count: item?.count ?? 0 };
 }));
+const baseSecurityView = computed(() => normalizeBaseSecurityView(
+  game.baseSecuritySummary && typeof game.baseSecuritySummary === 'object' ? game.baseSecuritySummary : {},
+));
+const baseWorkMaterialSelection = computed(() => {
+  const candidates = [
+    ...(Array.isArray(game.inventory) ? game.inventory.map((item) => ({ containerId: 'carry', item })) : []),
+    ...(Array.isArray(game.baseInventory) ? game.baseInventory.map((item) => ({ containerId: 'base', item })) : []),
+  ].filter((candidate) => candidate.item?.stackId && Number(candidate.item.count) > 0);
+  const exact = (itemId, preferUsable = false) => candidates
+    .filter((candidate) => candidate.item.id === itemId)
+    .sort((left, right) => {
+      if (preferUsable) {
+        const leftBroken = left.item.broken === true || left.item.conditionState?.condition?.broken === true;
+        const rightBroken = right.item.broken === true || right.item.conditionState?.condition?.broken === true;
+        if (leftBroken !== rightBroken) return leftBroken ? 1 : -1;
+      }
+      return Number(right.item.count) - Number(left.item.count);
+    })[0] ?? null;
+  const hammer = exact('hammer', true);
+  const plank = exact('plank');
+  const nails = exact('nails');
+  return {
+    tool: hammer ? { containerId: hammer.containerId, stackId: hammer.item.stackId } : null,
+    materials: [
+      plank ? { containerId: plank.containerId, stackId: plank.item.stackId, count: 1 } : null,
+      nails ? { containerId: nails.containerId, stackId: nails.item.stackId, count: 1 } : null,
+    ].filter(Boolean),
+    labels: {
+      hammer: baseWorkMaterialLabel(hammer, '锤子'),
+      plank: baseWorkMaterialLabel(plank, '木板', 1),
+      nails: baseWorkMaterialLabel(nails, '钉子', 1),
+    },
+  };
+});
+const baseEntryCards = computed(() => baseSecurityView.value.openings.map((entry) => ({
+  ...entry,
+  actions: ['fortify', 'repair'].map((kind) => {
+    const command = createBaseWorkCommand(entry.id, kind, `base-preview:${entry.id}:${kind}:r${baseSecurityView.value.revision}`);
+    let preview = { ok: false, reason: 'service_unavailable' };
+    if (typeof game.previewBaseWork === 'function') {
+      try {
+        preview = game.previewBaseWork(command) ?? preview;
+      } catch {
+        preview = { ok: false, reason: 'preview_failed' };
+      }
+    }
+    const minutes = Math.max(0, Number(preview.minutes) || (kind === 'repair' ? 60 : 90));
+    return {
+      kind,
+      label: kind === 'repair' ? '维修' : '加固',
+      minutes,
+      preview,
+      command,
+      disabledReason: preview.ok ? '' : baseWorkReasonText(preview.reason, preview.disabledReason),
+      detailText: `${baseWorkMaterialSelection.value.labels.hammer} · ${baseWorkMaterialSelection.value.labels.plank} · ${baseWorkMaterialSelection.value.labels.nails}`,
+    };
+  }),
+})));
+const baseTacticalDisabledReason = computed(() => {
+  if (game.isGameOver) return '本局已经结束';
+  if (!game.isAtHome) return '需要返回初始据点';
+  if (encounterActive.value || tacticalModeVisible.value) return '';
+  if (baseSecurityView.value.exteriorPopulation <= 0) return '外围暂时没有可接触的尸群，先维修破口';
+  return typeof game.startTacticalEncounter === 'function' ? '' : '战术遭遇服务尚未接入';
+});
 const generatorDisabledReason = computed(() => {
   if (game.isGameOver) return '本局已经结束';
   if (encounterActive.value) return '遭遇中无法操作基地设备';
@@ -2010,6 +2194,7 @@ watch(
     if (locationSearch.value) leaveLocationSearch();
     clearStorageSelection();
     storageActionFeedback.value = '';
+    baseWorkFeedback.value = '';
     const preferred = externalStorageContainers.value.find((container) => container.accessible)
       ?? externalStorageContainers.value[0];
     if (preferred) selectedExternalContainerId.value = preferred.id;
@@ -2662,6 +2847,243 @@ async function prepareFoodRecipe(recipeId) {
   }
 }
 
+function normalizeBaseSecurityView(summary = {}) {
+  const openings = Array.isArray(summary.openings) ? summary.openings.map((opening) => {
+    const integrity = Math.max(0, Math.round(Number(opening.integrity) || 0));
+    const maxIntegrity = Math.max(1, Math.round(Number(opening.maxIntegrity) || 1));
+    const barricade = Math.max(0, Math.round(Number(opening.barricade) || 0));
+    const maxBarricade = Math.max(1, Math.round(Number(opening.maxBarricade) || 1));
+    const breached = opening.breached === true || opening.status === 'breached' || integrity <= 0;
+    const damaged = opening.damaged === true || opening.status === 'damaged' || (!breached && integrity < maxIntegrity);
+    const status = opening.status ?? (breached ? 'breached' : damaged ? 'damaged' : 'intact');
+    const incident = opening.lastIncident
+      ?? (summary.lastIncident?.openingId === opening.id ? summary.lastIncident : null);
+    return {
+      ...opening,
+      integrity,
+      maxIntegrity,
+      barricade,
+      maxBarricade,
+      breached,
+      status,
+      statusLabel: opening.statusLabel ?? baseOpeningStatusLabel(status),
+      statusTone: opening.statusTone ?? (breached ? 'danger' : damaged ? 'warn' : 'good'),
+      kindLabel: opening.kindLabel ?? baseOpeningKindLabel(opening.kind),
+      lastImpactLabel: opening.lastImpactLabel || baseIncidentText(incident),
+    };
+  }) : [];
+  const rawSecurityPercent = Number(summary.securityPercent);
+  const securityPercent = Number.isFinite(rawSecurityPercent)
+    ? Math.max(0, Math.min(100, Math.round(rawSecurityPercent)))
+    : 0;
+  const breached = summary.breached === true
+    || summary.status === 'breached'
+    || Number(summary.breachedCount) > 0
+    || game.baseInteriorSafe === false;
+  const damaged = summary.damaged === true || summary.status === 'damaged';
+  const status = summary.status ?? (breached ? 'breached' : damaged ? 'damaged' : 'intact');
+  const exteriorPopulation = Math.max(0, Math.round(Number(
+    summary.exteriorPopulation ?? summary.externalPopulation ?? localZombieState.value.population,
+  ) || 0));
+  const pressureValue = Math.max(0, Math.round(Number(summary.currentPressure ?? summary.pressure ?? game.world?.threat) || 0));
+  return {
+    ...summary,
+    revision: Math.max(0, Math.round(Number(summary.revision) || 0)),
+    openings,
+    securityPercent,
+    breached,
+    status,
+    statusLabel: summary.statusLabel ?? ({ secure: '防线完整', intact: '防线完整', damaged: '防线受损', breached: '入口破口' }[status] ?? '状态未知'),
+    statusTone: summary.statusTone ?? (breached ? 'danger' : damaged ? 'warn' : 'good'),
+    exteriorPopulation,
+    exteriorPopulationLabel: summary.exteriorPopulationLabel ?? `${exteriorPopulation} 只`,
+    pressure: pressureValue,
+    pressureLabel: summary.pressureLabel ?? `${pressureValue} · ${threatLabel.value}`,
+    pressureSourceLabel: summary.pressureSourceLabel
+      ?? summary.pressureSource
+      ?? basePressureSourcesText(summary.currentPressureSources)
+      ?? game.world?.lastNotice
+      ?? '区域威胁与据点噪声',
+    breachGuidance: summary.breachGuidance ?? (exteriorPopulation > 0
+      ? '室内不再安全。先打开战术战斗处理闯入者，再抢修受损入口。'
+      : '室内不再安全。外围暂时安静，立即维修受损入口。'),
+  };
+}
+
+function baseOpeningKindLabel(kind) {
+  return ({ door: '门', window: '窗', garage: '车库门', gate: '院门' })[kind] ?? '入口';
+}
+
+function baseOpeningStatusLabel(status) {
+  return ({ secure: '完整', intact: '完整', damaged: '受损', breached: '破口' })[status] ?? '待确认';
+}
+
+function basePressureSourcesText(sources) {
+  if (!sources || typeof sources !== 'object') return null;
+  const parts = [
+    Number.isFinite(Number(sources.exteriorPopulation)) ? `尸群 ${Math.max(0, Math.round(Number(sources.exteriorPopulation)))} 只` : '',
+    Number.isFinite(Number(sources.threat)) ? `区域威胁 ${formatNumber(sources.threat)}` : '',
+    Number.isFinite(Number(sources.noise)) ? `噪声 ${formatNumber(sources.noise)}` : '',
+    Number(sources.generator) > 0 ? `发电机 +${formatNumber(sources.generator)}` : '',
+    Number(sources.shelterDefense) > 0 ? `避难所防御 ${formatNumber(sources.shelterDefense)}` : '',
+  ].filter(Boolean);
+  return parts.length ? parts.join(' · ') : null;
+}
+
+function baseIncidentText(incident) {
+  if (!incident || typeof incident !== 'object') return '暂无冲击记录';
+  const incidentHour = Number.isFinite(Number(incident.hour)) ? Math.max(0, Math.round(Number(incident.hour))) : null;
+  const timeLabel = incidentHour === null
+    ? ''
+    : `第 ${Math.floor(incidentHour / 24) + 1} 天 ${String(incidentHour % 24).padStart(2, '0')}:00`;
+  const sourceText = basePressureSourcesText(incident.sources);
+  const reason = incident.reasonLabel
+    ?? incident.sourceLabel
+    ?? ({ pressure: '外围尸群施压', noise: '噪声吸引尸群', breach: '入口被撞破', impact: '尸群撞击' })[incident.reason]
+    ?? incident.reason
+    ?? (incident.breached ? '尸群持续撞击并撞破入口' : '外围尸群撞击');
+  const integrityDamage = Math.max(0, Math.round(Math.abs(Number(incident.integrityDelta ?? incident.integrityDamage) || 0)));
+  const barricadeDamage = Math.max(0, Math.round(Math.abs(Number(incident.barricadeDelta ?? incident.barricadeDamage) || 0)));
+  const damageText = [
+    integrityDamage ? `结构 −${integrityDamage}` : '',
+    barricadeDamage ? `路障 −${barricadeDamage}` : '',
+  ].filter(Boolean).join(' · ');
+  return [timeLabel, reason, sourceText, damageText].filter(Boolean).join(' · ');
+}
+
+function baseWorkMaterialLabel(candidate, fallbackName, count = 0) {
+  if (!candidate) return `${fallbackName}${count ? `×${count}` : ''}缺失`;
+  const containerName = candidate.containerId === 'base' ? '据点' : '随身';
+  return `${containerName} · ${candidate.item.name ?? fallbackName}${count ? `×${count}` : ''}`;
+}
+
+function createBaseWorkCommand(openingId, kind, commandId) {
+  return {
+    kind,
+    openingId,
+    expectedRevision: baseSecurityView.value.revision,
+    commandId,
+    tool: baseWorkMaterialSelection.value.tool ? { ...baseWorkMaterialSelection.value.tool } : null,
+    materials: baseWorkMaterialSelection.value.materials.map((material) => ({ ...material })),
+  };
+}
+
+function nextBaseWorkCommandId(openingId, kind) {
+  baseWorkCommandSequence += 1;
+  return `base-ui:${baseWorkSessionToken}:${openingId}:${kind}:r${baseSecurityView.value.revision}:c${baseWorkCommandSequence}`.slice(0, 180);
+}
+
+function baseWorkReasonText(reason, supplied = '') {
+  if (supplied) return supplied;
+  const labels = {
+    game_over: '本局已经结束',
+    not_running: '当前没有进行中的生存局',
+    active_tactical_encounter: '战术遭遇中无法施工，先结束当前战斗',
+    not_at_home: '需要返回初始据点',
+    exterior_not_cleared: '入口已失守且尸群仍在外围，先打开战术战斗完成清场',
+    access_denied: game.isAtHome ? '遭遇中无法施工，先处理尸群' : '需要返回初始据点',
+    stale_revision: '防线状态已变化，请重新确认',
+    replayed_command: '这条施工命令已经执行',
+    duplicate_command: '这条施工命令已经执行',
+    invalid_command: '施工请求无效',
+    invalid_work_kind: '未知施工方式',
+    unknown_opening: '入口不存在',
+    opening_missing: '入口不存在',
+    hammer_required: '需要未损坏的锤子（随身或据点仓储）',
+    tool_broken: '所选锤子已经损坏',
+    materials_mismatch: '需要精确选择木板 ×1 和钉子 ×1',
+    stack_missing: '所选材料已经不在原容器',
+    source_stack_missing: '所选材料已经不在原容器',
+    insufficient_quantity: '所选材料数量不足',
+    invalid_capacity: '仓储容量状态无效，施工未开始',
+    capacity_exceeded: '当前仓储已经超出容量，先整理物资',
+    already_fortified: '该入口路障已经达到上限',
+    repair_required: '结构已破损，请先维修再加固',
+    repair_not_needed: '该入口结构无需维修',
+    service_unavailable: '防线施工服务尚未接入',
+    preview_failed: '无法预估本次施工，请重试',
+    projection_failed: '无法预估本次施工，请重试',
+    invalid_projection: '施工结果校验失败，材料未消耗',
+    commit_failed: '施工提交失败，状态已回滚',
+  };
+  return labels[reason] ?? '当前无法完成这次施工';
+}
+
+function consumedBaseMaterialsText(result) {
+  const entries = Array.isArray(result?.consumedMaterials) ? result.consumedMaterials : [];
+  const text = entries.map((entry) => {
+    const name = entry.name ?? itemName(entry.itemId ?? entry.id);
+    const count = Math.max(1, Math.round(Number(entry.count) || 1));
+    const container = entry.containerId === 'base' ? '据点' : entry.containerId === 'carry' ? '随身' : '';
+    return `${container}${name} ×${count}`;
+  }).join('、');
+  return text || '木板 ×1、钉子 ×1（锤子未消耗）';
+}
+
+async function performBaseEntryAction(entry, action) {
+  if (!entry?.id || !action?.kind || baseWorkBusyToken.value || game.isGameOver) return;
+  if (typeof game.previewBaseWork !== 'function' || typeof game.performBaseWork !== 'function') {
+    baseWorkFeedback.value = '防线施工服务尚未接入。';
+    baseWorkFeedbackTone.value = 'danger';
+    return;
+  }
+  const token = `${entry.id}:${action.kind}`;
+  baseWorkBusyToken.value = token;
+  baseWorkFeedback.value = '';
+  baseWorkFeedbackTone.value = 'neutral';
+  try {
+    const command = createBaseWorkCommand(entry.id, action.kind, nextBaseWorkCommandId(entry.id, action.kind));
+    const preview = game.previewBaseWork(command);
+    if (!preview?.ok) {
+      baseWorkFeedback.value = baseWorkReasonText(preview?.reason, preview?.disabledReason);
+      baseWorkFeedbackTone.value = 'danger';
+      return;
+    }
+    const before = captureGameSnapshot();
+    const result = await game.performBaseWork(command);
+    if (!result?.ok) {
+      baseWorkFeedback.value = baseWorkReasonText(result?.reason, result?.disabledReason);
+      baseWorkFeedbackTone.value = 'danger';
+      return;
+    }
+    const afterOpening = baseSecurityView.value.openings.find((opening) => opening.id === entry.id) ?? entry;
+    const beforeOpening = before.baseSecurity.openings.find((opening) => opening.id === entry.id) ?? entry;
+    const actionLabel = action.kind === 'repair' ? '维修' : '加固';
+    const openingChangeText = `结构 ${beforeOpening.integrity} → ${afterOpening.integrity}；路障 ${beforeOpening.barricade} → ${afterOpening.barricade}`;
+    const impactText = baseIncidentText(Array.isArray(result.incidents) ? result.incidents.at(-1) : null);
+    baseWorkFeedback.value = `${entry.label}${actionLabel}完成：${openingChangeText}。`;
+    baseWorkFeedbackTone.value = 'good';
+    showResolutionReport(before, {
+      title: `基地防线 · ${actionLabel}${entry.label}`,
+      result: `${entry.label}施工完成，材料、耗时与外围压力已经同步结算。`,
+      notes: `${formatDuration(result.minutes ?? preview.minutes)} · 噪声 ${signed(Math.round(Number(result.noiseDelta) || 0))} · 木工 +${formatNumber(result.skillXp ?? 0)} XP`,
+      perimeter: {
+        durationText: formatDuration(result.minutes ?? preview.minutes),
+        materialsText: consumedBaseMaterialsText(result),
+        openingChangeText,
+        pressureText: `${baseSecurityView.value.exteriorPopulationLabel} · ${baseSecurityView.value.pressureLabel} · ${baseSecurityView.value.pressureSourceLabel}`,
+        impactText: impactText === '暂无冲击记录' ? '施工期间防线没有受到新的撞击。' : `最近冲击：${impactText}`,
+      },
+    });
+  } catch (error) {
+    baseWorkFeedback.value = error instanceof Error ? error.message : '防线施工结算失败';
+    baseWorkFeedbackTone.value = 'danger';
+  } finally {
+    await nextTick();
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 280));
+    baseWorkBusyToken.value = '';
+  }
+}
+
+function openBaseTacticalResponse() {
+  if (baseTacticalDisabledReason.value) {
+    baseWorkFeedback.value = baseTacticalDisabledReason.value;
+    baseWorkFeedbackTone.value = 'danger';
+    return;
+  }
+  openTacticalDrawer();
+}
+
 function toggleBaseGenerator() {
   const wasOn = Boolean(game.base?.generatorOn);
   const before = captureGameSnapshot();
@@ -3055,6 +3477,10 @@ function captureGameSnapshot() {
       wounds: game.woundList.map((wound) => ({ ...wound })),
     },
     base: { ...game.base },
+    baseSecurity: {
+      ...baseSecurityView.value,
+      openings: baseSecurityView.value.openings.map((opening) => ({ ...opening })),
+    },
     stats: { ...game.survivalStats },
     equippedWeaponId: game.equippedWeaponId,
     currentNodeId: game.currentNodeId,
@@ -3122,6 +3548,7 @@ function buildResolutionReport(before, after, context = {}) {
       skillText: context.preparation.skillText ?? '烹饪 +0 XP',
       waterText: context.preparation.waterText ?? '未消耗水',
     } : null,
+    perimeter: context.perimeter ? { ...context.perimeter } : null,
   };
 }
 

@@ -247,11 +247,15 @@ export function resolveNodeAction({
   }
 
   if (actionId === 'rest') {
-    vitalDelta.health += 2;
-    vitalDelta.endurance += 8;
-    vitalDelta.fatigue -= 10;
-    vitalDelta.panic -= 8;
-    vitalDelta.stress -= 8;
+    vitalDelta.health = 2;
+    // Endurance, fatigue, panic, and stress recovery are owned by the
+    // minute-based survival simulation. Applying a second flat recovery here
+    // made rest disproportionately strong and let players erase fatigue by
+    // stacking two independent recovery models.
+    vitalDelta.endurance = 0;
+    vitalDelta.fatigue = 0;
+    vitalDelta.panic = 0;
+    vitalDelta.stress = 0;
     notes.push('临时休整');
     return mapOutcome({
       day,
@@ -275,10 +279,12 @@ export function resolveNodeAction({
     const sleepMinutes = durationForAction('sleep');
     const sleepCrossesNight = clockMinutes < 6 * 60 || clockMinutes >= 18 * 60 || clockMinutes + sleepMinutes >= 24 * 60;
     vitalDelta.health = base?.defense >= 4 ? 4 : 1;
-    vitalDelta.endurance = 12;
-    vitalDelta.fatigue = -20;
-    vitalDelta.panic = -12;
-    vitalDelta.stress = -10;
+    // Sleep quality still affects the small health reward and narration, but
+    // all time-dependent recovery is calculated once by advanceSurvivalState.
+    vitalDelta.endurance = 0;
+    vitalDelta.fatigue = 0;
+    vitalDelta.panic = 0;
+    vitalDelta.stress = 0;
     notes.push('完整睡眠');
     return mapOutcome({
       day,
