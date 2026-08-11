@@ -151,9 +151,13 @@ describe('v0.3 evasion grace', () => {
     game.vitals.fatigue = 0;
     game.world.weatherId = 'clear';
     game.world.threat = 0;
-    vi.spyOn(Math, 'random').mockReturnValue(0.99);
-
     expect(game.resolveNodeAction('evade')).toBe(true);
+    expect(game.activeTacticalEncounter).toEqual(expect.objectContaining({ status: 'active' }));
+    game.activeTacticalEncounter.escapeProgress = 100;
+    expect(game.performTacticalAction('disengage', {
+      encounterId: game.activeTacticalEncounter.id,
+      expectedTurn: game.activeTacticalEncounter.turn,
+    })).toBe(true);
     expect(sourceState.count).toBe(10);
     expect(game.nodeZombieStates[sourceId].evasionUntilMinutes).toBeGreaterThan(game.totalWorldMinutes);
     expect(game.isCurrentNodeSecured).toBe(true);
@@ -172,9 +176,12 @@ describe('v0.3 evasion grace', () => {
     game.vitals.fatigue = 100;
     game.world.weatherId = 'clear';
     game.world.threat = 100;
-    vi.spyOn(Math, 'random').mockReturnValue(0);
-
     expect(game.resolveNodeAction('evade')).toBe(true);
+    game.activeTacticalEncounter.rng = { seed: 3, cursor: 0 };
+    expect(game.performTacticalAction('disengage', {
+      encounterId: game.activeTacticalEncounter.id,
+      expectedTurn: game.activeTacticalEncounter.turn,
+    })).toBe(true);
 
     expect(game.nodeZombieStates[nodeId].evasionUntilMinutes).toBe(state.evasionUntilMinutes);
     expect(game.isCurrentNodeSecured).toBe(false);
@@ -254,7 +261,7 @@ describe('v0.3 compatibility and midnight ordering', () => {
     vi.stubGlobal('localStorage', memoryStorage());
     const game = useGameStore();
     game.initializeMapState();
-    game.clockMinutes = 23 * 60 + 30;
+    game.clockMinutes = 23 * 60 + 59;
     const state = setActiveEncounter(game, 'muldraugh', 1);
     game.inventory = [catalogItem('baseball_bat')];
     game.equippedWeaponId = 'baseball_bat';
@@ -265,14 +272,19 @@ describe('v0.3 compatibility and midnight ordering', () => {
     game.vitals.panic = 0;
     game.world.weatherId = 'clear';
     game.world.threat = 0;
-    vi.spyOn(Math, 'random').mockReturnValue(0.99);
     const actionStartMinutes = game.totalWorldMinutes;
 
     expect(game.resolveNodeAction('combat_melee')).toBe(true);
+    game.activeTacticalEncounter.zombies = { distant: 0, approaching: 0, engaged: 0, downed: 1 };
+    game.activeTacticalEncounter.rangeBand = 'contact';
+    expect(game.performTacticalAction('stomp', {
+      encounterId: game.activeTacticalEncounter.id,
+      expectedTurn: game.activeTacticalEncounter.turn,
+    })).toBe(true);
 
     expect(game.day).toBe(2);
-    expect(game.clockMinutes).toBe(60);
-    expect(game.totalWorldMinutes).toBe(actionStartMinutes + 90);
+    expect(game.clockMinutes).toBe(0);
+    expect(game.totalWorldMinutes).toBe(actionStartMinutes + 1);
     expect(game.nodeZombieStates.muldraugh).toEqual(expect.objectContaining({
       count: 0,
       clearedDay: 2,

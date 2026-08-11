@@ -51,6 +51,14 @@ import {
   normalizeItemConditionState,
 } from '../services/item-condition.js';
 import {
+  createTacticalEncounter,
+  isTacticalEncounterTerminal,
+  listTacticalActions,
+  normalizeTacticalEncounter,
+  resolveTacticalAction,
+  summarizeTacticalEncounter,
+} from '../services/tactical-encounter.js';
+import {
   STORAGE_CONTAINERS,
   baseStorageCapacity,
   carryStorageCapacity,
@@ -79,7 +87,7 @@ import {
   woundTypeLabels,
 } from '../services/survival.js';
 
-export const SAVE_VERSION = 4;
+export const SAVE_VERSION = 5;
 
 const defaultState = () => ({
   saveVersion: SAVE_VERSION,
@@ -121,6 +129,9 @@ const defaultState = () => ({
   searchedSceneObjectIds: [],
   nodeSearchCounts: {},
   nodeZombieStates: {},
+  activeTacticalEncounter: null,
+  nextEncounterSequence: 1,
+  firearmLoads: {},
   world: createWorldState(),
   body: createBodyState(),
   base: createBaseState(),
@@ -224,6 +235,29 @@ export const useGameStore = defineStore('game', {
         population: this.currentZombieState.count,
       };
     },
+    tacticalEncounterActive: (state) => Boolean(
+      state.activeTacticalEncounter && !isTacticalEncounterTerminal(state.activeTacticalEncounter)
+    ),
+    tacticalActionList: (state) => {
+      if (!state.activeTacticalEncounter) return [];
+      return listTacticalActions(state.activeTacticalEncounter, tacticalContextForState(state));
+    },
+    tacticalEncounterSummary: (state) => {
+      if (!state.activeTacticalEncounter) return null;
+      const node = mapNodes.find((entry) => entry.id === state.activeTacticalEncounter.nodeId);
+      return {
+        ...summarizeTacticalEncounter(state.activeTacticalEncounter, tacticalContextForState(state)),
+        nodeName: node?.name ?? '未知地区',
+        threat: Math.max(0, Math.round(Number(state.world?.threat) || 0)),
+        noise: Math.max(0, Math.round(Number(state.world?.noise) || 0)),
+        health: Math.max(0, Math.round(Number(state.vitals?.health) || 0)),
+        endurance: Math.max(0, Math.round(Number(state.vitals?.endurance) || 0)),
+        panic: Math.max(0, Math.round(Number(state.vitals?.panic) || 0)),
+        pain: Math.max(0, Math.round(Number(state.body?.pain) || 0)),
+        bleeding: (state.body?.wounds ?? []).filter((wound) => wound.bleeding).length,
+      };
+    },
+    tacticalWeaponOptions: (state) => tacticalWeaponOptionsForState(state),
     moodles() {
       return moodlesFor({
         vitals: this.vitals,
@@ -363,6 +397,9 @@ export const useGameStore = defineStore('game', {
       if (!hasOwn('nodeSearchCounts')) this.nodeSearchCounts = {};
       if (!hasOwn('skillXp')) this.skillXp = createSkillExperience(normalizeSkills(this.skills));
       if (!hasOwn('lastSkillGains')) this.lastSkillGains = {};
+      if (!hasOwn('activeTacticalEncounter')) this.activeTacticalEncounter = null;
+      if (!hasOwn('nextEncounterSequence')) this.nextEncounterSequence = 1;
+      if (!hasOwn('firearmLoads')) this.firearmLoads = {};
       if (!hasOwn('nodeZombieStates')) {
         this.nodeZombieStates = normalizeNodeZombieStates({}, {
           nodes: mapNodes,
@@ -568,6 +605,23 @@ export const useGameStore = defineStore('game', {
         seed: this.world.seed,
         day: this.day,
       });
+      this.nextEncounterSequence = clampInteger(this.nextEncounterSequence, 1, 1_000_000_000, 1);
+      const recoveredLoads = {
+        ...(this.activeTacticalEncounter?.player?.loadedByWeapon ?? {}),
+        ...(this.firearmLoads ?? {}),
+      };
+      this.firearmLoads = normalizeFirearmLoads(recoveredLoads, [this.inventory, this.baseInventory, this.vehicleInventory]);
+      const tacticalNode = mapNodes.find((entry) => entry.id === this.activeTacticalEncounter?.nodeId);
+      if (tacticalNode && tacticalNode.id === this.currentNodeId) {
+        const zombieCount = this.nodeZombieStates[tacticalNode.id]?.count ?? 0;
+        this.activeTacticalEncounter = normalizeTacticalEncounter(this.activeTacticalEncounter, {
+          zombieCount,
+          seed: tacticalEncounterSeed(this.world.seed, tacticalNode.id, this.totalWorldMinutes, this.nextEncounterSequence),
+        });
+        this.activeTacticalEncounter.player.loadedByWeapon = cloneSnapshot(this.firearmLoads);
+      } else {
+        this.activeTacticalEncounter = null;
+      }
       this.body = normalizeBodyState(this.body);
       const migrateLegacyGenerator = this.base?.installedGeneratorStackId === '__legacy_auto__';
       this.base = normalizeBaseState(this.base, this.shelter);
@@ -776,6 +830,7 @@ export const useGameStore = defineStore('game', {
       return true;
     },
     collectLootItem(item, count = 1) {
+      if (this.activeTacticalEncounter && !isTacticalEncounterTerminal(this.activeTacticalEncounter)) return false;
       const quantity = positiveInteger(count);
       if (!item || !quantity) return false;
       const projection = projectInventoryAddition(this.inventory, item, quantity, {
@@ -789,6 +844,7 @@ export const useGameStore = defineStore('game', {
       return true;
     },
     addItem(item, count = 1, free = false) {
+      if (this.activeTacticalEncounter && !isTacticalEncounterTerminal(this.activeTacticalEncounter)) return false;
       const quantity = positiveInteger(count);
       if (!item || !quantity) return false;
       if (!free && this.money < item.price * quantity) return false;
@@ -804,6 +860,7 @@ export const useGameStore = defineStore('game', {
       return true;
     },
     removeItem(id, count = 1) {
+      if (this.activeTacticalEncounter && !isTacticalEncounterTerminal(this.activeTacticalEncounter)) return false;
       const quantity = positiveInteger(count);
       if (!quantity) return false;
       const projection = projectInventoryRemoval(this.inventory, id, quantity);
@@ -821,9 +878,15 @@ export const useGameStore = defineStore('game', {
       if (this.equippedWeaponStackId === weapon.stackId) {
         this.equippedWeaponStackId = null;
         this.equippedWeaponId = null;
+        if (this.activeTacticalEncounter && !isTacticalEncounterTerminal(this.activeTacticalEncounter)) {
+          this.activeTacticalEncounter.selectedWeaponStackId = null;
+        }
       } else {
         this.equippedWeaponStackId = weapon.stackId;
         this.equippedWeaponId = weapon.id;
+        if (this.activeTacticalEncounter && !isTacticalEncounterTerminal(this.activeTacticalEncounter)) {
+          this.activeTacticalEncounter.selectedWeaponStackId = weapon.stackId;
+        }
       }
       return true;
     },
@@ -858,6 +921,7 @@ export const useGameStore = defineStore('game', {
       if (!this.inventory.some((item) => item.stackId === this.equippedBagStackId && item.tags?.includes('bag'))) {
         this.equippedBagStackId = null;
       }
+      this.firearmLoads = normalizeFirearmLoads(this.firearmLoads, [this.inventory, this.baseInventory, this.vehicleInventory]);
     },
     previewTransfer(request = {}) {
       return createTransferQuote(this.$state, request, false);
@@ -1131,6 +1195,9 @@ export const useGameStore = defineStore('game', {
       this.searchedSceneObjectIds = [];
       this.nodeSearchCounts = {};
       this.nodeZombieStates = {};
+      this.activeTacticalEncounter = null;
+      this.nextEncounterSequence = 1;
+      this.firearmLoads = {};
     },
     ensureNodeZombieState(nodeId) {
       const node = mapNodes.find((entry) => entry.id === nodeId);
@@ -1158,6 +1225,10 @@ export const useGameStore = defineStore('game', {
     refreshNodeZombieMigration() {
       const previousCurrent = this.nodeZombieStates?.[this.currentNodeId]?.count ?? null;
       const refreshed = {};
+      const lockedTacticalNodeId = this.activeTacticalEncounter
+        && !isTacticalEncounterTerminal(this.activeTacticalEncounter)
+        ? this.activeTacticalEncounter.nodeId
+        : null;
       mapNodes.forEach((node) => {
         const current = this.nodeZombieStates?.[node.id] ?? createNodeZombieState({
           nodeId: node.id,
@@ -1165,6 +1236,13 @@ export const useGameStore = defineStore('game', {
           seed: this.world?.seed,
           day: this.day,
         });
+        if (node.id === lockedTacticalNodeId) {
+          refreshed[node.id] = {
+            ...cloneSnapshot(current),
+            lastRefreshDay: Math.max(clampInteger(current.lastRefreshDay, 1, 999999, this.day), this.day),
+          };
+          return;
+        }
         refreshed[node.id] = refreshNodeZombieState(current, {
           danger: node.danger,
           seed: this.world?.seed,
@@ -1188,8 +1266,201 @@ export const useGameStore = defineStore('game', {
       this.lastSkillGains = progression.appliedGains;
       return progression;
     },
+    startTacticalEncounter(preferredActionId = '') {
+      if (this.isGameOver || !this.currentNodeId) return false;
+      const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
+      if (!node) return false;
+      const zombieState = this.ensureNodeZombieState(node.id);
+      if (!zombieState || zombieState.count <= 0 || isNodeSecured(zombieState, this.totalWorldMinutes)) return false;
+      if (this.activeTacticalEncounter && !isTacticalEncounterTerminal(this.activeTacticalEncounter)) {
+        return this.activeTacticalEncounter.nodeId === node.id;
+      }
+      const selectedWeapon = selectTacticalStartingWeapon(this.$state, preferredActionId);
+      const encounterSequence = clampInteger(this.nextEncounterSequence, 1, 1_000_000_000, 1);
+      const firearmLoads = normalizeFirearmLoads(this.firearmLoads, [this.inventory, this.baseInventory, this.vehicleInventory]);
+      this.activeTacticalEncounter = createTacticalEncounter({
+        nodeId: node.id,
+        zombieCount: zombieState.count,
+        seed: tacticalEncounterSeed(this.world?.seed, node.id, this.totalWorldMinutes, encounterSequence),
+        encounterSequence,
+        startedAtMinutes: this.totalWorldMinutes,
+        selectedWeaponStackId: selectedWeapon?.stackId ?? null,
+        firearmLoads,
+        initialRangeBand: ['evade', 'disengage'].includes(preferredActionId) ? 'far' : 'near',
+        escapeProgress: ['evade', 'disengage'].includes(preferredActionId) ? 40 : 0,
+      });
+      this.firearmLoads = firearmLoads;
+      if (selectedWeapon) {
+        this.equippedWeaponStackId = selectedWeapon.stackId;
+        this.equippedWeaponId = selectedWeapon.id;
+      }
+      this.nextEncounterSequence = Math.min(1_000_000_000, encounterSequence + 1);
+      return true;
+    },
+    performTacticalAction(actionId, options = {}) {
+      const encounter = this.activeTacticalEncounter;
+      if (!encounter || this.isGameOver || !this.canPerformWorldAction('tactical', 0, false)) return false;
+      if (encounter.nodeId !== this.currentNodeId || isTacticalEncounterTerminal(encounter)) return false;
+      // A tactical command is an optimistic-concurrency transaction. Callers
+      // must identify the encounter and turn they rendered; silently filling
+      // in the latest values would turn a delayed double-click into a new turn.
+      if (options?.encounterId !== encounter.id
+        || !Number.isInteger(options?.expectedTurn)
+        || options.expectedTurn !== encounter.turn) return false;
+      const node = mapNodes.find((entry) => entry.id === encounter.nodeId);
+      const zombieState = node ? this.nodeZombieStates?.[node.id] : null;
+      if (!node || !zombieState || zombieState.count <= 0) return false;
+      const encounterPopulation = tacticalZombieTotal(encounter);
+      if (encounterPopulation !== zombieState.count) return false;
+
+      const context = tacticalContextForState(this.$state);
+      const weaponStackId = options.weaponStackId ?? this.equippedWeaponStackId ?? encounter.selectedWeaponStackId ?? null;
+      const command = {
+        actionId,
+        encounterId: options.encounterId,
+        expectedTurn: options.expectedTurn,
+        weaponStackId,
+      };
+      if (actionId === 'reload') {
+        const weapon = findInventoryStack(this.inventory, weaponStackId, (item) => item.tags?.includes('firearm'));
+        const ammoItemId = weapon ? firearmAmmoId(weapon.id) : null;
+        const ammo = options.ammoStackId
+          ? findInventoryStack(this.inventory, options.ammoStackId, (item) => item.id === ammoItemId)
+          : this.inventory.find((item) => item.id === ammoItemId && item.count > 0);
+        const loaded = encounter.player?.loadedByWeapon?.[weaponStackId]?.rounds ?? 0;
+        const availableCapacity = Math.max(0, firearmCapacity(weapon?.id) - loaded);
+        command.ammoStackId = ammo?.stackId ?? options.ammoStackId ?? null;
+        command.rounds = options.rounds ?? Math.min(availableCapacity, Math.max(0, Number(ammo?.count) || 0));
+      } else if (options.ammoStackId) {
+        command.ammoStackId = options.ammoStackId;
+      }
+      if (options.rounds !== undefined && actionId !== 'reload') command.rounds = options.rounds;
+
+      const resolution = resolveTacticalAction(encounter, command, context);
+      if (!resolution?.ok || !(resolution.effects?.durationMinutes > 0)) return false;
+      const effects = resolution.effects;
+      let projectedInventory = cloneInventory(this.inventory);
+      for (const request of effects.ammoConsumption ?? []) {
+        const removal = projectExactInventoryRemoval(projectedInventory, request?.stackId, request?.count);
+        if (!removal.ok) return false;
+        projectedInventory = removal.inventory;
+      }
+      for (const use of effects.weaponUses ?? []) {
+        const weapon = projectedInventory.find((item) => item.stackId === use?.stackId && item.tags?.includes('weapon'));
+        if (!weapon?.conditionState || isWeaponBroken(weapon.conditionState)) return false;
+        weapon.conditionState = applyWeaponWear(weapon.conditionState, {
+          attacks: Math.max(0, Number(use.attacks) || 0),
+          kills: Math.max(0, Number(use.kills ?? use.impacts) || 0),
+        });
+      }
+      const projectedLoads = normalizeFirearmLoads({
+        ...this.firearmLoads,
+        ...(effects.firearmLoads ?? {}),
+      }, [projectedInventory, this.baseInventory, this.vehicleInventory]);
+      const projectedVitals = applyVitalDelta(this.vitals, effects.vitalsDelta);
+      let projectedBody = normalizeBodyState(cloneSnapshot(this.body));
+      for (const wound of effects.newWounds ?? []) {
+        if (!wound?.id || projectedBody.wounds.some((entry) => entry.id === wound.id)) continue;
+        projectedBody.wounds.push(cloneSnapshot(wound));
+      }
+      projectedBody = normalizeBodyState(projectedBody);
+      const progression = applySkillExperience({
+        skills: this.skills,
+        skillXp: this.skillXp,
+        gains: effects.skillXp ?? {},
+        skillIds: skillDefinitions.map((skill) => skill.id),
+      });
+      const actionStartDay = this.day;
+      const actionStartTime = this.clockLabel;
+      const actionStartMinutes = this.totalWorldMinutes;
+      const durationMinutes = Math.max(1, Math.round(Number(effects.durationMinutes) || 0));
+      const actionEndMinutes = actionStartMinutes + durationMinutes;
+      const actionEndDay = Math.floor(actionEndMinutes / (24 * 60)) + 1;
+      const kills = Math.min(zombieState.count, Math.max(0, Math.round(Number(effects.zombieKills) || 0)));
+      if (kills !== Math.max(0, Math.round(Number(effects.zombieKills) || 0))) return false;
+      const nextZombieState = kills > 0
+        ? applyZombieKills(zombieState, kills, { day: actionEndDay, totalMinutes: actionEndMinutes })
+        : cloneSnapshot(zombieState);
+      const escapedZombieState = Number(effects.evasionMinutes) > 0
+        ? grantEvasionWindow(nextZombieState, {
+            totalMinutes: actionEndMinutes,
+            minutes: Math.max(0, Math.round(Number(effects.evasionMinutes) || 0)),
+          })
+        : nextZombieState;
+      const nextEncounter = normalizeTacticalEncounter(resolution.nextState, {
+        zombieCount: escapedZombieState.count,
+        seed: encounter.rng?.seed,
+      });
+      nextEncounter.player.loadedByWeapon = cloneSnapshot(projectedLoads);
+      const actionMeta = this.tacticalActionList.find((entry) => entry.id === actionId);
+      const eventText = formatTacticalEvents(resolution.events);
+
+      this.inventory = projectedInventory;
+      this.firearmLoads = projectedLoads;
+      this.vitals = projectedVitals;
+      this.body = projectedBody;
+      if ((effects.newWounds ?? []).some((wound) => wound.type === 'bite') && !this.hiddenTags.includes('疑似咬伤')) {
+        this.hiddenTags.push('疑似咬伤');
+      }
+      this.skills = progression.skills;
+      this.skillXp = progression.skillXp;
+      this.lastSkillGains = progression.appliedGains;
+      this.nodeZombieStates = { ...this.nodeZombieStates, [node.id]: escapedZombieState };
+      this.activeTacticalEncounter = nextEncounter;
+      this.reconcileEquipment();
+      this.survivalStats.actions += 1;
+      this.survivalStats.zombiesKilled += kills;
+      const levelUpText = levelUpSummary(progression);
+      const actionTitle = actionMeta?.label ?? tacticalActionLabel(actionId);
+      this.history.push({
+        day: actionStartDay,
+        time: actionStartTime,
+        title: `战术遭遇 · ${actionTitle}`,
+        log: `${node.name} · 第 ${encounter.turn + 1} 回合`,
+        action: actionTitle,
+        result: eventText || `你执行了${actionTitle}。`,
+        notes: [kills ? `击倒 ${kills}` : '', levelUpText].filter(Boolean).join(' / '),
+        score: Math.max(0, Math.min(100, 100 - Math.round(
+          (Number(actionMeta?.risk) || 0) <= 1
+            ? (Number(actionMeta?.risk) || 0) * 100
+            : Number(actionMeta?.risk) || 0
+        ))),
+      });
+      this.mapLog.unshift({
+        day: actionStartDay,
+        time: actionStartTime,
+        title: `战术遭遇 · ${actionTitle}`,
+        text: [eventText, kills ? `本回合击倒 ${kills} 只。` : '', levelUpText].filter(Boolean).join(' '),
+        mode: 'tactical',
+      });
+      this.mapLog = this.mapLog.slice(0, 80);
+      this.advanceSimulation({
+        minutes: durationMinutes,
+        mode: 'active',
+        noiseDelta: effects.noiseDelta ?? 0,
+        threatDelta: effects.threatDelta ?? 0,
+      });
+      if (this.isGameOver && this.activeTacticalEncounter && !isTacticalEncounterTerminal(this.activeTacticalEncounter)) {
+        const survivorDied = this.vitals.health <= 0 || (this.body?.infectionLevel ?? 0) >= 100;
+        this.activeTacticalEncounter = {
+          ...this.activeTacticalEncounter,
+          status: survivorDied ? 'dead' : 'aborted',
+        };
+      }
+      this.movesRemaining = this.movementAllowance();
+      this.finishIfGameOver();
+      return true;
+    },
+    dismissTacticalEncounter() {
+      if (!this.activeTacticalEncounter || !isTacticalEncounterTerminal(this.activeTacticalEncounter)) return false;
+      this.activeTacticalEncounter = null;
+      return true;
+    },
     canPerformWorldAction(kind = 'world', minutes = 0, requireFullWindow = true) {
       if (this.isGameOver) return false;
+      if (this.activeTacticalEncounter && !isTacticalEncounterTerminal(this.activeTacticalEncounter)) {
+        return kind === 'tactical' || kind === 'equip';
+      }
       if (!this.currentNodeId) return true;
       const zombieState = this.nodeZombieStates?.[this.currentNodeId];
       if (!zombieState) return false;
@@ -1324,7 +1595,12 @@ export const useGameStore = defineStore('game', {
         };
       }
       this.movesRemaining = this.movementAllowance();
-      if (this.applyMapOutcome(outcome, 'move', true)) return true;
+      if (this.applyMapOutcome(outcome, 'move', true)) {
+        if (this.activeTacticalEncounter && isTacticalEncounterTerminal(this.activeTacticalEncounter)) {
+          this.activeTacticalEncounter = null;
+        }
+        return true;
+      }
       this.currentNodeId = previousMapState.currentNodeId;
       this.inspectedNodeId = previousMapState.inspectedNodeId;
       this.visitedNodeIds = previousMapState.visitedNodeIds;
@@ -1341,7 +1617,12 @@ export const useGameStore = defineStore('game', {
       if (node) this.ensureNodeZombieState(node.id);
       const availableAction = this.currentNodeActions.find((entry) => entry.id === actionId);
       if (!node || !action || !availableAction || availableAction.disabled) return false;
-      const encounterKind = actionId === 'evade' ? 'evade' : ['combat_melee', 'combat_firearm'].includes(actionId) ? 'combat' : actionId;
+      if (['evade', 'combat_melee', 'combat_firearm'].includes(actionId)) {
+        const encounterKind = actionId === 'evade' ? 'evade' : 'combat';
+        if (!this.canPerformWorldAction(encounterKind, 0, false)) return false;
+        return this.startTacticalEncounter(actionId);
+      }
+      const encounterKind = actionId;
       if (!this.canPerformWorldAction(encounterKind, durationForAction(actionId))) return false;
       const outcome = resolveMapNodeAction({
         actionId,
@@ -1363,27 +1644,11 @@ export const useGameStore = defineStore('game', {
         zombiePopulation: this.nodeZombieStates[node.id]?.count ?? 0,
       });
       if (!outcome || !(outcome.minutes > 0)) return false;
-      if (['combat_melee', 'combat_firearm'].includes(actionId)) {
-        outcome.zombieKills = outcome.kills;
-        const usedWeapon = selectCombatInventoryWeapon(
-          this.inventory,
-          this.equippedWeaponStackId ?? this.equippedWeaponId,
-          actionId === 'combat_firearm',
-        );
-        if (usedWeapon) {
-          outcome.weaponWear = {
-            stackId: usedWeapon.stackId,
-            attacks: Math.max(1, Math.max(0, Number(outcome.kills) || 0) * 2 + (outcome.score >= 52 ? 1 : 3)),
-            kills: Math.max(0, Number(outcome.kills) || 0),
-          };
-        }
-      }
-      if (actionId === 'evade' && outcome.score >= 55) outcome.encounterEvasionMinutes = 180;
       outcome.skillXpGains = skillGainsForMapAction({
         actionId,
         outcome,
         inventory: this.inventory,
-        equippedWeaponId: this.equippedWeaponStackId ?? this.equippedWeaponId,
+        equippedWeaponId: outcome.usedWeaponStackId ?? this.equippedWeaponStackId ?? this.equippedWeaponId,
         node,
         vehicle: vehicleAtCurrentNodeForState(this.$state),
       });
@@ -2149,6 +2414,16 @@ function projectInventoryRemoval(inventory, id, count) {
   return { ok: true, inventory: original.filter((entry) => entry.count > 0) };
 }
 
+function projectExactInventoryRemoval(inventory, stackId, count) {
+  const quantity = positiveInteger(count);
+  const projected = cloneInventory(inventory);
+  if (!quantity || typeof stackId !== 'string' || !stackId) return { ok: false, inventory: projected };
+  const entry = projected.find((item) => item.stackId === stackId);
+  if (!entry || positiveInteger(entry.count) < quantity) return { ok: false, inventory: projected };
+  entry.count -= quantity;
+  return { ok: true, inventory: projected.filter((item) => item.count > 0) };
+}
+
 function projectInventoryTransaction(inventory, {
   consume = [],
   add = [],
@@ -2496,39 +2771,159 @@ function poweredMinutesForInterval({ day, clockMinutes, elapsedMinutes, world, b
   return powered;
 }
 
-function selectCombatInventoryWeapon(inventory, equippedWeaponId, firearm) {
-  const entries = (Array.isArray(inventory) ? inventory : []).filter((item) => (
-    item.count > 0
-    && item.tags?.includes('weapon')
-    && !isWeaponBroken(item.conditionState)
-    && (firearm ? item.tags?.includes('firearm') : !item.tags?.includes('firearm'))
+function firearmAmmoId(weaponId) {
+  return weaponId === 'shotgun' ? 'shotgun_shells' : '9mm_rounds';
+}
+
+function firearmCapacity(weaponId) {
+  if (weaponId === 'shotgun') return 6;
+  if (weaponId === 'm36_revolver') return 6;
+  return weaponId === 'm9_pistol' ? 15 : 0;
+}
+
+function normalizeFirearmLoads(rawLoads, inventories = []) {
+  const weapons = (Array.isArray(inventories) ? inventories : [])
+    .flatMap((inventory) => Array.isArray(inventory) ? inventory : [])
+    .filter((item) => item?.stackId && item.count > 0 && item.tags?.includes('firearm'));
+  const source = rawLoads && typeof rawLoads === 'object' && !Array.isArray(rawLoads) ? rawLoads : {};
+  return Object.fromEntries(weapons.flatMap((weapon) => {
+    const raw = source[weapon.stackId];
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+    const capacity = firearmCapacity(weapon.id);
+    if (capacity <= 0) return [];
+    const rounds = clampInteger(raw.rounds, 0, capacity, 0);
+    const ammoItemId = firearmAmmoId(weapon.id);
+    return [[weapon.stackId, {
+      ammoItemId,
+      ammoStackId: typeof raw.ammoStackId === 'string' ? raw.ammoStackId.slice(0, 160) : null,
+      rounds,
+    }]];
+  }));
+}
+
+function tacticalContextForState(state) {
+  const inventory = Array.isArray(state.inventory) ? state.inventory : [];
+  return {
+    node: mapNodes.find((entry) => entry.id === state.currentNodeId) ?? null,
+    inventory,
+    skills: state.skills ?? {},
+    vitals: state.vitals ?? {},
+    body: state.body ?? {},
+    world: {
+      ...(state.world ?? {}),
+      isNight: (state.clockMinutes ?? START_MINUTE) >= 20 * 60 || (state.clockMinutes ?? START_MINUTE) < 6 * 60,
+    },
+    traits: state.selectedTraits ?? [],
+    totalMinutes: worldMinutesForState(state),
+    day: state.day,
+    clockMinutes: state.clockMinutes,
+    usedSpace: storageUsedSpace(inventory),
+    capacity: inventoryCapacityForState(state, inventory),
+    equippedWeaponStackId: state.equippedWeaponStackId,
+    firearmLoads: normalizeFirearmLoads(state.firearmLoads, [state.inventory, state.baseInventory, state.vehicleInventory]),
+  };
+}
+
+function tacticalWeaponOptionsForState(state) {
+  const loads = normalizeFirearmLoads(state.firearmLoads, [state.inventory, state.baseInventory, state.vehicleInventory]);
+  return (Array.isArray(state.inventory) ? state.inventory : [])
+    .filter((item) => item.count > 0 && item.tags?.includes('weapon'))
+    .map((item) => {
+      const display = getItemConditionDisplay(item.conditionState);
+      const ammoItemId = item.tags?.includes('firearm') ? firearmAmmoId(item.id) : null;
+      const loaded = loads[item.stackId]?.rounds ?? 0;
+      const reserve = ammoItemId
+        ? state.inventory.filter((entry) => entry.id === ammoItemId).reduce((sum, entry) => sum + Math.max(0, Number(entry.count) || 0), 0)
+        : 0;
+      return {
+        stackId: item.stackId,
+        itemId: item.id,
+        name: item.name,
+        firearm: Boolean(item.tags?.includes('firearm')),
+        equipped: item.stackId === state.equippedWeaponStackId,
+        broken: isWeaponBroken(item.conditionState),
+        conditionLabel: display.label,
+        conditionTone: display.tone,
+        loaded,
+        capacity: firearmCapacity(item.id),
+        reserve,
+        ammoItemId,
+      };
+    });
+}
+
+function tacticalZombieTotal(encounter) {
+  return Object.values(encounter?.zombies ?? {}).reduce((sum, value) => (
+    sum + Math.max(0, Math.round(Number(value) || 0))
+  ), 0);
+}
+
+function selectTacticalStartingWeapon(state, preferredActionId = '') {
+  const inventory = Array.isArray(state.inventory) ? state.inventory : [];
+  const usable = inventory.filter((item) => (
+    item.count > 0 && item.tags?.includes('weapon') && !isWeaponBroken(item.conditionState)
   ));
-  const withAmmo = firearm
-    ? entries.filter((weapon) => inventory.some((item) => item.id === (weapon.id === 'shotgun' ? 'shotgun_shells' : '9mm_rounds') && item.count > 0))
-    : entries;
-  return withAmmo.find((item) => item.stackId === equippedWeaponId || item.id === equippedWeaponId)
-    ?? [...withAmmo].sort((left, right) => weaponPriority(right.id) - weaponPriority(left.id))[0]
+  const wantsFirearm = ['combat_firearm', 'fire'].includes(preferredActionId);
+  const wantsMelee = ['combat_melee', 'melee'].includes(preferredActionId);
+  const preferredType = usable.filter((item) => (
+    wantsFirearm ? item.tags?.includes('firearm') : wantsMelee ? !item.tags?.includes('firearm') : true
+  ));
+  return preferredType.find((item) => item.stackId === state.equippedWeaponStackId)
+    ?? usable.find((item) => item.stackId === state.equippedWeaponStackId)
+    ?? preferredType[0]
+    ?? usable[0]
     ?? null;
 }
 
-function weaponPriority(id) {
-  const priorities = {
-    shotgun: 23,
-    m9_pistol: 16,
-    m36_revolver: 15,
-    fire_axe: 18,
-    machete: 17,
-    crowbar: 14,
-    baseball_bat: 13,
-    hand_axe: 12,
-    crafted_spear: 12,
-    hunting_knife: 10,
-    hammer: 9,
-    pipe_wrench: 9,
-    wrench: 8,
-    kitchen_knife: 7,
-  };
-  return priorities[id] ?? 1;
+function tacticalEncounterSeed(worldSeed, nodeId, totalMinutes, encounterSequence) {
+  const input = `${clampInteger(worldSeed, 1, 0x7fffffff, 1)}:${nodeId ?? 'unknown'}:${clampInteger(totalMinutes, 0, Number.MAX_SAFE_INTEGER, 0)}:${clampInteger(encounterSequence, 1, 1_000_000_000, 1)}`;
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) || 1;
+}
+
+function tacticalActionLabel(actionId) {
+  return {
+    push: '推开',
+    melee: '近战挥击',
+    stomp: '踩踏',
+    step_back: '后退拉开',
+    aim: '稳定瞄准',
+    reload: '装填弹药',
+    fire: '开火',
+    disengage: '脱离接触',
+    brace: '稳住阵脚',
+  }[actionId] ?? '战术行动';
+}
+
+function formatTacticalEvents(events) {
+  return (Array.isArray(events) ? events : [])
+    .map((event) => {
+      if (typeof event === 'string') return event;
+      if (!event || typeof event !== 'object') return '';
+      if (event.type === 'player_action') {
+        const action = tacticalActionLabel(event.actionId);
+        const weapon = event.weaponName ? `（${event.weaponName}）` : '';
+        const kills = Number(event.zombieKills) > 0 ? `，击倒 ${Math.round(event.zombieKills)} 只` : '';
+        return `${action}${weapon}${event.success ? '成功' : '失手'}${kills}。`;
+      }
+      if (event.type === 'zombie_response') {
+        return {
+          closing: '尸群继续逼近。',
+          wounded: '尸体突破站位，你在扑咬中受伤。',
+          grabbed: `你被 ${Math.max(1, Math.round(Number(event.grabbedBy) || 1))} 只尸体抓住。`,
+          stumbled: '你勉强避开扑咬，但站位已经失衡。',
+          evaded: '你避开了这一轮扑咬。',
+        }[event.outcome] ?? '尸群重新挤压了你的站位。';
+      }
+      return event.text ?? event.message ?? event.label ?? '';
+    })
+    .filter(Boolean)
+    .join(' ')
+    .slice(0, 1000);
 }
 
 function normalizeHistory(history) {

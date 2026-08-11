@@ -55,7 +55,7 @@
       </div>
     </header>
 
-    <main class="map-playfield">
+    <main :class="['map-playfield', { 'tactical-drawer-open': tacticalModeVisible && activeDrawer === 'survival' }]">
       <section class="map-board" aria-label="地区节点地图">
         <svg class="map-edge-layer" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
           <line
@@ -90,7 +90,7 @@
         </button>
       </section>
 
-      <aside :class="['map-quick-panel', { 'has-active-encounter': encounterActive }]">
+      <aside :class="['map-quick-panel', { 'has-active-encounter': encounterActive || tacticalModeVisible, 'has-tactical-encounter': tacticalModeVisible }]">
         <p class="panel-kicker">CURRENT NODE</p>
         <h2>{{ currentNode?.name ?? '未定位' }}</h2>
         <div class="node-meta-row">
@@ -109,7 +109,17 @@
           </span>
         </div>
         <p>{{ currentNode?.description ?? '地图尚未初始化。' }}</p>
-        <div class="quick-action-row">
+        <div v-if="tacticalModeVisible" class="tactical-quick-summary" role="status" aria-live="polite">
+          <span>
+            <strong>{{ tacticalSummary.label }}</strong>
+            <small>{{ tacticalSummary.remainingZombies }} 只剩余 · {{ tacticalPressureLabel }}</small>
+          </span>
+          <button class="map-action-chip tactical-open-button" @click="openTacticalDrawer">
+            <strong>打开战术</strong>
+            <small>回合 {{ tacticalSummary.turn }}</small>
+          </button>
+        </div>
+        <div v-else class="quick-action-row">
           <button
             v-for="action in game.currentNodeActions"
             :key="action.id"
@@ -139,12 +149,24 @@
           物资
           <b v-if="game.storageWarningCount" class="storage-warning-badge" aria-hidden="true">{{ Math.min(99, game.storageWarningCount) }}</b>
         </button>
-        <button :class="{ active: activeDrawer === 'survival' }" @click="toggleDrawer('survival')">生存</button>
+        <button :class="[{ active: activeDrawer === 'survival' }, { 'tactical-tab': tacticalModeVisible }]" @click="toggleDrawer('survival')">
+          {{ tacticalModeVisible ? '战术' : '生存' }}
+        </button>
         <button :class="{ active: activeDrawer === 'skills' }" @click="toggleDrawer('skills')">技能</button>
         <button :class="{ active: activeDrawer === 'log' }" @click="toggleDrawer('log')">记录</button>
       </nav>
 
-      <aside v-if="activeDrawer" :class="['map-side-drawer', { 'inventory-storage-drawer': activeDrawer === 'inventory' }]">
+      <aside
+        v-if="activeDrawer"
+        :class="[
+          'map-side-drawer',
+          {
+            'inventory-storage-drawer': activeDrawer === 'inventory',
+            'tactical-encounter-drawer': activeDrawer === 'survival' && tacticalModeVisible,
+            'tactical-sheet-expanded': tacticalSheetExpanded,
+          },
+        ]"
+      >
         <header class="drawer-header">
           <div>
             <p class="panel-kicker">{{ drawerTitle.kicker }}</p>
@@ -544,7 +566,120 @@
           </section>
         </section>
 
-        <section v-else-if="activeDrawer === 'survival'" class="drawer-section survival-drawer-section">
+        <section v-else-if="activeDrawer === 'survival'" :class="['drawer-section', 'survival-drawer-section', { 'tactical-drawer-section': tacticalModeVisible }]">
+          <template v-if="tacticalModeVisible">
+            <section :class="['tactical-situation-card', `tone-${tacticalSummary.tone}`]">
+              <div class="drawer-subheading tactical-situation-heading">
+                <div>
+                  <p class="panel-kicker">{{ tacticalNodeName }}</p>
+                  <h3>{{ tacticalSummary.label }}</h3>
+                </div>
+                <span>{{ tacticalStatusLabel }}</span>
+              </div>
+              <div class="tactical-bucket-grid" aria-label="尸群距离分布">
+                <article v-for="bucket in tacticalBuckets" :key="bucket.id" :class="[`bucket-${bucket.id}`, { hot: bucket.hot }]">
+                  <span>{{ bucket.label }}</span>
+                  <strong>{{ bucket.value }}</strong>
+                </article>
+              </div>
+              <dl class="tactical-signal-row">
+                <div><dt>威胁</dt><dd>{{ tacticalThreatLabel }}</dd></div>
+                <div><dt>噪音</dt><dd>{{ tacticalNoiseLabel }}</dd></div>
+                <div><dt>距离</dt><dd>{{ tacticalRangeLabel }}</dd></div>
+                <div><dt>脱离</dt><dd>{{ tacticalSummary.escapeProgress }}%</dd></div>
+              </dl>
+            </section>
+
+            <section class="tactical-vitals" aria-label="战斗状态">
+              <article v-for="vital in tacticalVitals" :key="vital.id" :class="{ danger: vital.danger }">
+                <span>{{ vital.label }}</span>
+                <strong>{{ vital.value }}{{ vital.suffix }}</strong>
+                <progress v-if="vital.max" :value="vital.value" :max="vital.max"></progress>
+              </article>
+            </section>
+
+            <section class="tactical-weapon-section">
+              <div class="drawer-subheading">
+                <h3>当前主手</h3>
+                <span>{{ tacticalWeapon?.name || '徒手' }}</span>
+              </div>
+              <article :class="['tactical-weapon-card', tacticalWeapon?.conditionTone ? `tone-${tacticalWeapon.conditionTone}` : '']">
+                <div>
+                  <strong>{{ tacticalWeapon?.name || '徒手' }}</strong>
+                  <small>{{ tacticalWeaponConditionText }}</small>
+                </div>
+                <dl>
+                  <div><dt>装填</dt><dd>{{ tacticalWeapon?.loadedAmmo ?? '—' }}</dd></div>
+                  <div><dt>备用弹</dt><dd>{{ tacticalWeapon?.reserveAmmo ?? '—' }}</dd></div>
+                </dl>
+              </article>
+              <div v-if="tacticalWeaponOptionsForDisplay.length > 1" class="tactical-weapon-options" aria-label="切换战术武器">
+                <button
+                  v-for="weapon in tacticalWeaponOptionsForDisplay"
+                  :key="weapon.stackId"
+                  :class="[{ active: weapon.stackId === tacticalWeapon?.stackId }, weapon.conditionTone ? `tone-${weapon.conditionTone}` : '']"
+                  :disabled="weapon.disabled"
+                  :title="weapon.disabledReason"
+                  @click="selectTacticalWeapon(weapon)"
+                >
+                  <strong>{{ weapon.name }}</strong>
+                  <small>{{ weapon.conditionText }}</small>
+                </button>
+              </div>
+            </section>
+
+            <section v-if="!tacticalTerminal" class="tactical-action-section">
+              <div class="drawer-subheading">
+                <h3>选择行动</h3>
+                <span>{{ tacticalActions.filter((action) => !action.disabled).length }} / {{ tacticalActions.length }} 可用</span>
+              </div>
+              <div class="tactical-action-grid">
+                <button
+                  v-for="action in tacticalActions"
+                  :key="action.id"
+                  :class="['tactical-action-card', `tone-${action.tone}`, { blocked: action.disabled }]"
+                  :disabled="action.disabled || tacticalActionBusy || game.isGameOver"
+                  :title="action.disabledReason || action.description"
+                  @click="performTacticalAction(action)"
+                >
+                  <span class="tactical-action-heading"><strong>{{ action.label }}</strong><b>{{ action.riskLabel }}</b></span>
+                  <em>{{ action.estimatedOutcome }}</em>
+                  <small>{{ formatDuration(action.minutes) }} · 体力 {{ action.staminaLabel }} · 噪音 {{ action.noiseLabel }}</small>
+                  <i v-if="action.disabledReason">{{ action.disabledReason }}</i>
+                </button>
+              </div>
+            </section>
+
+            <section class="tactical-log-section" aria-live="polite">
+              <div class="drawer-subheading">
+                <h3>交锋记录</h3>
+                <span>最近 {{ tacticalLog.length }} 条</span>
+              </div>
+              <p v-if="tacticalActionFeedback" :class="['tactical-action-feedback', { danger: tacticalActionFeedbackTone === 'danger' }]">{{ tacticalActionFeedback }}</p>
+              <p v-if="!tacticalLog.length" class="survival-empty-state">尚未行动。先看距离、体力与退路。</p>
+              <ol v-else class="tactical-log-list">
+                <li v-for="entry in tacticalLog" :key="entry.id">
+                  <span>{{ entry.turnLabel }}</span>
+                  <p>{{ entry.text }}</p>
+                </li>
+              </ol>
+            </section>
+
+            <footer class="tactical-drawer-footer">
+              <template v-if="tacticalTerminal">
+                <button class="secondary" @click="endTacticalEncounter">结束遭遇</button>
+                <button class="primary-action" @click="continueAfterTactical">继续探索</button>
+              </template>
+              <template v-else>
+                <span>{{ tacticalFooterHint }}</span>
+                <button class="tactical-sheet-toggle" @click="tacticalSheetExpanded = !tacticalSheetExpanded">
+                  {{ tacticalSheetExpanded ? '收起面板' : '展开面板' }}
+                </button>
+              </template>
+            </footer>
+          </template>
+
+          <template v-else>
           <section class="survival-drawer-block evacuation-objective-card">
             <p class="panel-kicker">EVACUATION WINDOW</p>
             <h3>第 {{ game.maxDay }}–{{ game.evacuationDeadline }} 天抵达撤离区</h3>
@@ -655,6 +790,7 @@
               <button class="secondary" :disabled="!recipe.canCraft || game.isGameOver || encounterActive" @click="craftSurvivalRecipe(recipe)">制作</button>
             </article>
           </section>
+          </template>
         </section>
 
         <section v-else-if="activeDrawer === 'skills'" class="drawer-section skill-progress-section">
@@ -895,6 +1031,24 @@ const selectedStorageStackId = ref('');
 const transferQuantity = ref(1);
 const storageActionFeedback = ref('');
 const repairStackId = ref('');
+const tacticalActionBusy = ref(false);
+const tacticalActionFeedback = ref('');
+const tacticalActionFeedbackTone = ref('neutral');
+const tacticalSheetExpanded = ref(false);
+const selectedTacticalWeaponId = ref('');
+const lastAutoOpenedTacticalKey = ref('');
+const tacticalStartRequested = ref(false);
+const tacticalActionFallbacks = [
+  { id: 'push', label: '推开', estimatedOutcome: '争取身位，打断贴身尸体', staminaCost: 5, noiseDelta: 1 },
+  { id: 'melee', label: '近战攻击', estimatedOutcome: '用当前主手攻击贴身目标', staminaCost: 6, noiseLabel: '随武器' },
+  { id: 'stomp', label: '踩踏', estimatedOutcome: '终结倒地目标', staminaCost: 4, noiseDelta: 2 },
+  { id: 'step_back', label: '后撤', estimatedOutcome: '拉开距离并推进脱离', staminaCost: 4, noiseDelta: 0 },
+  { id: 'aim', label: '瞄准', estimatedOutcome: '提高下一次射击稳定性', staminaCost: 1, noiseDelta: 0 },
+  { id: 'reload', label: '装填', estimatedOutcome: '为当前枪械补充对应弹药', staminaCost: 1, noiseDelta: 1 },
+  { id: 'fire', label: '开火', estimatedOutcome: '高效杀伤，但会吸引更多尸群', staminaCost: 2, noiseLabel: '高（28–48）' },
+  { id: 'disengage', label: '脱离', estimatedOutcome: '尝试结束接触并建立安全窗口', staminaCost: 6, noiseDelta: 0 },
+  { id: 'brace', label: '稳住阵脚', estimatedOutcome: '恢复平衡并少量恢复耐力，降低下一次失误风险', staminaCost: 0, noiseDelta: 0 },
+];
 const searchSlotCountByQuality = {
   white: 4,
   green: 5,
@@ -972,6 +1126,142 @@ const encounterState = computed(() => game.currentEncounter && typeof game.curre
 const encounterActive = computed(() => Boolean(encounterState.value?.active));
 const encounterPopulation = computed(() => finiteRoundedOrNull(encounterState.value?.population) ?? localZombieState.value.population ?? 0);
 const encounterNodeName = computed(() => encounterState.value?.nodeName || currentNode.value?.name || '当前区域');
+const tacticalEncounterState = computed(() => game.activeTacticalEncounter && typeof game.activeTacticalEncounter === 'object'
+  ? game.activeTacticalEncounter
+  : null);
+const tacticalModeVisible = computed(() => Boolean(tacticalEncounterState.value));
+const tacticalSummary = computed(() => {
+  const supplied = game.tacticalEncounterSummary && typeof game.tacticalEncounterSummary === 'object'
+    ? game.tacticalEncounterSummary
+    : {};
+  const state = tacticalEncounterState.value ?? {};
+  const status = supplied.status ?? state.status ?? 'active';
+  const standing = finiteRoundedOrNull(supplied.standingZombies)
+    ?? ['distant', 'approaching', 'engaged'].reduce((sum, key) => sum + (finiteRoundedOrNull(state.zombies?.[key]) ?? 0), 0);
+  const remaining = finiteRoundedOrNull(supplied.remainingZombies)
+    ?? standing + (finiteRoundedOrNull(state.zombies?.downed) ?? 0);
+  const suppliedPressure = finiteRoundedOrNull(supplied.pressure ?? supplied.pressureScore);
+  const legacyPressureBand = typeof supplied.pressure === 'string' ? supplied.pressure : null;
+  const pressure = Math.max(0, Math.min(100, suppliedPressure ?? tacticalPressureScoreFromCount(standing)));
+  const pressureBand = supplied.pressureBand ?? legacyPressureBand ?? tacticalPressureBandFromScore(pressure);
+  const fallbackLabel = {
+    active: '尸群正在逼近',
+    cleared: '区域已经清场',
+    escaped: '已经脱离接触',
+    defeated: '你失去了抵抗能力',
+    dead: '你已失去生命体征',
+    aborted: '遭遇已经结束',
+  }[status] ?? '战术遭遇';
+  return {
+    ...supplied,
+    id: supplied.id ?? state.id ?? `legacy-${state.nodeId ?? game.currentNodeId ?? 'node'}`,
+    status,
+    turn: finiteRoundedOrNull(supplied.turn ?? state.turn) ?? 0,
+    rangeBand: supplied.rangeBand ?? state.rangeBand ?? 'near',
+    escapeProgress: Math.max(0, Math.min(100, finiteRoundedOrNull(supplied.escapeProgress ?? state.escapeProgress) ?? 0)),
+    remainingZombies: remaining,
+    standingZombies: standing,
+    pressure,
+    pressureBand,
+    canAct: supplied.canAct ?? status === 'active',
+    label: supplied.label ?? fallbackLabel,
+    tone: supplied.tone ?? (status === 'active' ? 'danger' : status === 'cleared' || status === 'escaped' ? 'good' : 'warn'),
+  };
+});
+const tacticalTerminal = computed(() => tacticalSummary.value.status !== 'active' || tacticalSummary.value.canAct === false);
+const tacticalNodeName = computed(() => {
+  const nodeId = tacticalEncounterState.value?.nodeId;
+  return game.visibleMapNodeList?.find((node) => node.id === nodeId)?.name
+    ?? tacticalEncounterState.value?.nodeName
+    ?? encounterNodeName.value;
+});
+const tacticalBuckets = computed(() => {
+  const buckets = game.tacticalEncounterSummary?.zombies ?? tacticalEncounterState.value?.zombies ?? {};
+  return [
+    { id: 'distant', label: '远距', value: finiteRoundedOrNull(buckets.distant) ?? 0 },
+    { id: 'approaching', label: '逼近', value: finiteRoundedOrNull(buckets.approaching) ?? 0 },
+    { id: 'engaged', label: '缠斗', value: finiteRoundedOrNull(buckets.engaged) ?? 0 },
+    { id: 'downed', label: '倒地', value: finiteRoundedOrNull(buckets.downed) ?? 0 },
+  ].map((bucket) => ({ ...bucket, hot: bucket.value > 0 && ['approaching', 'engaged'].includes(bucket.id) }));
+});
+const tacticalStatusLabel = computed(() => ({
+  active: `第 ${tacticalSummary.value.turn + 1} 回合`,
+  cleared: '清场',
+  escaped: '已脱离',
+  defeated: '失去战斗力',
+  dead: '死亡',
+  aborted: '生存期限结束',
+}[tacticalSummary.value.status] ?? tacticalSummary.value.status));
+const tacticalPressureLabel = computed(() => {
+  const label = {
+    low: '压力较低',
+    guarded: '需要警戒',
+    moderate: '需要警戒',
+    high: '高压接触',
+    critical: '致命包围',
+  }[tacticalSummary.value.pressureBand] ?? '压力未知';
+  return `${label} · ${Math.round(Number(tacticalSummary.value.pressure) || 0)}%`;
+});
+const tacticalRangeLabel = computed(() => ({
+  contact: '贴身', near: '近距', mid: '中距', far: '远距', distant: '远距',
+}[tacticalSummary.value.rangeBand] ?? String(tacticalSummary.value.rangeBand || '未知')));
+const tacticalThreatLabel = computed(() => `${Math.round(Number(tacticalSummary.value.threat ?? game.world?.threat) || 0)} · ${threatLabel.value}`);
+const tacticalNoiseLabel = computed(() => `${Math.round(Number(tacticalSummary.value.noise ?? game.world?.noise) || 0)} · ${noiseLabel.value}`);
+const tacticalVitals = computed(() => {
+  const carry = Array.isArray(game.storageContainers) ? game.storageContainers.find((container) => container.id === 'carry') : null;
+  const used = Number(carry?.usedSpace ?? game.usedSpace ?? 0) || 0;
+  const capacity = Number(carry?.capacity ?? game.capacity ?? 0) || 0;
+  const encumbrance = finiteRoundedOrNull(tacticalSummary.value.encumbrance)
+    ?? (capacity > 0 ? Math.round((used / capacity) * 100) : 0);
+  const bleeding = finiteRoundedOrNull(tacticalSummary.value.bleeding)
+    ?? (game.body?.wounds ?? []).filter((wound) => wound.bleeding).length;
+  return [
+    tacticalVital('health', '生命', tacticalSummary.value.health ?? game.vitals?.health, true),
+    tacticalVital('endurance', '耐力', tacticalSummary.value.endurance ?? game.vitals?.endurance, true),
+    tacticalVital('panic', '恐慌', tacticalSummary.value.panic ?? game.vitals?.panic, false),
+    tacticalVital('pain', '疼痛', tacticalSummary.value.pain ?? game.body?.pain, false),
+    tacticalVital('encumbrance', '负重', encumbrance, false),
+    { id: 'bleeding', label: '流血', value: bleeding, suffix: '处', max: null, danger: bleeding > 0 },
+  ];
+});
+const tacticalWeaponOptionsForDisplay = computed(() => {
+  const supplied = Array.isArray(game.tacticalWeaponOptions) ? game.tacticalWeaponOptions : [];
+  const fallback = supplied.length
+    ? supplied
+    : (Array.isArray(game.inventory) ? game.inventory.filter((item) => item.count > 0 && item.tags?.includes('weapon')) : []);
+  return fallback.map(normalizeTacticalWeapon);
+});
+const tacticalWeapon = computed(() => {
+  const desired = selectedTacticalWeaponId.value
+    || tacticalEncounterState.value?.selectedWeaponStackId
+    || game.equippedWeaponStackId;
+  return tacticalWeaponOptionsForDisplay.value.find((weapon) => weapon.stackId === desired)
+    ?? tacticalWeaponOptionsForDisplay.value.find((weapon) => weapon.equipped)
+    ?? null;
+});
+const tacticalWeaponConditionText = computed(() => tacticalWeapon.value?.conditionText ?? '无武器耐久');
+const tacticalActions = computed(() => {
+  const supplied = Array.isArray(game.tacticalActionList) ? game.tacticalActionList : [];
+  const source = tacticalActionFallbacks.map((fallback) => {
+    const action = supplied.find((entry) => entry?.id === fallback.id);
+    return action
+      ? { ...fallback, ...action }
+      : { ...fallback, enabled: false, disabledReason: '战术行动数据正在同步' };
+  });
+  return source.map(normalizeTacticalAction);
+});
+const tacticalLog = computed(() => {
+  const source = game.tacticalEncounterSummary?.log ?? tacticalEncounterState.value?.log ?? [];
+  if (!Array.isArray(source)) return [];
+  return source.slice(-8).reverse().map((entry, index) => ({
+    id: entry?.id ?? `${tacticalSummary.value.turn}-${index}-${typeof entry === 'string' ? entry : entry?.text ?? ''}`,
+    turnLabel: entry?.turn !== undefined ? `R${Math.max(1, Number(entry.turn) || 1)}` : `R${Math.max(1, tacticalSummary.value.turn - index)}`,
+    text: typeof entry === 'string' ? entry : entry?.text ?? entry?.message ?? entry?.label ?? describeTacticalEvent(entry),
+  }));
+});
+const tacticalFooterHint = computed(() => tacticalActionBusy.value
+  ? '正在结算这一回合…'
+  : `${tacticalPressureLabel.value} · ${tacticalWeapon.value?.name ?? '徒手'} · 先确认退路`);
 const securedUntilLabel = computed(() => {
   const until = normalizedSecuredUntilMinute.value;
   if (until === null) return currentNodeSecured.value ? '状态有效' : '未建立';
@@ -1196,6 +1486,7 @@ const vehicleStatusLabel = computed(() => {
 });
 const drawerTitle = computed(() => {
   if (activeDrawer.value === 'inventory') return { kicker: 'MATERIALS / STORAGE', title: '物资与仓储' };
+  if (activeDrawer.value === 'survival' && tacticalModeVisible.value) return { kicker: 'TACTICAL / ENCOUNTER', title: '战术遭遇' };
   if (activeDrawer.value === 'survival') return { kicker: 'SURVIVAL / BODY / BASE', title: '生存管理' };
   if (activeDrawer.value === 'skills') return { kicker: 'SKILLS / TRAITS', title: '技能与特性' };
   if (activeDrawer.value === 'log') return { kicker: 'MAP LOG', title: '记录' };
@@ -1246,6 +1537,40 @@ watch(
     if (preferred) selectedExternalContainerId.value = preferred.id;
     activeStoragePaneId.value = 'carry';
   }
+);
+
+watch(
+  [() => tacticalEncounterState.value?.id ?? '', () => encounterActive.value],
+  ([encounterKey, legacyEncounterActive]) => {
+    if (encounterKey) {
+      tacticalStartRequested.value = false;
+      selectedTacticalWeaponId.value = tacticalEncounterState.value?.selectedWeaponStackId ?? game.equippedWeaponStackId ?? '';
+      if (lastAutoOpenedTacticalKey.value !== encounterKey) {
+        lastAutoOpenedTacticalKey.value = encounterKey;
+        tacticalSheetExpanded.value = false;
+        tacticalActionFeedback.value = '';
+        activeDrawer.value = 'survival';
+      }
+      return;
+    }
+    if (!legacyEncounterActive) {
+      tacticalStartRequested.value = false;
+      return;
+    }
+    if (!tacticalStartRequested.value && typeof game.startTacticalEncounter === 'function') {
+      tacticalStartRequested.value = true;
+      activeDrawer.value = 'survival';
+      try {
+        const started = game.startTacticalEncounter();
+        if (started === false) tacticalStartRequested.value = false;
+      } catch (error) {
+        tacticalStartRequested.value = false;
+        tacticalActionFeedback.value = error instanceof Error ? error.message : '无法开始战术遭遇';
+        tacticalActionFeedbackTone.value = 'danger';
+      }
+    }
+  },
+  { immediate: true }
 );
 
 function toggleDrawer(drawer) {
@@ -1311,9 +1636,107 @@ function confirmMove() {
 }
 
 function runNodeAction(actionId) {
+  const tacticalPreferredActions = {
+    combat_melee: 'melee',
+    combat_firearm: 'fire',
+    evade: 'disengage',
+  };
+  if (tacticalPreferredActions[actionId] && typeof game.startTacticalEncounter === 'function') {
+    startTacticalEncounter(tacticalPreferredActions[actionId]);
+    return;
+  }
   const before = captureGameSnapshot();
   if (!game.resolveNodeAction(actionId)) return;
   showResolutionReport(before);
+}
+
+function openTacticalDrawer() {
+  activeDrawer.value = 'survival';
+  if (!tacticalEncounterState.value && encounterActive.value && typeof game.startTacticalEncounter === 'function') {
+    startTacticalEncounter();
+  }
+}
+
+function startTacticalEncounter(preferredActionId) {
+  if (typeof game.startTacticalEncounter !== 'function') return false;
+  tacticalStartRequested.value = true;
+  activeDrawer.value = 'survival';
+  try {
+    const started = game.startTacticalEncounter(preferredActionId);
+    if (started === false) {
+      tacticalStartRequested.value = false;
+      tacticalActionFeedback.value = '当前无法开始战术遭遇。';
+      tacticalActionFeedbackTone.value = 'danger';
+      return false;
+    }
+    return true;
+  } catch (error) {
+    tacticalStartRequested.value = false;
+    tacticalActionFeedback.value = error instanceof Error ? error.message : '无法开始战术遭遇';
+    tacticalActionFeedbackTone.value = 'danger';
+    return false;
+  }
+}
+
+async function performTacticalAction(action) {
+  if (!action || action.disabled || tacticalActionBusy.value) return;
+  if (typeof game.performTacticalAction !== 'function') {
+    tacticalActionFeedback.value = '战术行动服务尚未接入，无法结算这一回合。';
+    tacticalActionFeedbackTone.value = 'danger';
+    return;
+  }
+  tacticalActionBusy.value = true;
+  tacticalActionFeedback.value = '';
+  const encounterId = tacticalEncounterState.value?.id ?? tacticalEncounterState.value?.encounterId;
+  const expectedTurn = tacticalEncounterState.value?.turn;
+  try {
+    const result = await game.performTacticalAction(action.id, {
+      encounterId,
+      expectedTurn,
+      weaponStackId: tacticalWeapon.value?.stackId ?? null,
+    });
+    if (result === false || result?.ok === false) {
+      tacticalActionFeedback.value = tacticalDisabledReason(result?.disabledReason ?? result?.reason) || '行动未能执行，状态没有变化。';
+      tacticalActionFeedbackTone.value = 'danger';
+      return;
+    }
+    tacticalActionFeedback.value = formatTacticalResult(result, action);
+    tacticalActionFeedbackTone.value = 'neutral';
+  } catch (error) {
+    tacticalActionFeedback.value = error instanceof Error ? error.message : '战术行动结算失败';
+    tacticalActionFeedbackTone.value = 'danger';
+  } finally {
+    // Keep the input lock through the browser's double-click window. The
+    // captured encounter/turn above also lets the Store reject stale commands.
+    await new Promise((resolve) => setTimeout(resolve, 280));
+    tacticalActionBusy.value = false;
+  }
+}
+
+function selectTacticalWeapon(weapon) {
+  if (!weapon?.stackId || weapon.disabled) return;
+  selectedTacticalWeaponId.value = weapon.stackId;
+  if (weapon.stackId !== game.equippedWeaponStackId && typeof game.equipWeapon === 'function') {
+    const equipped = game.equipWeapon(weapon.stackId);
+    if (equipped === false) {
+      tacticalActionFeedback.value = weapon.disabledReason || '现在无法切换到这件武器。';
+      tacticalActionFeedbackTone.value = 'danger';
+    }
+  }
+}
+
+function endTacticalEncounter() {
+  tacticalStartRequested.value = true;
+  if (typeof game.dismissTacticalEncounter === 'function') game.dismissTacticalEncounter();
+  tacticalSheetExpanded.value = false;
+  activeDrawer.value = '';
+}
+
+function continueAfterTactical() {
+  tacticalStartRequested.value = true;
+  if (typeof game.dismissTacticalEncounter === 'function') game.dismissTacticalEncounter();
+  tacticalSheetExpanded.value = false;
+  activeDrawer.value = 'location';
 }
 
 function supportsItemUse(item) {
@@ -2068,6 +2491,167 @@ function closeResolutionReport() {
 
 function signed(value) {
   return value > 0 ? `+${value}` : `${value}`;
+}
+
+function tacticalPressureScoreFromCount(count = 0) {
+  if (count >= 6) return 85;
+  if (count >= 4) return 65;
+  if (count >= 2) return 40;
+  return 20;
+}
+
+function tacticalPressureBandFromScore(score = 0) {
+  if (score >= 75) return 'critical';
+  if (score >= 55) return 'high';
+  if (score >= 30) return 'moderate';
+  return 'low';
+}
+
+function tacticalVital(id, label, rawValue, higherIsGood) {
+  const value = Math.max(0, Math.min(100, Math.round(Number(rawValue) || 0)));
+  return {
+    id,
+    label,
+    value,
+    suffix: '%',
+    max: 100,
+    danger: higherIsGood ? value <= 30 : value >= 65,
+  };
+}
+
+function normalizeTacticalWeapon(weapon) {
+  const itemId = weapon?.itemId ?? weapon?.id;
+  const catalog = marketItems.find((item) => item.id === itemId) ?? {};
+  const stackId = weapon?.stackId ?? weapon?.instanceId ?? itemId ?? '';
+  const inventoryWeapon = Array.isArray(game.inventory)
+    ? game.inventory.find((item) => item.stackId === stackId)
+    : null;
+  const stateCondition = weapon?.conditionState?.condition ?? inventoryWeapon?.conditionState?.condition ?? {};
+  const conditionDisplay = weapon?.condition && typeof weapon.condition === 'object' ? weapon.condition : {};
+  const maximum = Math.max(1, Number(stateCondition.maximum ?? weapon?.maximumCondition ?? 100) || 100);
+  const current = Math.max(0, Number(stateCondition.current ?? weapon?.currentCondition ?? conditionDisplay.current ?? maximum) || 0);
+  const percent = Math.max(0, Math.min(100, Math.round(Number(conditionDisplay.percent) || (current / maximum) * 100)));
+  const loadedState = tacticalEncounterState.value?.player?.loadedByWeapon?.[stackId] ?? {};
+  const isFirearm = weapon?.firearm ?? weapon?.tags?.includes('firearm') ?? inventoryWeapon?.tags?.includes('firearm') ?? false;
+  const loaded = weapon?.loadedAmmo ?? weapon?.loaded ?? weapon?.ammo?.loaded ?? loadedState.rounds ?? loadedState.loaded;
+  const capacity = weapon?.ammoCapacity ?? weapon?.capacity ?? weapon?.ammo?.capacity ?? loadedState.capacity;
+  const reserve = weapon?.reserveAmmo ?? weapon?.reserve ?? weapon?.ammo?.reserve;
+  const disabledReason = tacticalDisabledReason(weapon?.disabledReason ?? weapon?.equipDisabledReason)
+    || (weapon?.broken ?? stateCondition.broken ? '当前武器已经损坏' : '');
+  return {
+    ...weapon,
+    itemId,
+    stackId,
+    name: weapon?.name ?? catalog.name ?? itemId ?? '未命名武器',
+    equipped: weapon?.equipped ?? stackId === game.equippedWeaponStackId,
+    disabled: Boolean(weapon?.disabled ?? weapon?.enabled === false) || Boolean(weapon?.broken ?? stateCondition.broken),
+    disabledReason,
+    conditionPercent: percent,
+    conditionText: `${weapon?.conditionLabel ?? conditionDisplay.label ?? (stateCondition.broken || percent <= 0 ? '已损坏' : '耐久')} · ${Math.round(current)} / ${Math.round(maximum)}（${percent}%）`,
+    loadedAmmo: loaded === undefined || loaded === null
+      ? (isFirearm ? `0 / ${capacity ?? '—'}` : '不适用')
+      : (isFirearm ? `${Math.max(0, Math.round(Number(loaded) || 0))}${capacity !== undefined ? ` / ${Math.max(0, Math.round(Number(capacity) || 0))}` : ''}` : '不适用'),
+    reserveAmmo: reserve === undefined || reserve === null
+      ? (isFirearm ? '待同步' : '不适用')
+      : (isFirearm ? Math.max(0, Math.round(Number(reserve) || 0)) : '不适用'),
+  };
+}
+
+function normalizeTacticalAction(action) {
+  const rawRisk = action?.risk ?? action?.riskPercent ?? action?.preview?.risk;
+  const riskNumber = finiteOrNull(rawRisk);
+  const riskPercent = riskNumber === null ? null : Math.max(0, Math.min(100, Math.round(riskNumber <= 1 ? riskNumber * 100 : riskNumber)));
+  const stamina = Math.abs(Math.round(Number(action?.staminaCost ?? action?.enduranceCost ?? action?.costs?.endurance ?? 0) || 0));
+  const noise = Math.round(Number(action?.noiseDelta ?? action?.noiseCost ?? action?.costs?.noise ?? 0) || 0);
+  const disabledReason = tacticalDisabledReason(action?.disabledReason);
+  const disabled = Boolean(action?.disabled ?? action?.enabled === false) || Boolean(disabledReason && action?.enabled !== true);
+  const riskTone = action?.tone ?? (riskPercent === null ? 'neutral' : riskPercent >= 65 ? 'danger' : riskPercent >= 35 ? 'warn' : 'good');
+  const estimated = action?.estimatedOutcome ?? action?.estimatedResult ?? action?.outcome ?? action?.preview?.label ?? action?.description;
+  return {
+    ...action,
+    id: action?.id,
+    label: action?.label ?? action?.name ?? action?.id,
+    description: action?.description ?? '',
+    minutes: Math.max(0, Math.round(Number(action?.minutes ?? action?.durationMinutes ?? action?.timeMinutes ?? 0) || 0)),
+    riskLabel: typeof rawRisk === 'string' ? rawRisk : riskPercent === null ? '风险未知' : `风险 ${riskPercent}%`,
+    tone: riskTone,
+    estimatedOutcome: typeof estimated === 'string' ? estimated : '结算结果取决于距离、状态与武器',
+    staminaLabel: action?.staminaLabel ?? (stamina ? `-${stamina}` : '±0'),
+    noiseLabel: action?.noiseLabel ?? (noise > 0 ? `+${noise}` : noise < 0 ? `${noise}` : '安静'),
+    disabled,
+    disabledReason,
+  };
+}
+
+function tacticalDisabledReason(reason) {
+  if (!reason) return '';
+  const labels = {
+    encounter_terminal: '遭遇已经结束',
+    stale_encounter: '遭遇状态已变化，请重新打开战术面板',
+    stale_turn: '回合状态已变化，请重新选择',
+    invalid_action: '这个行动当前不存在',
+    weapon_missing: '需要先装备一件可用武器',
+    weapon_broken: '当前武器已经损坏',
+    requires_weapon: '需要装备合适的武器',
+    requires_melee: '需要装备近战武器',
+    requires_melee_weapon: '需要装备近战武器',
+    requires_firearm: '需要装备枪械',
+    no_reachable_target: '当前距离没有近战可触及的目标',
+    no_contact_target: '没有贴身目标可推开',
+    currently_grabbed: '正被丧尸抓住，先推开挣脱',
+    no_downed_target: '没有倒地目标可踩踏',
+    too_exhausted: '耐力已经耗尽，无法执行这个动作',
+    already_at_range: '已经拉到最远战术距离',
+    no_standing_target: '没有仍然站立的目标',
+    firearm_unloaded: '枪械尚未装填',
+    firearm_full: '弹匣已经装满',
+    no_matching_ammo: '没有对应口径的备用弹药',
+    mixed_ammo_type: '弹匣内弹药类型不一致，无法混装',
+    need_more_distance: '距离太近，先后撤再脱离',
+    escape_not_prepared: '脱离准备不足，先拉开距离',
+    escape_ready: '已经拉开足够距离，现在应立即脱离',
+    no_downed_zombie: '没有可踩踏的倒地目标',
+    no_engaged_zombie: '没有贴身目标',
+    insufficient_endurance: '耐力不足',
+    cannot_disengage: '还没有安全的脱离窗口',
+  };
+  return labels[reason] ?? String(reason).replaceAll('_', ' ');
+}
+
+function describeTacticalEvent(event) {
+  if (!event || typeof event !== 'object') return '战况已更新。';
+  if (event.type === 'player_action') {
+    const label = tacticalActionFallbacks.find((action) => action.id === event.actionId)?.label ?? '行动';
+    const result = event.success ? '成功' : '失手';
+    const kills = Number(event.zombieKills) > 0 ? `，击倒 ${Math.round(event.zombieKills)} 只` : '';
+    return `${label}${result}${kills}。`;
+  }
+  if (event.type === 'zombie_response') {
+    const response = {
+      closing: '尸群继续逼近。',
+      grabbed: `你被 ${Math.max(1, Math.round(Number(event.grabbedBy) || 1))} 只丧尸抓住。`,
+      hit: '尸群突破站位并造成伤害。',
+      wounded: '尸群扑咬造成了新的流血伤口。',
+      stumbled: '你在反扑中踉跄失衡。',
+      evaded: '你避开了这一轮扑咬。',
+    }[event.outcome];
+    return response ?? '尸群作出反应，你的站位与压力发生变化。';
+  }
+  const labels = {
+    zombie_killed: '一只丧尸失去行动能力。',
+    player_hit: '你在交锋中受伤。',
+    weapon_wear: '主手武器在使用中损耗。',
+    reload: '弹药已装填。',
+  };
+  return labels[event.type] ?? event.description ?? event.type ?? '战况已更新。';
+}
+
+function formatTacticalResult(result, action) {
+  if (typeof result === 'string') return result;
+  if (result?.message) return result.message;
+  if (result?.summary) return typeof result.summary === 'string' ? result.summary : action.estimatedOutcome;
+  if (Array.isArray(result?.events) && result.events.length) return describeTacticalEvent(result.events[result.events.length - 1]);
+  return `${action.label}已结算，战况与消耗已同步。`;
 }
 
 function finiteOrNull(value) {

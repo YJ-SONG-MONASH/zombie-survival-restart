@@ -324,32 +324,44 @@ describe('game store invariants', () => {
     }));
   });
 
-  it('caps combat kills at the local population and keeps a cleared node secure', () => {
+  it('routes the legacy melee command into tactical combat and keeps a cleared node secure', () => {
     game.initializeMapState();
     expect(game.addItem(catalogItem('baseball_bat'), 1, true)).toBe(true);
     expect(game.moveToNode('dixie_highway_north')).toBe(true);
     game.nodeZombieStates.dixie_highway_north.count = 1;
-    const random = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    game.skills.strength = 10;
+    game.skills.fitness = 10;
     const killsBefore = game.survivalStats.zombiesKilled;
 
     expect(game.resolveNodeAction('combat_melee')).toBe(true);
+    expect(game.nodeZombieStates.dixie_highway_north.count).toBe(1);
+    expect(game.activeTacticalEncounter).toEqual(expect.objectContaining({ status: 'active', turn: 0 }));
+    game.activeTacticalEncounter.zombies = { distant: 0, approaching: 0, engaged: 0, downed: 1 };
+    game.activeTacticalEncounter.rangeBand = 'contact';
+    expect(game.performTacticalAction('stomp', {
+      encounterId: game.activeTacticalEncounter.id,
+      expectedTurn: game.activeTacticalEncounter.turn,
+    })).toBe(true);
 
     expect(game.nodeZombieStates.dixie_highway_north.count).toBe(0);
     expect(game.nodeZombieStates.dixie_highway_north.clearedDay).toBe(game.day);
     expect(game.survivalStats.zombiesKilled).toBe(killsBefore + 1);
     expect(game.currentEncounter).toBeNull();
     expect(game.currentNodeActions.find((action) => action.id === 'combat_melee')?.disabledReason).toContain('已经清空');
-    random.mockRestore();
   });
 
   it('grants a temporary action window after evasion without deleting the horde', () => {
     game.initializeMapState();
     expect(game.moveToNode('dixie_highway_north')).toBe(true);
     game.nodeZombieStates.dixie_highway_north.count = 10;
-    game.skills.sneaking = 2;
-    const random = vi.spyOn(Math, 'random').mockReturnValue(0.99);
-
+    game.skills.sneaking = 10;
     expect(game.resolveNodeAction('evade')).toBe(true);
+    expect(game.activeTacticalEncounter).toEqual(expect.objectContaining({ status: 'active' }));
+    game.activeTacticalEncounter.escapeProgress = 100;
+    expect(game.performTacticalAction('disengage', {
+      encounterId: game.activeTacticalEncounter.id,
+      expectedTurn: game.activeTacticalEncounter.turn,
+    })).toBe(true);
     expect(game.nodeZombieStates.dixie_highway_north.count).toBe(10);
     expect(game.isCurrentNodeSecured).toBe(true);
     expect(game.currentEncounter).toBeNull();
@@ -358,7 +370,6 @@ describe('game store invariants', () => {
     game.advanceSimulation({ minutes: 181, mode: 'active' });
     expect(game.isCurrentNodeSecured).toBe(false);
     expect(game.currentEncounter).toEqual(expect.objectContaining({ population: 10 }));
-    random.mockRestore();
   });
 
   it('repopulates a cleared current node after a day boundary', () => {

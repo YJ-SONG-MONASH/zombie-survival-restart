@@ -201,18 +201,25 @@ describe('v0.4 freshness, durability, and repair loop', () => {
   it('wears the exact equipped weapon, breaks it, then repairs it with diminishing materials', () => {
     expect(game.addItem(item('crafted_spear'), 1, true)).toBe(true);
     const spear = game.inventory.find((entry) => entry.id === 'crafted_spear');
-    spear.conditionState.condition.current = 2;
+    spear.conditionState.condition.current = 0.1;
     expect(game.equipWeapon(spear.stackId)).toBe(true);
     const encounter = game.ensureNodeZombieState(game.currentNodeId);
     encounter.count = 1;
     encounter.evasionUntilMinutes = 0;
-    vi.spyOn(Math, 'random').mockReturnValue(0.99);
 
     expect(game.resolveNodeAction('combat_melee')).toBe(true);
+    game.activeTacticalEncounter.zombies = { distant: 0, approaching: 1, engaged: 0, downed: 0 };
+    game.activeTacticalEncounter.rangeBand = 'near';
+    expect(game.performTacticalAction('melee', {
+      encounterId: game.activeTacticalEncounter.id,
+      expectedTurn: game.activeTacticalEncounter.turn,
+      weaponStackId: spear.stackId,
+    })).toBe(true);
     const broken = game.inventory.find((entry) => entry.stackId === spear.stackId);
     expect(broken.conditionState.condition.broken).toBe(true);
     expect(game.equippedWeaponStackId).toBeNull();
 
+    game.activeTacticalEncounter = null;
     game.ensureNodeZombieState(game.currentNodeId).count = 0;
     expect(game.addItem(item('duct_tape'), 1, true)).toBe(true);
     expect(game.repairWeapon(broken.stackId, 'duct_tape')).toEqual(expect.objectContaining({ ok: true }));
@@ -248,8 +255,8 @@ describe('v0.4 save migration', () => {
 
     game.loadPersistedState();
 
-    expect(SAVE_VERSION).toBe(4);
-    expect(game.saveVersion).toBe(4);
+    expect(SAVE_VERSION).toBe(5);
+    expect(game.saveVersion).toBe(5);
     expect(game.baseInventory).toEqual([]);
     expect(game.vehicleInventory).toEqual([]);
     expect(game.inventory.every((entry) => entry.stackId && entry.conditionState)).toBe(true);
