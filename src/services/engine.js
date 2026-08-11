@@ -193,6 +193,7 @@ export function resolveNodeAction({
   equippedWeaponId = null,
   searchCount = 0,
   manualLoot = null,
+  zombiePopulation = null,
 }) {
   const traitIds = new Set(traits.map((trait) => trait.id));
   const danger = node.danger ?? 3;
@@ -223,6 +224,7 @@ export function resolveNodeAction({
       vitals,
       world,
       equippedWeaponId,
+      zombiePopulation,
     });
     return mapOutcome({
       day,

@@ -1,5 +1,6 @@
 const MINUTES_PER_DAY = 24 * 60;
 const START_MINUTE = 8 * 60;
+const DIRTY_BANDAGE_HOURS = 8;
 
 export const weatherDefinitions = [
   { id: 'clear', label: '晴朗', icon: '☀', temperatureC: 22, searchMod: 4, combatMod: 2, noiseCover: 0 },
@@ -326,6 +327,7 @@ export function resolveCombatEncounter({
   vitals = {},
   world = {},
   equippedWeaponId = null,
+  zombiePopulation = null,
   rng = Math.random,
 } = {}) {
   const danger = clampNumber(node?.danger, 3, 1, 8);
@@ -336,12 +338,33 @@ export function resolveCombatEncounter({
   const nightPenalty = isNight(clockMinutes) ? 9 : 0;
   const weather = weatherDefinitions.find((entry) => entry.id === world?.weatherId) ?? weatherDefinitions[0];
   const threatPenalty = (Number(world?.threat) || danger * 10) * 0.12;
+  const availableZombies = zombiePopulation !== null && zombiePopulation !== undefined && Number.isFinite(Number(zombiePopulation))
+    ? finiteInteger(zombiePopulation, 0, 0, 120)
+    : null;
+
+  if (availableZombies === 0) {
+    return {
+      ok: false,
+      title: '地区已经清空',
+      score: 0,
+      kills: 0,
+      consume: [],
+      wounds: [],
+      noiseDelta: 0,
+      threatDelta: 0,
+      minutes: 0,
+      mode: 'active',
+      vitals: {},
+      result: `${node?.name ?? '这个地区'}暂时没有需要处理的游荡者。`,
+      notes: '没有有效目标',
+    };
+  }
 
   if (approach === 'evade') {
     const score = clamp(
-      40 + (skills.sneaking ?? 0) * 7 + (skills.lightfooted ?? 0) * 4 + (skills.fitness ?? 5) * 2 +
+      52 + (skills.sneaking ?? 0) * 7 + (skills.lightfooted ?? 0) * 4 + (skills.fitness ?? 5) * 2 +
       (traitIds.has('inconspicuous') ? 10 : 0) + (traitIds.has('graceful') ? 7 : 0) + weather.noiseCover -
-      danger * 7 - fatiguePenalty - nightPenalty + roll * 20,
+      danger * 6 - fatiguePenalty - nightPenalty + roll * 20,
       5,
       98
     );
@@ -368,8 +391,8 @@ export function resolveCombatEncounter({
       },
       result: score >= 55
         ? `你贴着${node?.name ?? '街区'}的遮蔽物绕开尸群，没有把整条街拖在身后。`
-        : `撤离路线被游荡者截断，你撞开缺口才勉强脱身。`,
-      notes: score >= 55 ? '保持安静 / 尸群压力下降' : '仓促撤离 / 体力消耗严重',
+        : `撤离路线被游荡者截断，你勉强退回掩体，尸群仍然封住出口。`,
+      notes: score >= 55 ? '保持安静 / 尸群压力下降' : '绕行失败 / 体力消耗严重',
     };
   }
 
@@ -406,9 +429,10 @@ export function resolveCombatEncounter({
     5,
     98
   );
-  const kills = firearm
+  const potentialKills = firearm
     ? clamp(Math.round(1 + score / 18 + danger / 2), 2, 12)
     : clamp(Math.round(score / 30 + weaponPower / 9), 1, 5);
+  const kills = availableZombies === null ? potentialKills : Math.min(potentialKills, availableZombies);
   const injuryThreshold = firearm ? 25 : 47;
   const wound = score < injuryThreshold ? createWound({ danger, score, day, clockMinutes, source: `${node?.name ?? '街区'}战斗`, rng }) : null;
   const weaponName = weapon?.name ?? '赤手空拳';
@@ -435,7 +459,7 @@ export function resolveCombatEncounter({
       stress: success ? (firearm ? 6 : -2) : 12,
     },
     result: success
-      ? `你用${weaponName}在${node?.name ?? '街区'}击倒 ${kills} 具游荡者，暂时清出一条路线。`
+      ? `你用${weaponName}在${node?.name ?? '街区'}击倒 ${kills} 具游荡者，${availableZombies !== null && kills >= availableZombies ? '本地尸群暂时被清空。' : '暂时清出一条路线。'}`
       : `你用${weaponName}硬撑着打开缺口，但尸群没有真正散开。`,
     notes: `${weaponName} / 击倒 ${kills} / ${firearm ? '巨响会吸引远处尸群' : wound ? '近战中受伤' : '保持近战节奏'}`,
   };
@@ -458,6 +482,8 @@ export function createWound({ danger = 3, score = 40, day = 1, clockMinutes = ST
     severity,
     bleeding: type !== 'blunt',
     bandaged: false,
+    dirtyBandage: false,
+    bandageAgeHours: 0,
     disinfected: false,
     infected: false,
     knoxInfection: type === 'bite',
@@ -513,17 +539,35 @@ function progressWounds(body, vitals, elapsedHours, traitIds) {
     .map((wound) => {
       const oldAgeHours = wound.ageHours;
       const wasInfected = Boolean(wound.infected);
-      const next = { ...wound, ageHours: oldAgeHours + elapsedHours };
+      const oldBandageAgeHours = wound.bandaged ? wound.bandageAgeHours ?? 0 : 0;
+      const wasDirtyBandage = Boolean(wound.bandaged && wound.dirtyBandage);
+      const next = {
+        ...wound,
+        ageHours: oldAgeHours + elapsedHours,
+        bandageAgeHours: wound.bandaged ? oldBandageAgeHours + elapsedHours : 0,
+      };
+      const cleanBandagedHours = wound.bandaged && !wasDirtyBandage
+        ? Math.min(elapsedHours, Math.max(0, DIRTY_BANDAGE_HOURS - oldBandageAgeHours))
+        : 0;
+      if (next.bandaged && (wasDirtyBandage || next.bandageAgeHours >= DIRTY_BANDAGE_HOURS)) next.dirtyBandage = true;
+      if (!next.bandaged) next.dirtyBandage = false;
       if (next.bleeding && !next.bandaged) vitals.health -= next.severity * elapsedHours * 0.45;
-      if (!next.disinfected && !next.bandaged && next.ageHours >= 6 && next.type !== 'blunt') next.infected = true;
+      const ageThresholdOffset = Math.max(0, 6 - oldAgeHours);
+      const unprotectedOffset = !next.bandaged
+        ? 0
+        : wasDirtyBandage
+          ? 0
+          : Math.max(0, DIRTY_BANDAGE_HOURS - oldBandageAgeHours);
+      const infectionExposureHours = Math.max(0, elapsedHours - Math.max(ageThresholdOffset, unprotectedOffset));
+      if (!next.disinfected && infectionExposureHours > 0 && next.type !== 'blunt') next.infected = true;
       if (next.knoxInfection) infectionGain += elapsedHours * (traitIds.has('resilient') ? 1.25 : traitIds.has('prone_to_illness') ? 2.3 : 1.75);
       else if (next.infected) {
         const infectedHours = wasInfected
           ? elapsedHours
-          : Math.max(0, next.ageHours - 6) - Math.max(0, oldAgeHours - 6);
+          : infectionExposureHours;
         infectionGain += infectedHours * (next.disinfected ? 0.12 : 0.42);
       }
-      if (next.bandaged && next.disinfected && !next.knoxInfection) next.severity = Math.max(0, next.severity - elapsedHours * 0.025);
+      if (next.bandaged && next.disinfected && !next.knoxInfection) next.severity = Math.max(0, next.severity - cleanBandagedHours * 0.025);
       return next;
     })
     .filter((wound) => wound.severity > 0.08);
@@ -547,6 +591,8 @@ function normalizeWound(wound) {
     severity: clampNumber(wound.severity, 1, 0, 5),
     bleeding: Boolean(wound.bleeding),
     bandaged: Boolean(wound.bandaged),
+    dirtyBandage: Boolean(wound.bandaged && wound.dirtyBandage),
+    bandageAgeHours: Boolean(wound.bandaged) ? clampNumber(wound.bandageAgeHours, 0, 0, 1000) : 0,
     disinfected: Boolean(wound.disinfected),
     infected: Boolean(wound.infected),
     knoxInfection: Boolean(wound.knoxInfection) || type === 'bite',
@@ -595,4 +641,4 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-export { MINUTES_PER_DAY, START_MINUTE };
+export { DIRTY_BANDAGE_HOURS, MINUTES_PER_DAY, START_MINUTE };

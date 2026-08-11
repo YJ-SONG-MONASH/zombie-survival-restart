@@ -90,12 +90,23 @@
         </button>
       </section>
 
-      <aside class="map-quick-panel">
+      <aside :class="['map-quick-panel', { 'has-active-encounter': encounterActive }]">
         <p class="panel-kicker">CURRENT NODE</p>
         <h2>{{ currentNode?.name ?? '未定位' }}</h2>
         <div class="node-meta-row">
           <span>{{ currentNodeType?.label ?? '未知类型' }}</span>
           <span>风险 {{ dangerStars(currentNode?.danger) }}</span>
+        </div>
+        <div
+          :class="['local-zombie-strip', `tone-${localZombieTone}`, { 'encounter-active': encounterActive }]"
+          role="status"
+          aria-live="polite"
+        >
+          <b>{{ encounterActive ? '!' : currentNodeSecured ? '✓' : '☣' }}</b>
+          <span>
+            <strong>{{ localZombieHeadline }}</strong>
+            <small>{{ localZombieDetail }}</small>
+          </span>
         </div>
         <p>{{ currentNode?.description ?? '地图尚未初始化。' }}</p>
         <div class="quick-action-row">
@@ -190,6 +201,7 @@
               <button v-else-if="canMove(inspectedNode?.id)" class="primary-action" @click="queueMoveToNode(inspectedNode)">
                 前往这里
               </button>
+              <span v-else-if="encounterActive">尸群封住了出口，先清场或成功绕行。</span>
               <span v-else>需要接近后才能移动到这里。</span>
             </div>
 
@@ -297,10 +309,10 @@
                 <div class="scene-inspection-actions">
                   <button
                     class="primary-action"
-                    :disabled="!selectedSearchTarget || inspectedNode?.id !== currentNode?.id || isSearchableSpent(selectedSearchTarget)"
+                    :disabled="encounterActive || !selectedSearchTarget || inspectedNode?.id !== currentNode?.id || isSearchableSpent(selectedSearchTarget)"
                     @click="openLocationSearch(selectedSearchTarget)"
                   >
-                    {{ selectedSearchTarget ? searchButtonTextFor(selectedSearchTarget) : '选择一个对象' }}
+                    {{ encounterActive ? '遭遇中无法搜索' : selectedSearchTarget ? searchButtonTextFor(selectedSearchTarget) : '选择一个对象' }}
                   </button>
                 </div>
               </template>
@@ -338,6 +350,7 @@
           <p class="equipped-weapon-line">
             主手：<strong>{{ game.equippedWeapon?.name ?? '徒手' }}</strong>
           </p>
+          <p v-if="encounterActive" class="drawer-encounter-warning">遭遇中只能更换武器；先清场或成功绕行再使用物品。</p>
           <p v-if="game.inventory.length === 0">空空如也</p>
           <ul v-else class="map-inventory-list">
             <li v-for="item in game.inventory" :key="item.id" :class="{ equipped: game.equippedWeapon?.id === item.id }">
@@ -352,7 +365,7 @@
                 </span>
               </div>
               <div v-if="canUseInventoryItem(item) || isWeapon(item)" class="inventory-item-actions">
-                <button v-if="canUseInventoryItem(item)" class="secondary" @click="useInventoryItem(item)">使用</button>
+                <button v-if="canUseInventoryItem(item)" class="secondary" :disabled="encounterActive" @click="useInventoryItem(item)">使用</button>
                 <button v-if="isWeapon(item)" class="secondary" @click="toggleWeapon(item)">
                   {{ game.equippedWeapon?.id === item.id ? '卸下' : '装备' }}
                 </button>
@@ -372,6 +385,32 @@
             <h3>第 {{ game.maxDay }}–{{ game.evacuationDeadline }} 天抵达撤离区</h3>
             <p>目标：谷地检查点或路易斯维尔外环。提前抵达可以整备，错过窗口则本局失败。</p>
             <strong>{{ evacuationStatus }}</strong>
+          </section>
+
+          <section :class="['survival-drawer-block', 'local-zombie-card', `tone-${localZombieTone}`]">
+            <div class="drawer-subheading">
+              <h3>本地尸群</h3>
+              <span>{{ localZombieStatusLabel }}</span>
+            </div>
+            <div class="local-zombie-overview">
+              <strong>{{ localZombiePopulationLabel }}</strong>
+              <progress
+                v-if="localZombieState.population !== null && localZombieState.cap !== null"
+                :value="localZombieState.population"
+                :max="Math.max(1, localZombieState.cap)"
+              ></progress>
+              <small>{{ localZombieDetail }}</small>
+            </div>
+            <dl class="base-status-grid local-zombie-stats">
+              <div><dt>活动数量</dt><dd>{{ localZombieState.population ?? '未知' }}</dd></div>
+              <div><dt>区域上限</dt><dd>{{ localZombieState.cap ?? '未知' }}</dd></div>
+              <div><dt>最近清场</dt><dd>{{ localZombieState.clearedDay ? `第 ${localZombieState.clearedDay} 天` : '尚无记录' }}</dd></div>
+              <div><dt>临时安全</dt><dd>{{ localZombieState.population === 0 ? '已清场' : currentNodeTemporarilySecured ? securedUntilLabel : '未建立' }}</dd></div>
+            </dl>
+            <div v-if="encounterActive" class="drawer-encounter-warning" role="alert">
+              <b>遭遇进行中</b>
+              <span>{{ encounterNodeName }} · {{ encounterPopulation }} 只正在接触，优先清场或脱离。</span>
+            </div>
           </section>
 
           <section class="survival-drawer-block">
@@ -402,6 +441,7 @@
               <div class="wound-tags">
                 <span v-if="wound.bleeding" class="danger">流血</span>
                 <span v-if="wound.bandaged" class="good">已包扎</span>
+                <span v-if="wound.dirtyBandage" class="danger">绷带已脏</span>
                 <span v-if="wound.disinfected" class="good">已消毒</span>
                 <span v-if="wound.infected" class="warn">伤口感染</span>
                 <span v-if="wound.knoxInfection" class="danger">疑似 Knox 感染</span>
@@ -445,23 +485,36 @@
                 <strong>{{ recipe.name }}</strong>
                 <small>{{ formatDuration(recipe.minutes) }} · 产出 {{ recipe.result?.name ?? recipe.resultId }}</small>
                 <p>{{ recipe.description }}</p>
-                <em>{{ recipe.canCraft ? '材料与技能已满足' : recipe.missing.join(' · ') }}</em>
+                <em>{{ encounterActive ? '遭遇中无法制作' : recipe.canCraft ? '材料与技能已满足' : recipe.missing.join(' · ') }}</em>
               </div>
-              <button class="secondary" :disabled="!recipe.canCraft || game.isGameOver" @click="craftSurvivalRecipe(recipe)">制作</button>
+              <button class="secondary" :disabled="!recipe.canCraft || game.isGameOver || encounterActive" @click="craftSurvivalRecipe(recipe)">制作</button>
             </article>
           </section>
         </section>
 
-        <section v-else-if="activeDrawer === 'skills'" class="drawer-section">
-          <h3>最高技能</h3>
-          <div class="skill-grid compact-skill-grid">
-            <span v-for="skill in topSkills" :key="skill.id" class="skill-chip">
-              <span class="skill-icon">
-                <img :src="skillIconSrc(skill)" :alt="skill.canonicalName" @error="markIconMissing" />
+        <section v-else-if="activeDrawer === 'skills'" class="drawer-section skill-progress-section">
+          <div class="drawer-subheading">
+            <h3>技能成长</h3>
+            <span>{{ skillProgressForDisplay.length }} 项</span>
+          </div>
+          <div class="skill-progress-list">
+            <article v-for="skill in skillProgressForDisplay" :key="skill.id" class="skill-progress-card">
+              <span class="skill-icon skill-progress-icon">
+                <img v-if="skill.iconFile" :src="skillIconSrc(skill)" :alt="skill.canonicalName || skill.label" @error="markIconMissing" />
                 <span>{{ skill.fallbackIcon }}</span>
               </span>
-              {{ skill.label }} {{ skill.level }}
-            </span>
+              <div class="skill-progress-copy">
+                <div>
+                  <strong>{{ skill.label }}</strong>
+                  <b>Lv.{{ skill.level }}</b>
+                </div>
+                <progress :value="skill.progress" max="100"></progress>
+                <small>
+                  <span>{{ skill.xpLabel }}</span>
+                  <em v-if="skill.recentGain > 0">最近 +{{ skill.recentGain }} XP</em>
+                </small>
+              </div>
+            </article>
           </div>
           <h3>特性</h3>
           <p v-if="game.selectedTraits.length === 0">无特性开局</p>
@@ -690,6 +743,111 @@ const topSkills = computed(() => skillDefinitions
   .map((skill) => ({ ...skill, level: game.skills[skill.id] ?? 0 }))
   .sort((a, b) => b.level - a.level)
   .slice(0, 10));
+const skillProgressForDisplay = computed(() => {
+  const progressEntries = Array.isArray(game.skillProgressList) && game.skillProgressList.length
+    ? game.skillProgressList
+    : topSkills.value.map((skill) => ({ ...skill, xp: null, nextLevelXp: null, progress: 0, recentGain: 0 }));
+  return progressEntries
+    .map((entry) => {
+      const definition = skillDefinitions.find((skill) => skill.id === entry.id) ?? {};
+      const xp = finiteOrNull(entry.xp);
+      const currentLevelXp = finiteOrNull(entry.currentLevelXp) ?? xp;
+      const nextLevelXp = finiteOrNull(entry.nextLevelXp);
+      const suppliedProgress = finiteOrNull(entry.progress);
+      const calculatedProgress = nextLevelXp && xp !== null ? (xp / nextLevelXp) * 100 : 0;
+      return {
+        ...definition,
+        ...entry,
+        label: entry.label ?? definition.label ?? entry.id,
+        canonicalName: definition.canonicalName ?? entry.label ?? entry.id,
+        fallbackIcon: definition.fallbackIcon ?? String(entry.label ?? entry.id).slice(0, 2).toUpperCase(),
+        level: Math.max(0, Math.round(Number(entry.level) || 0)),
+        progress: Math.max(0, Math.min(100, suppliedProgress ?? calculatedProgress)),
+        recentGain: Math.max(0, finiteOrNull(entry.recentGain) ?? 0),
+        xpLabel: currentLevelXp === null
+          ? 'XP 数据待同步'
+          : nextLevelXp === null || nextLevelXp <= 0
+            ? `${formatNumber(xp ?? currentLevelXp)} XP · 已满级`
+            : `${formatNumber(currentLevelXp)} / ${formatNumber(nextLevelXp)} XP`,
+      };
+    })
+    .sort((a, b) => b.level - a.level || b.progress - a.progress || a.label.localeCompare(b.label, 'zh-CN'));
+});
+const currentTotalMinute = computed(() => Math.max(0, (Math.max(1, Number(game.day) || 1) - 1) * 1440 + (Number(game.clockMinutes) || 0)));
+const localZombieState = computed(() => {
+  const state = game.currentZombieState && typeof game.currentZombieState === 'object'
+    ? game.currentZombieState
+    : {};
+  return {
+    population: finiteRoundedOrNull(state.population ?? state.count),
+    cap: finiteRoundedOrNull(state.cap ?? state.capacity),
+    clearedDay: finiteRoundedOrNull(state.clearedDay),
+    securedUntilMinute: finiteRoundedOrNull(state.securedUntilMinute ?? state.evasionUntilMinutes),
+  };
+});
+const currentNodeSecured = computed(() => {
+  if (typeof game.isCurrentNodeSecured === 'boolean') return game.isCurrentNodeSecured;
+  const until = normalizedSecuredUntilMinute.value;
+  return until !== null && until > currentTotalMinute.value;
+});
+const currentNodeTemporarilySecured = computed(() => currentNodeSecured.value && localZombieState.value.population !== 0);
+const normalizedSecuredUntilMinute = computed(() => {
+  const until = localZombieState.value.securedUntilMinute;
+  if (until === null) return null;
+  return until < 1440 && game.day > 1 ? (game.day - 1) * 1440 + until : until;
+});
+const encounterState = computed(() => game.currentEncounter && typeof game.currentEncounter === 'object' ? game.currentEncounter : null);
+const encounterActive = computed(() => Boolean(encounterState.value?.active));
+const encounterPopulation = computed(() => finiteRoundedOrNull(encounterState.value?.population) ?? localZombieState.value.population ?? 0);
+const encounterNodeName = computed(() => encounterState.value?.nodeName || currentNode.value?.name || '当前区域');
+const securedUntilLabel = computed(() => {
+  const until = normalizedSecuredUntilMinute.value;
+  if (until === null) return currentNodeSecured.value ? '状态有效' : '未建立';
+  const day = Math.floor(until / 1440) + 1;
+  const minuteOfDay = ((until % 1440) + 1440) % 1440;
+  const hour = Math.floor(minuteOfDay / 60);
+  const minute = minuteOfDay % 60;
+  return `至第 ${day} 天 ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+});
+const localZombiePopulationLabel = computed(() => {
+  const { population, cap } = localZombieState.value;
+  if (population === null) return '尸群数据等待同步';
+  return cap === null ? `${population} 只活动尸体` : `${population} / ${cap} 只`;
+});
+const localZombieStatusLabel = computed(() => {
+  if (encounterActive.value) return '遭遇中';
+  if (localZombieState.value.population === 0) return '已经清场';
+  if (currentNodeTemporarilySecured.value) return '临时安全';
+  if (localZombieState.value.population === null) return '情报未知';
+  return '尸群活跃';
+});
+const localZombieHeadline = computed(() => encounterActive.value
+  ? `遭遇中 · ${encounterPopulation.value} 只`
+  : localZombieState.value.population === null
+    ? '本地尸群情报未知'
+    : `本地尸群 ${localZombiePopulationLabel.value}`);
+const localZombieDetail = computed(() => {
+  if (encounterActive.value) return `${encounterNodeName.value} · 清场或脱离后再整备`;
+  if (localZombieState.value.population === 0) {
+    return localZombieState.value.clearedDay
+      ? `第 ${localZombieState.value.clearedDay} 天完成清场，当前区域没有活动尸体`
+      : '区域已清空，当前没有活动尸体';
+  }
+  if (currentNodeTemporarilySecured.value) return `临时安全 ${securedUntilLabel.value}`;
+  if (localZombieState.value.clearedDay) return `第 ${localZombieState.value.clearedDay} 天完成清场，目前没有安全窗口`;
+  if (localZombieState.value.population === null) return '等待本地尸群数据';
+  return '区域仍有活动尸群，行动可能触发遭遇';
+});
+const localZombieTone = computed(() => {
+  if (encounterActive.value) return 'danger';
+  const { population, cap } = localZombieState.value;
+  if (population === null) return 'neutral';
+  if (population === 0) return 'clear';
+  if (currentNodeTemporarilySecured.value) return 'secured';
+  if (cap && population / cap >= 0.7) return 'danger';
+  if (cap && population / cap >= 0.35) return 'warn';
+  return 'active';
+});
 const visibleNodes = computed(() => game.visibleMapNodeList);
 const nodeById = computed(() => Object.fromEntries(visibleNodes.value.map((node) => [node.id, node])));
 const visibleEdges = computed(() => mapEdges.map(([fromId, toId]) => {
@@ -778,6 +936,7 @@ const threatLabel = computed(() => signalLabel(game.world?.threat, ['零散', '�
 const evacuationStatus = computed(() => {
   const atEvacuation = ['valley_checkpoint', 'louisville_outskirts'].includes(game.currentNodeId);
   if (game.isVictory) return '已进入撤离区，救援正在接应';
+  if (atEvacuation && encounterActive.value) return `撤离区尚未安全 · ${encounterPopulation.value} 只游荡者阻断接应`;
   if (game.day < game.maxDay) {
     return `${atEvacuation ? '已抵达撤离区' : '向谷地检查点/外环推进'} · 窗口还有 ${game.maxDay - game.day} 天`;
   }
@@ -788,6 +947,7 @@ const evacuationStatus = computed(() => {
 });
 const generatorDisabledReason = computed(() => {
   if (game.isGameOver) return '本局已经结束';
+  if (encounterActive.value) return '遭遇中无法操作基地设备';
   if (!game.isAtHome) return '需要返回初始据点';
   if (!game.inventory.some((item) => item.id === 'generator' && item.count > 0)) return '背包中没有发电机';
   const knowsGenerator = game.inventory.some((item) => item.id === 'how_to_use_generators' && item.count > 0)
@@ -800,6 +960,7 @@ const generatorDisabledReason = computed(() => {
 });
 const baseWaterDisabledReason = computed(() => {
   if (game.isGameOver) return '本局已经结束';
+  if (encounterActive.value) return '遭遇中无法取用储水';
   if (!game.isAtHome) return '需要返回初始据点';
   if ((game.base?.waterReserve ?? 0) <= 0) return '据点没有储水';
   return '';
@@ -876,6 +1037,10 @@ function selectSearchTarget(entry) {
 
 function openLocationSearch(searchable = selectedSearchTarget.value) {
   if (!searchable) return;
+  if (encounterActive.value) {
+    sceneInspectFeedback.value = '尸群仍在附近，先清场或成功绕行再搜索。';
+    return;
+  }
   if (inspectedNode.value?.id !== currentNode.value?.id) {
     sceneInspectFeedback.value = '需要先移动到这个节点，才能搜索这里。';
     return;
@@ -1470,6 +1635,20 @@ function closeResolutionReport() {
 
 function signed(value) {
   return value > 0 ? `+${value}` : `${value}`;
+}
+
+function finiteOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function finiteRoundedOrNull(value) {
+  const number = finiteOrNull(value);
+  return number === null ? null : Math.max(0, Math.round(number));
+}
+
+function formatNumber(value) {
+  return Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 1 });
 }
 
 function formatDuration(minutes = 0) {

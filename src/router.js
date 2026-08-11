@@ -25,6 +25,8 @@ const router = createRouter({
 
 router.beforeEach((to) => {
   const game = useGameStore();
+  if (game.runPhase === 'running' && ['profession', 'traits', 'market'].includes(to.name)) return { name: 'survival' };
+  if (game.runPhase === 'ended' && ['profession', 'traits', 'market'].includes(to.name)) return { name: 'ending' };
   if (to.name === 'traits' && !game.profession) return { name: 'profession' };
   if (to.name === 'market' && !game.profession) return { name: 'profession' };
   if (to.name === 'market' && game.traitPointsRemaining < 0 && !game.isHiddenPresetLocked) return { name: 'traits' };

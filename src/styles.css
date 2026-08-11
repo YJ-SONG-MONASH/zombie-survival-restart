@@ -1782,8 +1782,9 @@ blockquote {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .search-lens {
-    animation: none;
+  .search-lens,
+  .local-zombie-strip.tone-danger > b {
+    animation: none !important;
   }
 }
 
@@ -2375,6 +2376,154 @@ input:focus {
   color: #fde68a;
 }
 
+.local-zombie-card {
+  border-color: rgba(148, 163, 184, 0.28);
+  background:
+    linear-gradient(120deg, rgba(30, 41, 59, 0.34), transparent 68%),
+    rgba(0, 0, 0, 0.24);
+}
+
+.local-zombie-card.tone-active,
+.local-zombie-card.tone-warn {
+  border-color: rgba(250, 204, 21, 0.38);
+}
+
+.local-zombie-card.tone-clear,
+.local-zombie-card.tone-secured {
+  border-color: rgba(74, 222, 128, 0.36);
+}
+
+.local-zombie-card.tone-danger {
+  border-color: rgba(248, 113, 113, 0.62);
+  background:
+    linear-gradient(120deg, rgba(127, 29, 29, 0.38), transparent 70%),
+    rgba(0, 0, 0, 0.28);
+}
+
+.local-zombie-overview {
+  display: grid;
+  grid-template-columns: auto minmax(80px, 1fr);
+  gap: 6px 12px;
+  align-items: center;
+}
+
+.local-zombie-overview > strong {
+  color: #fffbe1;
+  font-size: 1rem;
+}
+
+.local-zombie-overview progress {
+  width: 100%;
+  height: 9px;
+  accent-color: #dc2626;
+}
+
+.local-zombie-overview > small {
+  grid-column: 1 / -1;
+  color: #a8b48a;
+  line-height: 1.4;
+}
+
+.local-zombie-stats dd {
+  font-variant-numeric: tabular-nums;
+}
+
+.drawer-encounter-warning {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border-left: 3px solid #ef4444;
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.28);
+}
+
+.drawer-encounter-warning b {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.drawer-encounter-warning span {
+  color: #fca5a5;
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+.skill-progress-section {
+  align-content: start;
+}
+
+.skill-progress-list {
+  display: grid;
+  gap: 8px;
+}
+
+.skill-progress-card {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(122, 143, 92, 0.24);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.skill-progress-icon {
+  width: 34px;
+  height: 34px;
+}
+
+.skill-progress-icon img {
+  width: 28px;
+  height: 28px;
+}
+
+.skill-progress-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.skill-progress-copy > div,
+.skill-progress-copy > small {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.skill-progress-copy strong {
+  overflow: hidden;
+  color: #e0dfc4;
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-progress-copy b {
+  flex: 0 0 auto;
+  color: #fde68a;
+  font-size: 0.76rem;
+}
+
+.skill-progress-copy progress {
+  width: 100%;
+  height: 8px;
+  accent-color: #8d9b66;
+}
+
+.skill-progress-copy > small {
+  color: #94a3b8;
+  font-size: 0.68rem;
+}
+
+.skill-progress-copy em {
+  flex: 0 0 auto;
+  color: #86efac;
+  font-style: normal;
+}
+
 .survival-empty-state {
   padding: 10px;
   border: 1px dashed rgba(122, 143, 92, 0.24);
@@ -2793,6 +2942,110 @@ input:focus {
 .map-quick-panel p {
   color: #cbd5e1;
   line-height: 1.48;
+}
+
+.map-quick-panel.has-active-encounter {
+  border-color: rgba(248, 113, 113, 0.78);
+  box-shadow:
+    0 0 0 1px rgba(127, 29, 29, 0.42),
+    0 20px 45px rgba(0, 0, 0, 0.5);
+}
+
+.local-zombie-strip {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.52);
+}
+
+.local-zombie-strip > b {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: #d9d7bd;
+  background: rgba(15, 23, 42, 0.82);
+}
+
+.local-zombie-strip > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.local-zombie-strip strong,
+.local-zombie-strip small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-zombie-strip strong {
+  color: #e0dfc4;
+  font-size: 0.76rem;
+}
+
+.local-zombie-strip small {
+  color: #94a3b8;
+  font-size: 0.64rem;
+}
+
+.local-zombie-strip.tone-active,
+.local-zombie-strip.tone-warn {
+  border-color: rgba(250, 204, 21, 0.38);
+  background: rgba(113, 63, 18, 0.2);
+}
+
+.local-zombie-strip.tone-active > b,
+.local-zombie-strip.tone-warn > b {
+  color: #fde68a;
+  background: rgba(113, 63, 18, 0.7);
+}
+
+.local-zombie-strip.tone-clear,
+.local-zombie-strip.tone-secured {
+  border-color: rgba(74, 222, 128, 0.34);
+  background: rgba(20, 83, 45, 0.2);
+}
+
+.local-zombie-strip.tone-clear > b,
+.local-zombie-strip.tone-secured > b {
+  color: #bbf7d0;
+  background: rgba(20, 83, 45, 0.72);
+}
+
+.local-zombie-strip.tone-danger {
+  border-color: rgba(248, 113, 113, 0.7);
+  background:
+    linear-gradient(90deg, rgba(153, 27, 27, 0.46), rgba(69, 10, 10, 0.28)),
+    rgba(17, 6, 6, 0.78);
+}
+
+.local-zombie-strip.tone-danger > b {
+  color: #fff;
+  background: #b91c1c;
+  animation: encounter-alert-pulse 1.3s ease-in-out infinite;
+}
+
+.local-zombie-strip.tone-danger strong {
+  color: #fecaca;
+}
+
+.local-zombie-strip.tone-danger small {
+  color: #fca5a5;
+}
+
+@keyframes encounter-alert-pulse {
+  50% {
+    box-shadow: 0 0 0 5px rgba(248, 113, 113, 0.12);
+    transform: scale(1.04);
+  }
 }
 
 .quick-action-row {
@@ -3710,6 +3963,28 @@ input:focus {
   .map-playfield .map-board {
     min-height: max(620px, calc(100vh - 230px));
   }
+
+  .map-quick-panel {
+    width: min(460px, calc(100% - 108px));
+    gap: 7px;
+    padding: 11px;
+  }
+
+  .map-quick-panel > .panel-kicker,
+  .map-quick-panel > p,
+  .map-quick-panel > .node-meta-row {
+    display: none;
+  }
+
+  .map-quick-panel h2 {
+    font-size: 1.08rem;
+  }
+
+  .quick-action-row {
+    grid-template-rows: minmax(50px, auto);
+    grid-auto-columns: minmax(118px, 0.72fr);
+    gap: 6px;
+  }
 }
 
 @media (max-width: 720px) {
@@ -3798,6 +4073,8 @@ input:focus {
 
   .map-identity > p,
   .map-identity > span {
+    display: block;
+    max-width: 100%;
     overflow: hidden;
     font-size: 0.72rem;
     text-overflow: ellipsis;
@@ -3896,6 +4173,26 @@ input:focus {
     font-size: 1rem;
   }
 
+  .local-zombie-strip {
+    grid-template-columns: 22px minmax(0, 1fr);
+    gap: 6px;
+    padding: 4px 6px;
+  }
+
+  .local-zombie-strip > b {
+    width: 22px;
+    height: 22px;
+    font-size: 0.72rem;
+  }
+
+  .local-zombie-strip strong {
+    font-size: 0.7rem;
+  }
+
+  .local-zombie-strip small {
+    display: none;
+  }
+
   .quick-action-row {
     grid-template-rows: minmax(44px, auto);
     grid-auto-columns: minmax(106px, 0.72fr);
@@ -3940,6 +4237,18 @@ input:focus {
 
   .base-status-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .local-zombie-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .local-zombie-overview > small {
+    grid-column: 1;
+  }
+
+  .skill-progress-copy > small {
+    flex-wrap: wrap;
   }
 
   .scene-card-grid {

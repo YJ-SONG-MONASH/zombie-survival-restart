@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
-import { marketItems, scenarios, shelters } from '../src/data/zombie.js';
+import { mapNodes, marketItems, scenarios, shelters } from '../src/data/zombie.js';
 import { SAVE_VERSION, useGameStore } from '../src/stores/game.js';
+import { cumulativeXpForLevel } from '../src/services/progression.js';
 import { createWorldState } from '../src/services/survival.js';
 
 const storage = () => {
@@ -15,6 +16,13 @@ const storage = () => {
 };
 
 const catalogItem = (id) => marketItems.find((entry) => entry.id === id);
+const secureNode = (game, nodeId) => {
+  const state = game.ensureNodeZombieState(nodeId);
+  state.count = 0;
+  state.clearedDay = game.day;
+  state.lastRefreshDay = game.day;
+  return state;
+};
 
 describe('game store invariants', () => {
   let localStorage;
@@ -66,6 +74,20 @@ describe('game store invariants', () => {
     expect(game.clockMinutes).toBe(before.clockMinutes);
     expect(game.history).toEqual(before.history);
     expect(game.inventory).toEqual(before.inventory);
+  });
+
+  it('locks character setup mutations after the survival run starts', () => {
+    game.initializeMapState();
+    expect(game.runPhase).toBe('running');
+    const before = JSON.parse(JSON.stringify(game.$state));
+
+    expect(game.setSurvivorName('重置角色')).toBe(false);
+    expect(game.selectSpawnLocation('riverside')).toBe(false);
+    expect(game.selectProfession('unemployed')).toBe(false);
+    expect(game.toggleTrait('strong')).toBe(false);
+    expect(game.rollShelters()).toBe(false);
+
+    expect(game.$state).toEqual(before);
   });
 
   it('also treats full infection as terminal', () => {
@@ -182,6 +204,7 @@ describe('game store invariants', () => {
     expect(game.isGameOver).toBe(false);
 
     game.currentNodeId = 'valley_checkpoint';
+    secureNode(game, 'valley_checkpoint');
     expect(game.isVictory).toBe(true);
     expect(game.isGameOver).toBe(true);
 
@@ -198,6 +221,7 @@ describe('game store invariants', () => {
     game.currentNodeId = 'muldraugh';
     game.inspectedNodeId = 'muldraugh';
     game.vehicle = { status: 'working', fuel: 1, name: '测试车辆', condition: 70 };
+    secureNode(game, 'muldraugh');
 
     expect(game.moveToNode('dixie_highway_north')).toBe(true);
     expect(game.clockMinutes).toBe(9 * 60);
@@ -213,6 +237,8 @@ describe('game store invariants', () => {
     game.visitedNodeIds = ['west_point'];
     game.knownNodeIds = ['west_point', 'valley_checkpoint'];
     game.vitals.health = 2;
+    secureNode(game, 'west_point');
+    secureNode(game, 'valley_checkpoint');
 
     expect(game.moveToNode('valley_checkpoint')).toBe(true);
     expect(game.currentNodeId).toBe('valley_checkpoint');
@@ -224,6 +250,37 @@ describe('game store invariants', () => {
     expect(game.ending).toEqual(expect.objectContaining({ victory: true, title: expect.any(String) }));
   });
 
+  it('does not bypass a live evacuation horde when travel reaches the checkpoint', () => {
+    game.day = game.maxDay;
+    game.clockMinutes = 10 * 60;
+    game.currentNodeId = 'west_point';
+    game.inspectedNodeId = 'west_point';
+    game.visitedNodeIds = ['west_point'];
+    game.knownNodeIds = ['west_point', 'valley_checkpoint'];
+    secureNode(game, 'west_point');
+    const checkpointState = game.ensureNodeZombieState('valley_checkpoint');
+    checkpointState.count = Math.max(1, checkpointState.count);
+    checkpointState.evasionUntilMinutes = 0;
+
+    expect(game.moveToNode('valley_checkpoint')).toBe(true);
+
+    expect(game.currentNodeId).toBe('valley_checkpoint');
+    expect(game.isVictory).toBe(false);
+    expect(game.isGameOver).toBe(false);
+    expect(game.ending).toBeNull();
+    expect(game.currentEncounter).toEqual(expect.objectContaining({ active: true }));
+  });
+
+  it('never awards evacuation victory after Knox infection becomes terminal', () => {
+    game.day = game.maxDay;
+    game.currentNodeId = 'valley_checkpoint';
+    secureNode(game, 'valley_checkpoint');
+    game.body.infectionLevel = 100;
+
+    expect(game.isVictory).toBe(false);
+    expect(game.isGameOver).toBe(true);
+  });
+
   it('fails when travel reaches an evacuation node after the final window closes', () => {
     game.day = game.maxDay + 5;
     game.clockMinutes = 23 * 60;
@@ -231,6 +288,7 @@ describe('game store invariants', () => {
     game.inspectedNodeId = 'west_point';
     game.visitedNodeIds = ['west_point'];
     game.knownNodeIds = ['west_point', 'valley_checkpoint'];
+    secureNode(game, 'west_point');
 
     expect(game.moveToNode('valley_checkpoint')).toBe(true);
     expect(game.day).toBe(game.maxDay + 6);
@@ -249,6 +307,115 @@ describe('game store invariants', () => {
     expect(game.survivalStats.actions).toBe(1);
     expect(game.survivalStats.hoursSurvived).toBeCloseTo(1 / 6);
     expect(game.vitals.thirst).toBeLessThan(startingThirst);
+  });
+
+  it('persists local zombie populations and locks unsafe node actions until the encounter is handled', () => {
+    game.initializeMapState();
+    expect(game.currentNodeId).toBe('muldraugh');
+    expect(game.currentZombieState.count).toBe(0);
+    expect(game.isCurrentNodeSecured).toBe(true);
+
+    expect(game.moveToNode('dixie_highway_north')).toBe(true);
+    expect(game.currentZombieState.count).toBeGreaterThan(0);
+    expect(game.currentEncounter).toEqual(expect.objectContaining({ active: true, nodeId: 'dixie_highway_north' }));
+    expect(game.currentNodeActions.find((action) => action.id === 'search')).toEqual(expect.objectContaining({
+      disabled: true,
+      disabledReason: expect.stringContaining('先战斗或绕行'),
+    }));
+  });
+
+  it('caps combat kills at the local population and keeps a cleared node secure', () => {
+    game.initializeMapState();
+    expect(game.addItem(catalogItem('baseball_bat'), 1, true)).toBe(true);
+    expect(game.moveToNode('dixie_highway_north')).toBe(true);
+    game.nodeZombieStates.dixie_highway_north.count = 1;
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    const killsBefore = game.survivalStats.zombiesKilled;
+
+    expect(game.resolveNodeAction('combat_melee')).toBe(true);
+
+    expect(game.nodeZombieStates.dixie_highway_north.count).toBe(0);
+    expect(game.nodeZombieStates.dixie_highway_north.clearedDay).toBe(game.day);
+    expect(game.survivalStats.zombiesKilled).toBe(killsBefore + 1);
+    expect(game.currentEncounter).toBeNull();
+    expect(game.currentNodeActions.find((action) => action.id === 'combat_melee')?.disabledReason).toContain('已经清空');
+    random.mockRestore();
+  });
+
+  it('grants a temporary action window after evasion without deleting the horde', () => {
+    game.initializeMapState();
+    expect(game.moveToNode('dixie_highway_north')).toBe(true);
+    game.nodeZombieStates.dixie_highway_north.count = 10;
+    game.skills.sneaking = 2;
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+
+    expect(game.resolveNodeAction('evade')).toBe(true);
+    expect(game.nodeZombieStates.dixie_highway_north.count).toBe(10);
+    expect(game.isCurrentNodeSecured).toBe(true);
+    expect(game.currentEncounter).toBeNull();
+    expect(game.currentNodeActions.find((action) => action.id === 'search')?.disabled).toBe(false);
+
+    game.advanceSimulation({ minutes: 181, mode: 'active' });
+    expect(game.isCurrentNodeSecured).toBe(false);
+    expect(game.currentEncounter).toEqual(expect.objectContaining({ population: 10 }));
+    random.mockRestore();
+  });
+
+  it('repopulates a cleared current node after a day boundary', () => {
+    game.initializeMapState();
+    game.nodeZombieStates.muldraugh.count = 0;
+    game.nodeZombieStates.muldraugh.clearedDay = game.day;
+    game.nodeZombieStates.muldraugh.lastRefreshDay = game.day;
+
+    game.advanceSimulation({ minutes: 17 * 60, mode: 'rest' });
+
+    expect(game.day).toBe(2);
+    expect(game.nodeZombieStates.muldraugh.count).toBeGreaterThan(0);
+    expect(game.currentEncounter).not.toBeNull();
+    expect(game.mapLog.some((entry) => entry.text?.includes('尸群迁入了这个地区'))).toBe(true);
+  });
+
+  it('awards skill experience and levels skills only after a successful action', () => {
+    game.initializeMapState();
+    game.skills.sneaking = 0;
+    game.skillXp.sneaking = 70;
+
+    expect(game.resolveNodeAction('scout')).toBe(true);
+
+    expect(game.skills.sneaking).toBe(1);
+    expect(game.lastSkillGains.sneaking).toBe(8);
+    expect(game.skillProgressList.find((skill) => skill.id === 'sneaking')).toEqual(expect.objectContaining({
+      level: 1,
+      currentLevelXp: 3,
+      nextLevelXp: 150,
+    }));
+    expect(game.history.at(-1).notes).toContain('潜行提升至 Lv.1');
+  });
+
+  it('replaces a dirty bandage and grants first-aid experience', () => {
+    game.body.wounds = [{
+      id: 'dirty-bandage',
+      bodyPart: 'left_arm',
+      type: 'laceration',
+      severity: 3,
+      bleeding: false,
+      bandaged: true,
+      dirtyBandage: true,
+      bandageAgeHours: 9,
+      disinfected: false,
+      infected: false,
+      knoxInfection: false,
+      ageHours: 9,
+      source: 'test',
+    }];
+    expect(game.addItem(catalogItem('bandage'), 1, true)).toBe(true);
+
+    expect(game.useItem('bandage')).toBe(true);
+
+    expect(game.body.wounds[0].dirtyBandage).toBe(false);
+    expect(game.body.wounds[0].bandageAgeHours).toBeCloseTo(0.5);
+    expect(game.lastSkillGains.first_aid).toBe(10);
+    expect(game.inventory.some((item) => item.id === 'bandage')).toBe(false);
   });
 });
 
@@ -303,6 +470,8 @@ describe('save migration and recovery', () => {
     expect(game.base.barricades).toBe(0);
     expect(game.base.generatorFuel).toBe(20);
     expect(game.base.generatorOn).toBe(true);
+    expect(Object.keys(game.nodeZombieStates)).toHaveLength(mapNodes.length);
+    expect(game.skillXp).toEqual(expect.objectContaining({ fitness: expect.any(Number), aiming: expect.any(Number) }));
   });
 
   it('derives v2 world, base, and wounds from legacy location, shelter, and tags', () => {
@@ -325,6 +494,38 @@ describe('save migration and recovery', () => {
     expect(game.world.seed).toBe(createWorldState({ spawnId: 'riverside' }).seed);
     expect(game.base.defense).toBe(shelters.find((entry) => entry.id === 'gated_villa').defense);
     expect(game.body.wounds).toEqual([expect.objectContaining({ type: 'laceration', source: '旧版存档迁移' })]);
+  });
+
+  it('upgrades a v2 save with persistent horde state and experience floors', () => {
+    const localStorage = storage();
+    vi.stubGlobal('localStorage', localStorage);
+    localStorage.values.set('moshi-survival-state', JSON.stringify({
+      game: {
+        saveVersion: 2,
+        day: 6,
+        spawnLocation: { id: 'riverside' },
+        currentNodeId: 'riverside',
+        skills: { sneaking: 3 },
+        world: createWorldState({ day: 6, spawnId: 'riverside' }),
+      },
+    }));
+
+    const game = useGameStore();
+    game.loadPersistedState();
+
+    expect(game.saveVersion).toBe(SAVE_VERSION);
+    expect(Object.keys(game.nodeZombieStates)).toHaveLength(mapNodes.length);
+    expect(game.nodeZombieStates.riverside).toEqual(expect.objectContaining({
+      count: 0,
+      clearedDay: 6,
+      lastRefreshDay: 6,
+    }));
+    expect(game.skillXp.sneaking).toBe(cumulativeXpForLevel(3));
+    expect(game.skillProgressList.find((skill) => skill.id === 'sneaking')).toEqual(expect.objectContaining({
+      level: 3,
+      currentLevelXp: 0,
+      nextLevelXp: 750,
+    }));
   });
 
   it('backs up corrupt JSON and removes the unusable primary save', () => {

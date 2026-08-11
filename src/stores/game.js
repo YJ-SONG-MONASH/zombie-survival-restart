@@ -26,6 +26,20 @@ import {
 } from '../data/zombie.js';
 import { createDayEvent, createEnding, resolveAction, resolveMapMove, resolveNodeAction as resolveMapNodeAction } from '../services/engine.js';
 import {
+  applyZombieKills,
+  createNodeZombieState,
+  grantEvasionWindow,
+  isNodeSecured,
+  normalizeNodeZombieStates,
+  refreshNodeZombieState,
+} from '../services/encounters.js';
+import {
+  buildSkillProgressList,
+  createSkillExperience,
+  grantSkillExperience as applySkillExperience,
+  normalizeSkillExperience,
+} from '../services/progression.js';
+import {
   START_MINUTE,
   advanceSurvivalState,
   bodyPartLabels,
@@ -44,7 +58,7 @@ import {
   woundTypeLabels,
 } from '../services/survival.js';
 
-export const SAVE_VERSION = 2;
+export const SAVE_VERSION = 3;
 
 const defaultState = () => ({
   saveVersion: SAVE_VERSION,
@@ -54,6 +68,8 @@ const defaultState = () => ({
   maxDay: 20,
   vitals: createBaseVitals(),
   skills: createBaseSkills(),
+  skillXp: createSkillExperience(createBaseSkills()),
+  lastSkillGains: {},
   baseTraitPoints: 0,
   survivorName: '',
   spawnLocation: cloneCatalogRecord(spawnLocations[0]),
@@ -80,6 +96,7 @@ const defaultState = () => ({
   mapLog: [],
   searchedSceneObjectIds: [],
   nodeSearchCounts: {},
+  nodeZombieStates: {},
   world: createWorldState(),
   body: createBodyState(),
   base: createBaseState(),
@@ -92,9 +109,19 @@ const defaultState = () => ({
 export const useGameStore = defineStore('game', {
   state: defaultState,
   getters: {
-    isVictory: (state) => state.day >= state.maxDay && state.day <= state.maxDay + 5 && ['valley_checkpoint', 'louisville_outskirts'].includes(state.currentNodeId) && state.vitals.health > 0,
+    isVictory: (state) => {
+      if (state.day < state.maxDay || state.day > state.maxDay + 5) return false;
+      if (!['valley_checkpoint', 'louisville_outskirts'].includes(state.currentNodeId)) return false;
+      if (state.vitals.health <= 0 || (state.body?.infectionLevel ?? 0) >= 100) return false;
+      const zombieState = state.nodeZombieStates?.[state.currentNodeId];
+      return Boolean(zombieState && isNodeSecured(zombieState, worldMinutesForState(state)));
+    },
     isGameOver() {
       return this.vitals.health <= 0 || this.body?.infectionLevel >= 100 || this.isVictory || this.day > this.maxDay + 5;
+    },
+    runPhase() {
+      if (this.isGameOver || this.ending?.title) return 'ended';
+      return this.currentNodeId ? 'running' : 'setup';
     },
     evacuationWindowOpen: (state) => state.day >= state.maxDay && state.day <= state.maxDay + 5,
     evacuationDeadline: (state) => state.maxDay + 5,
@@ -121,6 +148,7 @@ export const useGameStore = defineStore('game', {
     isHiddenPresetLocked: (state) => Boolean(findHiddenSurvivorPreset(state.survivorName)?.lockedTraits),
     sortedArchives: (state) => [...state.archives].sort((a, b) => b.createdAt - a.createdAt),
     currentMapNode: (state) => mapNodes.find((node) => node.id === state.currentNodeId) ?? null,
+    totalWorldMinutes: (state) => worldMinutesForState(state),
     clockLabel: (state) => formatClock(state.clockMinutes),
     activeWeather: (state) => weatherDefinitions.find((weather) => weather.id === state.world?.weatherId) ?? weatherDefinitions[0],
     isAtHome: (state) => Boolean(state.currentNodeId && state.currentNodeId === state.spawnLocation?.id),
@@ -130,6 +158,29 @@ export const useGameStore = defineStore('game', {
       bodyPartLabel: bodyPartLabels[wound.bodyPart] ?? wound.bodyPart,
       typeLabel: woundTypeLabels[wound.type] ?? wound.type,
     })),
+    skillProgressList: (state) => buildSkillProgressList(skillDefinitions, state.skills, state.skillXp, state.lastSkillGains),
+    currentZombieState: (state) => {
+      const node = mapNodes.find((entry) => entry.id === state.currentNodeId);
+      if (!node) return null;
+      return state.nodeZombieStates?.[node.id] ?? createNodeZombieState({
+        nodeId: node.id,
+        danger: node.danger,
+        seed: state.world?.seed,
+        day: state.day,
+      });
+    },
+    isCurrentNodeSecured() {
+      return Boolean(this.currentZombieState && isNodeSecured(this.currentZombieState, this.totalWorldMinutes));
+    },
+    currentEncounter() {
+      if (!this.currentZombieState || this.isCurrentNodeSecured) return null;
+      return {
+        active: true,
+        nodeId: this.currentMapNode?.id,
+        nodeName: this.currentMapNode?.name ?? '未知地区',
+        population: this.currentZombieState.count,
+      };
+    },
     moodles() {
       return moodlesFor({
         vitals: this.vitals,
@@ -146,8 +197,13 @@ export const useGameStore = defineStore('game', {
     currentNeighborNodes: (state) => neighborsForNode(state.currentNodeId).map((id) => mapNodes.find((node) => node.id === id)).filter(Boolean),
     currentNodeActions: (state) => {
       const node = mapNodes.find((entry) => entry.id === state.currentNodeId);
+      const zombieState = node ? state.nodeZombieStates?.[node.id] : null;
+      const totalMinutes = worldMinutesForState(state);
+      const secured = zombieState ? isNodeSecured(zombieState, totalMinutes) : true;
+      const encounterActive = Boolean(zombieState && zombieState.count > 0 && !secured);
+      const evasionSecured = Boolean(zombieState && zombieState.count > 0 && secured);
       const actionIds = [...(node?.actions ?? ['search', 'scout', 'rest'])];
-      if ((node?.danger ?? 0) >= 2) actionIds.push('evade', 'combat_melee', 'combat_firearm');
+      if ((node?.danger ?? 0) >= 2 || (zombieState?.count ?? 0) > 0) actionIds.push('evade', 'combat_melee', 'combat_firearm');
       if (node?.type === 'wilds') actionIds.push('forage');
       if (state.currentNodeId === state.spawnLocation?.id) actionIds.push('fortify', 'sleep');
       else if ((node?.danger ?? 9) <= 2 && !actionIds.includes('rest')) actionIds.push('rest', 'sleep');
@@ -156,20 +212,27 @@ export const useGameStore = defineStore('game', {
           const action = mapNodeActions.find((entry) => entry.id === id);
           if (!action) return null;
           let disabledReason = '';
+          const actionMinutes = durationForAction(id);
+          const encounterAction = ['evade', 'combat_melee', 'combat_firearm'].includes(id);
+          if (encounterActive && !encounterAction) disabledReason = `附近还有 ${zombieState.count} 只游荡者，先战斗或绕行`;
+          if (encounterAction && (zombieState?.count ?? 0) <= 0) disabledReason = '这个地区暂时已经清空';
+          if (!encounterAction && evasionSecured && totalMinutes + actionMinutes > zombieState.evasionUntilMinutes) {
+            disabledReason = '临时安全窗口不足以完成这项行动';
+          }
           if (id === 'combat_firearm') {
             const hasUsableFirearm = state.inventory
               .filter((item) => item.count > 0 && item.tags?.includes('firearm'))
               .some((firearm) => state.inventory.some((item) => item.id === (firearm.id === 'shotgun' ? 'shotgun_shells' : '9mm_rounds') && item.count > 0));
-            if (!hasUsableFirearm) disabledReason = '需要枪械和对应弹药';
+            if (!hasUsableFirearm && !disabledReason) disabledReason = '需要枪械和对应弹药';
           }
           if (id === 'fortify') {
             const has = (itemId) => state.inventory.some((item) => item.id === itemId && item.count > 0);
-            if (!has('hammer') || !has('plank') || !has('nails')) disabledReason = '需要锤子、木板和钉子';
+            if ((!has('hammer') || !has('plank') || !has('nails')) && !disabledReason) disabledReason = '需要锤子、木板和钉子';
           }
-          if (id === 'search' && (state.nodeSearchCounts?.[node?.id] ?? 0) >= 3) disabledReason = '周边已被搜空，请检查具体建筑容器';
+          if (id === 'search' && (state.nodeSearchCounts?.[node?.id] ?? 0) >= 3 && !disabledReason) disabledReason = '周边已被搜空，请检查具体建筑容器';
           return {
             ...action,
-            minutes: durationForAction(id),
+            minutes: actionMinutes,
             disabled: Boolean(disabledReason),
             disabledReason,
           };
@@ -241,6 +304,27 @@ export const useGameStore = defineStore('game', {
       if (!hasOwn('survivalStats')) this.survivalStats = createSurvivalStats();
       if (!hasOwn('equippedWeaponId')) this.equippedWeaponId = null;
       if (!hasOwn('nodeSearchCounts')) this.nodeSearchCounts = {};
+      if (!hasOwn('skillXp')) this.skillXp = createSkillExperience(normalizeSkills(this.skills));
+      if (!hasOwn('lastSkillGains')) this.lastSkillGains = {};
+      if (!hasOwn('nodeZombieStates')) {
+        this.nodeZombieStates = normalizeNodeZombieStates({}, {
+          nodes: mapNodes,
+          seed: this.world?.seed,
+          day: clampInteger(this.day, 1, 999, 1),
+        });
+        const spawnState = this.nodeZombieStates[location.id];
+        if (spawnState) {
+          spawnState.count = 0;
+          spawnState.clearedDay = clampInteger(this.day, 1, 999, 1);
+        }
+        const currentState = this.nodeZombieStates[node?.id];
+        if (currentState && node.id !== location.id && currentState.count > 0) {
+          this.nodeZombieStates[node.id] = grantEvasionWindow(currentState, {
+            totalMinutes: worldMinutesForState(this.$state),
+            minutes: 240,
+          });
+        }
+      }
       if (!hasOwn('body')) {
         const tags = new Set(Array.isArray(this.hiddenTags) ? this.hiddenTags : []);
         const body = createBodyState();
@@ -266,11 +350,11 @@ export const useGameStore = defineStore('game', {
       return true;
     },
     setSurvivorName(name) {
+      if (this.runPhase !== 'setup') return false;
       this.survivorName = name;
       const preset = findHiddenSurvivorPreset(name);
       if (preset) {
-        this.applyHiddenSurvivorPreset(preset);
-        return;
+        return this.applyHiddenSurvivorPreset(preset);
       }
       if (this.profession?.hiddenOnly && !this.unlockedProfessionIds.includes(this.profession.id)) {
         this.profession = null;
@@ -279,8 +363,10 @@ export const useGameStore = defineStore('game', {
         this.clearLootSearch();
         this.clearMapState();
       }
+      return true;
     },
     selectSpawnLocation(id) {
+      if (this.runPhase !== 'setup') return false;
       const location = spawnLocations.find((item) => item.id === id);
       if (!location) return false;
       this.spawnLocation = cloneCatalogRecord(location);
@@ -289,6 +375,7 @@ export const useGameStore = defineStore('game', {
       return true;
     },
     selectProfession(id) {
+      if (this.runPhase !== 'setup') return false;
       if (this.isHiddenPresetLocked && id !== this.activeHiddenPreset.professionId) return false;
       const profession = professions.find((item) => item.id === id);
       if (!profession || (profession.hiddenOnly && !this.unlockedProfessionIds.includes(id))) return false;
@@ -305,6 +392,7 @@ export const useGameStore = defineStore('game', {
       return true;
     },
     applyHiddenSurvivorPreset(preset) {
+      if (this.runPhase !== 'setup') return false;
       const profession = professions.find((item) => item.id === preset.professionId);
       if (!profession) return false;
       const presetTraits = preset.traitIds
@@ -353,6 +441,8 @@ export const useGameStore = defineStore('game', {
       this.searchingSlotId = null;
       this.vitals = normalizeVitals(this.vitals, this.stats);
       this.skills = normalizeSkills(this.skills);
+      this.skillXp = normalizeSkillExperience(this.skillXp, this.skills, skillDefinitions.map((skill) => skill.id));
+      this.lastSkillGains = normalizeSkillGains(this.lastSkillGains);
       const rawInventory = Array.isArray(this.inventory) ? this.inventory : [];
       this.inventory = normalizeInventory(rawInventory);
       this.selectedTraits = Array.isArray(this.selectedTraits)
@@ -395,6 +485,11 @@ export const useGameStore = defineStore('game', {
         nodeDanger: currentDanger,
         shelterDefense: this.shelter?.defense ?? 0,
       });
+      this.nodeZombieStates = normalizeNodeZombieStates(this.nodeZombieStates, {
+        nodes: mapNodes,
+        seed: this.world.seed,
+        day: this.day,
+      });
       this.body = normalizeBodyState(this.body);
       this.base = normalizeBaseState(this.base, this.shelter);
       this.world.powerOn = this.day < this.world.powerShutoffDay || (this.base.generatorOn && this.base.generatorFuel > 0);
@@ -426,6 +521,8 @@ export const useGameStore = defineStore('game', {
       this.money = 6500 + this.profession.money + (location.moneyMod ?? 0);
       this.vitals = vitals;
       this.skills = skills;
+      this.skillXp = createSkillExperience(skills, skillDefinitions.map((skill) => skill.id));
+      this.lastSkillGains = {};
       if (!includeUnlocks) return;
       this.profession.unlocks?.forEach((itemId) => {
         const item = marketItems.find((entry) => entry.id === itemId);
@@ -433,6 +530,7 @@ export const useGameStore = defineStore('game', {
       });
     },
     toggleTrait(id) {
+      if (this.runPhase !== 'setup') return false;
       if (this.isHiddenPresetLocked) return false;
       const trait = traits.find((item) => item.id === id);
       if (!trait) return false;
@@ -448,6 +546,7 @@ export const useGameStore = defineStore('game', {
       return true;
     },
     canSelectTrait(id) {
+      if (this.runPhase !== 'setup') return false;
       if (this.isHiddenPresetLocked) return this.selectedTraits.some((item) => item.id === id);
       const trait = traits.find((item) => item.id === id);
       if (!trait) return false;
@@ -455,12 +554,14 @@ export const useGameStore = defineStore('game', {
       return !this.selectedTraits.some((item) => item.conflicts?.includes(id) || trait.conflicts?.includes(item.id));
     },
     rollShelters() {
+      if (this.runPhase !== 'setup') return false;
       if (this.shelter || this.shelterRollsUsed >= this.maxShelterRolls) return false;
       this.shelterChoices = drawShelterChoices(3, this.spawnLocation?.id).map(cloneCatalogRecord);
       this.shelterRollsUsed += 1;
       return true;
     },
     selectShelter(id) {
+      if (this.runPhase !== 'setup') return false;
       const shelter = this.shelterChoices.find((item) => item.id === id);
       if (!shelter) return false;
       this.shelter = cloneCatalogRecord(shelter);
@@ -492,6 +593,7 @@ export const useGameStore = defineStore('game', {
       this.searchingSlotId = null;
     },
     async searchLootSlot(slotId) {
+      if (this.runPhase !== 'setup') return false;
       if (this.searchingSlotId) return false;
       const slot = this.lootSlots.find((entry) => entry.id === slotId);
       if (!slot || slot.status !== 'hidden') return false;
@@ -499,6 +601,11 @@ export const useGameStore = defineStore('game', {
       this.searchingSlotId = slot.id;
       this.lootSearchStarted = true;
       await new Promise((resolve) => globalThis.setTimeout(resolve, 800));
+      if (this.runPhase !== 'setup') {
+        slot.status = 'hidden';
+        this.searchingSlotId = null;
+        return false;
+      }
       const item = marketItems.find((entry) => entry.id === slot.itemId);
       const collected = item ? this.collectLootItem(item) : false;
       slot.status = collected ? 'taken' : 'revealed';
@@ -506,6 +613,7 @@ export const useGameStore = defineStore('game', {
       return collected;
     },
     async searchAllLootSlots() {
+      if (this.runPhase !== 'setup') return false;
       if (this.searchingSlotId) return false;
       const slots = this.lootSlots.filter((entry) => entry.status === 'hidden');
       if (!slots.length) return false;
@@ -515,6 +623,13 @@ export const useGameStore = defineStore('game', {
       this.searchingSlotId = 'bulk';
       this.lootSearchStarted = true;
       await new Promise((resolve) => globalThis.setTimeout(resolve, 800));
+      if (this.runPhase !== 'setup') {
+        slots.forEach((slot) => {
+          if (slot.status === 'searching') slot.status = 'hidden';
+        });
+        this.searchingSlotId = null;
+        return false;
+      }
       slots.forEach((slot) => {
         if (slot.status !== 'searching') return;
         const item = marketItems.find((entry) => entry.id === slot.itemId);
@@ -564,9 +679,16 @@ export const useGameStore = defineStore('game', {
       if (this.isGameOver) return false;
       const item = this.inventory.find((entry) => entry.id === id && entry.count > 0);
       if (!item || !['food', 'medical', 'morale'].includes(item.category)) return false;
-      const wound = [...(this.body?.wounds ?? [])].sort((a, b) => b.severity - a.severity)[0] ?? null;
+      const useMinutes = item.category === 'medical' ? 30 : item.tags?.includes('water') ? 10 : item.category === 'food' ? 20 : 10;
+      if (!this.canPerformWorldAction('item', useMinutes)) return false;
+      const wound = selectTreatmentWound(this.body?.wounds ?? [], item);
+      const requiresWound = item.tags?.includes('bandage') || item.tags?.includes('disinfect') || item.id === 'first_aid_kit';
+      if (requiresWound && !wound) return false;
+      const treatsWound = Boolean(requiresWound && wound);
       if (item.tags?.includes('bandage') && wound) {
         wound.bandaged = true;
+        wound.dirtyBandage = false;
+        wound.bandageAgeHours = 0;
         wound.bleeding = false;
       }
       if (item.tags?.includes('disinfect') && wound) {
@@ -576,6 +698,8 @@ export const useGameStore = defineStore('game', {
       }
       if (item.id === 'first_aid_kit' && wound) {
         wound.bandaged = true;
+        wound.dirtyBandage = false;
+        wound.bandageAgeHours = 0;
         wound.bleeding = false;
         wound.disinfected = true;
         if (!wound.knoxInfection) wound.infected = false;
@@ -592,16 +716,19 @@ export const useGameStore = defineStore('game', {
         if (!this.hiddenTags.includes('食物中毒')) this.hiddenTags.push('食物中毒');
       }
       this.removeItem(item.id, 1);
+      const progression = this.grantSkillXp(treatsWound
+        ? { first_aid: item.id === 'first_aid_kit' ? 18 : 10 }
+        : {});
+      const levelUpText = levelUpSummary(progression);
       this.mapLog.unshift({
         day: this.day,
         time: this.clockLabel,
         title: `使用 ${item.name}`,
-        text: wound && item.category === 'medical' ? `你处理了${bodyPartLabels[wound.bodyPart] ?? wound.bodyPart}的${woundTypeLabels[wound.type] ?? wound.type}。` : `${item.name}已经消耗。`,
+        text: [treatsWound ? `你处理了${bodyPartLabels[wound.bodyPart] ?? wound.bodyPart}的${woundTypeLabels[wound.type] ?? wound.type}。` : `${item.name}已经消耗。`, levelUpText].filter(Boolean).join(' '),
         mode: 'item',
       });
       this.mapLog = this.mapLog.slice(0, 80);
       this.survivalStats.actions += 1;
-      const useMinutes = item.category === 'medical' ? 30 : item.tags?.includes('water') ? 10 : item.category === 'food' ? 20 : 10;
       this.advanceSimulation({
         minutes: useMinutes,
         mode: 'rest',
@@ -614,17 +741,22 @@ export const useGameStore = defineStore('game', {
     craftRecipe(recipeId) {
       if (this.isGameOver) return false;
       const recipe = craftingRecipes.find((entry) => entry.id === recipeId);
+      if (!recipe) return false;
+      const craftMinutes = recipe.minutes ?? durationForAction('craft');
+      if (!this.canPerformWorldAction('craft', craftMinutes)) return false;
       const status = recipeStatus(recipe, this.$state);
-      if (!recipe || !status.canCraft) return false;
+      if (!status.canCraft) return false;
       recipe.ingredients.forEach((ingredient) => this.removeItem(ingredient.itemId, ingredient.count));
       const result = marketItems.find((item) => item.id === recipe.resultId);
       if (!result || !this.collectLootItem(result, recipe.resultCount ?? 1)) return false;
       this.survivalStats.crafted += 1;
       this.survivalStats.actions += 1;
+      const progression = this.grantSkillXp({ [recipe.skillId]: 18 + (recipe.minSkill ?? 0) * 3 });
+      const levelUpText = levelUpSummary(progression);
       const beforeDay = this.day;
       const beforeTime = this.clockLabel;
       this.advanceSimulation({
-        minutes: recipe.minutes ?? durationForAction('craft'),
+        minutes: craftMinutes,
         mode: 'active',
         noiseDelta: 8,
         threatDelta: 2,
@@ -636,21 +768,23 @@ export const useGameStore = defineStore('game', {
         log: '制作与维护',
         action: recipe.name,
         result: `你制作了${result.name}。`,
-        notes: `耗时 ${Math.round((recipe.minutes ?? 120) / 60 * 10) / 10} 小时`,
+        notes: [`耗时 ${Math.round((recipe.minutes ?? 120) / 60 * 10) / 10} 小时`, levelUpText].filter(Boolean).join(' / '),
         score: 60 + (this.skills[recipe.skillId] ?? 0) * 4,
       });
-      this.mapLog.unshift({ day: beforeDay, time: beforeTime, title: recipe.name, text: `制作完成：${result.name}`, mode: 'craft' });
+      this.mapLog.unshift({ day: beforeDay, time: beforeTime, title: recipe.name, text: [`制作完成：${result.name}`, levelUpText].filter(Boolean).join(' '), mode: 'craft' });
       this.finishIfGameOver();
       return true;
     },
     toggleGenerator() {
       if (this.isGameOver || !this.isAtHome) return false;
+      if (!this.canPerformWorldAction('base', 20)) return false;
       const generator = this.inventory.find((item) => item.id === 'generator' && item.count > 0);
       const knowsGenerator = this.inventory.some((item) => item.id === 'how_to_use_generators' && item.count > 0) || (this.skills.electrical ?? 0) >= 3;
       if (!generator || !knowsGenerator) return false;
       if (this.base.generatorOn) {
         this.base.generatorOn = false;
         this.world.powerOn = this.day < this.world.powerShutoffDay;
+        this.grantSkillXp({});
         return true;
       }
       if (this.base.generatorFuel <= 0) {
@@ -663,15 +797,18 @@ export const useGameStore = defineStore('game', {
       this.world.threat = Math.min(100, this.world.threat + 8);
       this.mapLog.unshift({ day: this.day, time: this.clockLabel, title: '启动发电机', text: '据点恢复供电，但引擎低鸣会持续吸引附近尸群。', mode: 'base' });
       this.survivalStats.actions += 1;
+      this.grantSkillXp({ electrical: 8 });
       this.advanceSimulation({ minutes: 20, mode: 'active', noiseDelta: 4, threatDelta: 2 });
       this.finishIfGameOver();
       return true;
     },
     drinkBaseWater() {
       if (this.isGameOver || !this.isAtHome || (this.base.waterReserve ?? 0) <= 0) return false;
+      if (!this.canPerformWorldAction('base', 10)) return false;
       this.base.waterReserve -= 1;
       applyVitalMods(this.vitals, { thirst: -28 });
       this.survivalStats.actions += 1;
+      this.grantSkillXp({});
       this.advanceSimulation({ minutes: 10, mode: 'rest', noiseDelta: -1 });
       this.finishIfGameOver();
       return true;
@@ -686,9 +823,85 @@ export const useGameStore = defineStore('game', {
       this.mapLog = [];
       this.searchedSceneObjectIds = [];
       this.nodeSearchCounts = {};
+      this.nodeZombieStates = {};
+    },
+    ensureNodeZombieState(nodeId) {
+      const node = mapNodes.find((entry) => entry.id === nodeId);
+      if (!node) return null;
+      const missing = !this.nodeZombieStates?.[node.id];
+      const current = this.nodeZombieStates?.[node.id] ?? createNodeZombieState({
+        nodeId: node.id,
+        danger: node.danger,
+        seed: this.world?.seed,
+        day: this.day,
+      });
+      if (missing && node.id === this.spawnLocation?.id) {
+        current.count = 0;
+        current.clearedDay = this.day;
+      }
+      const refreshed = refreshNodeZombieState(current, {
+        danger: node.danger,
+        seed: this.world?.seed,
+        day: this.day,
+        worldThreat: this.world?.threat,
+      });
+      this.nodeZombieStates = { ...(this.nodeZombieStates ?? {}), [node.id]: refreshed };
+      return refreshed;
+    },
+    refreshNodeZombieMigration() {
+      const previousCurrent = this.nodeZombieStates?.[this.currentNodeId]?.count ?? null;
+      const refreshed = {};
+      mapNodes.forEach((node) => {
+        const current = this.nodeZombieStates?.[node.id] ?? createNodeZombieState({
+          nodeId: node.id,
+          danger: node.danger,
+          seed: this.world?.seed,
+          day: this.day,
+        });
+        refreshed[node.id] = refreshNodeZombieState(current, {
+          danger: node.danger,
+          seed: this.world?.seed,
+          day: this.day,
+          worldThreat: this.world?.threat,
+        });
+      });
+      this.nodeZombieStates = refreshed;
+      const currentCount = refreshed[this.currentNodeId]?.count ?? null;
+      return previousCurrent === 0 && currentCount > 0 ? currentCount : 0;
+    },
+    grantSkillXp(gains = {}) {
+      const progression = applySkillExperience({
+        skills: this.skills,
+        skillXp: this.skillXp,
+        gains,
+        skillIds: skillDefinitions.map((skill) => skill.id),
+      });
+      this.skills = progression.skills;
+      this.skillXp = progression.skillXp;
+      this.lastSkillGains = progression.appliedGains;
+      return progression;
+    },
+    canPerformWorldAction(kind = 'world', minutes = 0, requireFullWindow = true) {
+      if (this.isGameOver) return false;
+      if (!this.currentNodeId) return true;
+      const zombieState = this.nodeZombieStates?.[this.currentNodeId];
+      if (!zombieState) return false;
+      if (zombieState.count <= 0) return true;
+      const encounterActions = new Set(['combat', 'evade', 'equip']);
+      if (encounterActions.has(kind)) return true;
+      const now = this.totalWorldMinutes;
+      if (!isNodeSecured(zombieState, now)) return false;
+      if (!requireFullWindow) return true;
+      const duration = Math.max(0, Math.round(Number(minutes) || 0));
+      return now + duration <= zombieState.evasionUntilMinutes;
     },
     initializeMapState(force = false) {
       if (this.currentNodeId && !force) {
+        this.nodeZombieStates = normalizeNodeZombieStates(this.nodeZombieStates, {
+          nodes: mapNodes,
+          seed: this.world?.seed,
+          day: this.day,
+        });
         this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, this.currentNodeId, ...neighborsForNode(this.currentNodeId)]);
         if (!this.inspectedNodeId) this.inspectedNodeId = this.currentNodeId;
         this.movesRemaining = this.movementAllowance();
@@ -708,6 +921,19 @@ export const useGameStore = defineStore('game', {
         nodeDanger: spawnNode.danger,
         shelterDefense: this.shelter?.defense ?? 0,
       });
+      const hadZombieStates = Boolean(Object.keys(this.nodeZombieStates ?? {}).length);
+      this.nodeZombieStates = normalizeNodeZombieStates(this.nodeZombieStates, {
+        nodes: mapNodes,
+        seed: this.world.seed,
+        day: this.day,
+      });
+      if (!hadZombieStates) {
+        const spawnState = this.nodeZombieStates[spawnNode.id];
+        if (spawnState) {
+          spawnState.count = 0;
+          spawnState.clearedDay = this.day;
+        }
+      }
       this.activeEvent = null;
       this.mapLog = [{
         day: this.day,
@@ -725,7 +951,10 @@ export const useGameStore = defineStore('game', {
       return 1;
     },
     canMoveToNode(nodeId) {
-      return !this.isGameOver && this.vitals.endurance > 4 && neighborsForNode(this.currentNodeId).includes(nodeId);
+      const travelMinutes = durationForAction('move', { vehicle: this.vehicle });
+      return this.vitals.endurance > 4 &&
+        neighborsForNode(this.currentNodeId).includes(nodeId) &&
+        this.canPerformWorldAction('move', travelMinutes, false);
     },
     inspectMapNode(nodeId) {
       const node = mapNodes.find((entry) => entry.id === nodeId);
@@ -739,6 +968,7 @@ export const useGameStore = defineStore('game', {
       if (!node || !this.canMoveToNode(nodeId)) return false;
       const from = mapNodes.find((entry) => entry.id === this.currentNodeId);
       const travelVehicle = normalizeVehicle(this.vehicle);
+      this.ensureNodeZombieState(node.id);
       const previousMapState = {
         currentNodeId: this.currentNodeId,
         inspectedNodeId: this.inspectedNodeId,
@@ -759,6 +989,14 @@ export const useGameStore = defineStore('game', {
         world: this.world,
       });
       outcome.title = `${from?.name ?? '未知地点'} → ${node.name}`;
+      outcome.skillXpGains = skillGainsForMapAction({
+        actionId: 'move',
+        outcome,
+        inventory: this.inventory,
+        equippedWeaponId: this.equippedWeaponId,
+        node,
+        vehicle: travelVehicle,
+      });
       this.currentNodeId = node.id;
       this.inspectedNodeId = node.id;
       this.visitedNodeIds = uniqueValidNodeIds([...this.visitedNodeIds, node.id]);
@@ -782,8 +1020,11 @@ export const useGameStore = defineStore('game', {
       if (!this.currentNodeId) this.initializeMapState();
       const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
       const action = mapNodeActions.find((entry) => entry.id === actionId);
+      if (node) this.ensureNodeZombieState(node.id);
       const availableAction = this.currentNodeActions.find((entry) => entry.id === actionId);
       if (!node || !action || !availableAction || availableAction.disabled) return false;
+      const encounterKind = actionId === 'evade' ? 'evade' : ['combat_melee', 'combat_firearm'].includes(actionId) ? 'combat' : actionId;
+      if (!this.canPerformWorldAction(encounterKind, durationForAction(actionId))) return false;
       const outcome = resolveMapNodeAction({
         actionId,
         node,
@@ -801,8 +1042,19 @@ export const useGameStore = defineStore('game', {
         base: this.base,
         equippedWeaponId: this.equippedWeaponId,
         searchCount: this.nodeSearchCounts[node.id] ?? 0,
+        zombiePopulation: this.nodeZombieStates[node.id]?.count ?? 0,
       });
-      if (!outcome || (outcome.minutes === 0 && outcome.score === 0)) return false;
+      if (!outcome || !(outcome.minutes > 0)) return false;
+      if (['combat_melee', 'combat_firearm'].includes(actionId)) outcome.zombieKills = outcome.kills;
+      if (actionId === 'evade' && outcome.score >= 55) outcome.encounterEvasionMinutes = 180;
+      outcome.skillXpGains = skillGainsForMapAction({
+        actionId,
+        outcome,
+        inventory: this.inventory,
+        equippedWeaponId: this.equippedWeaponId,
+        node,
+        vehicle: this.vehicle,
+      });
       if (!this.applyMapOutcome(outcome, 'action')) return false;
       if (actionId === 'search') this.nodeSearchCounts[node.id] = (this.nodeSearchCounts[node.id] ?? 0) + 1;
       return true;
@@ -812,6 +1064,8 @@ export const useGameStore = defineStore('game', {
       if (!this.currentNodeId) this.initializeMapState();
       const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
       if (!node || !(node.actions ?? []).includes('search')) return false;
+      this.ensureNodeZombieState(node.id);
+      if (!this.canPerformWorldAction('search', durationForAction('search'))) return false;
       const outcome = resolveMapNodeAction({
         actionId: 'search',
         node,
@@ -832,6 +1086,15 @@ export const useGameStore = defineStore('game', {
           sourceName: searchable?.name ?? node.name,
           collectedItems,
         },
+        zombiePopulation: this.nodeZombieStates[node.id]?.count ?? 0,
+      });
+      outcome.skillXpGains = skillGainsForMapAction({
+        actionId: 'search',
+        outcome,
+        inventory: this.inventory,
+        equippedWeaponId: this.equippedWeaponId,
+        node,
+        vehicle: this.vehicle,
       });
       if (!this.applyMapOutcome(outcome, 'search')) return false;
       if (searchKey) this.markSceneSearchableSearched(searchKey);
@@ -860,6 +1123,13 @@ export const useGameStore = defineStore('game', {
       const committedInventory = projectedInventory.filter((item) => item.count > 0);
       const projectedUsedSpace = committedInventory.reduce((sum, item) => sum + item.space * item.count, 0);
       if (projectedUsedSpace > inventoryCapacityForState(this.$state, committedInventory)) return false;
+      const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
+      const actionDay = this.day;
+      const actionTime = this.clockLabel;
+      const actionStartMinutes = this.totalWorldMinutes;
+      const actionDuration = Math.max(0, Math.round(Number(outcome.minutes) || 0));
+      const actionEndMinutes = actionStartMinutes + actionDuration;
+      const actionEndDay = Math.floor(actionEndMinutes / (24 * 60)) + 1;
       this.inventory = committedInventory;
       if (this.equippedWeaponId && !this.inventory.some((item) => item.id === this.equippedWeaponId)) this.equippedWeaponId = null;
       outcome.removeTags?.forEach((tag) => {
@@ -878,13 +1148,31 @@ export const useGameStore = defineStore('game', {
       }
       if (outcome.revealNodeIds?.length) this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, ...outcome.revealNodeIds]);
       if (outcome.scoutDepth) this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, ...nodeNeighborhood(this.currentNodeId, outcome.scoutDepth)]);
+      if (node && Number(outcome.zombieKills) > 0) {
+        const before = this.ensureNodeZombieState(node.id);
+        const after = applyZombieKills(before, outcome.zombieKills, {
+          day: actionEndDay,
+          totalMinutes: actionEndMinutes,
+        });
+        outcome.kills = Math.max(0, before.count - after.count);
+        this.nodeZombieStates = { ...this.nodeZombieStates, [node.id]: after };
+      }
+      if (node && Number(outcome.encounterEvasionMinutes) > 0) {
+        const before = this.ensureNodeZombieState(node.id);
+        const after = grantEvasionWindow(before, {
+          totalMinutes: actionEndMinutes,
+          minutes: outcome.encounterEvasionMinutes,
+        });
+        this.nodeZombieStates = { ...this.nodeZombieStates, [node.id]: after };
+      }
+      const progression = this.grantSkillXp(outcome.skillXpGains ?? {});
+      const levelUpText = progression.levelUps
+        .map((entry) => `${skillDefinitions.find((skill) => skill.id === entry.skillId)?.label ?? entry.skillId}提升至 Lv.${entry.to}`)
+        .join('、');
       this.vitals = applyVitalDelta(this.vitals, outcome.vitals);
       this.survivalStats.actions += 1;
       this.survivalStats.zombiesKilled += Math.max(0, Number(outcome.kills) || 0);
       if (mode === 'move') this.survivalStats.distanceTravelled += 1;
-      const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
-      const actionDay = this.day;
-      const actionTime = this.clockLabel;
       this.history.push({
         day: actionDay,
         time: actionTime,
@@ -892,14 +1180,14 @@ export const useGameStore = defineStore('game', {
         log: node ? `${node.name} · ${node.resourceHint}` : '地图行动',
         action: outcome.action ?? outcome.title,
         result: outcome.result,
-        notes: outcome.notes,
+        notes: [outcome.notes, levelUpText].filter(Boolean).join(' / '),
         score: outcome.score,
       });
       this.mapLog.unshift({
         day: actionDay,
         time: actionTime,
         title: outcome.title,
-        text: outcome.result,
+        text: [outcome.result, levelUpText].filter(Boolean).join(' '),
         mode,
       });
       this.mapLog = this.mapLog.slice(0, 80);
@@ -916,6 +1204,7 @@ export const useGameStore = defineStore('game', {
       return true;
     },
     advanceSimulation({ minutes = 0, mode = 'active', noiseDelta = 0, threatDelta = 0 } = {}) {
+      const previousDay = this.day;
       const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
       const result = advanceSurvivalState({
         day: this.day,
@@ -938,6 +1227,10 @@ export const useGameStore = defineStore('game', {
       this.world = result.world;
       this.body = result.body;
       this.base = result.base;
+      if (this.day > previousDay) {
+        const migratedCount = this.refreshNodeZombieMigration();
+        if (migratedCount > 0) result.notices.push(`尸群迁入了这个地区，附近重新出现约 ${migratedCount} 只游荡者。`);
+      }
       this.survivalStats.hoursSurvived += result.elapsedHours;
       result.notices.forEach((notice) => {
         this.mapLog.unshift({
@@ -994,7 +1287,7 @@ export const useGameStore = defineStore('game', {
       return true;
     },
     submitAction(actionText, optionId = null) {
-      if (this.isGameOver || !this.ensureActiveEvent()) return false;
+      if (this.isGameOver || !this.canPerformWorldAction('event', 8 * 60) || !this.ensureActiveEvent()) return false;
       const outcome = resolveAction({
         day: this.day,
         actionText,
@@ -1303,6 +1596,16 @@ function normalizeSkills(skills) {
   return normalized;
 }
 
+function normalizeSkillGains(gains) {
+  if (!gains || typeof gains !== 'object' || Array.isArray(gains)) return {};
+  const validIds = new Set(skillDefinitions.map((skill) => skill.id));
+  return Object.fromEntries(
+    Object.entries(gains)
+      .filter(([skillId, amount]) => validIds.has(skillId) && Number.isFinite(Number(amount)) && Number(amount) > 0)
+      .map(([skillId, amount]) => [skillId, Math.min(9999, Math.round(Number(amount) * 100) / 100)])
+  );
+}
+
 function applyVitalMods(vitals, mods = {}) {
   Object.entries(mods).forEach(([key, value]) => {
     if (key in vitals && Number.isFinite(value)) vitals[key] = clampVital(key, vitals[key] + value);
@@ -1469,6 +1772,66 @@ function inventoryCapacityForState(state, inventory = []) {
   if (state.selectedTraits?.some((trait) => trait.id === 'organized')) return Math.floor(total * 1.3);
   if (state.selectedTraits?.some((trait) => trait.id === 'disorganized')) return Math.floor(total * 0.7);
   return total;
+}
+
+function worldMinutesForState(state) {
+  const day = clampInteger(state?.day, 1, 999999, 1);
+  const clockMinutes = clampInteger(state?.clockMinutes, 0, 24 * 60 - 1, START_MINUTE);
+  return (day - 1) * 24 * 60 + clockMinutes;
+}
+
+function skillGainsForMapAction({ actionId, outcome = {}, inventory = [], equippedWeaponId = null, node = null, vehicle = null } = {}) {
+  const kills = Math.max(0, Math.round(Number(outcome.kills) || 0));
+  if (actionId === 'combat_melee') {
+    const weapon = selectProgressionWeapon(inventory, equippedWeaponId, false);
+    return normalizeSkillGains({
+      [weapon?.effects?.skill ?? 'short_blunt']: 8 + kills * 4,
+      maintenance: 3 + kills * 2,
+    });
+  }
+  if (actionId === 'combat_firearm') {
+    return normalizeSkillGains({ aiming: 10 + kills * 4, reloading: 5 + kills * 2 });
+  }
+  if (actionId === 'evade') {
+    const success = (outcome.score ?? 0) >= 55;
+    return { sneaking: success ? 14 : 7, lightfooted: success ? 9 : 4, nimble: success ? 5 : 2 };
+  }
+  if (actionId === 'search') return { foraging: node?.type === 'wilds' ? 8 : 4, nimble: 2 };
+  if (actionId === 'scout') return { sneaking: 8, foraging: 5 };
+  if (actionId === 'forage') return { foraging: 16 };
+  if (actionId === 'fortify' && outcome.baseDelta) return { carpentry: 18, maintenance: 7 };
+  if (actionId === 'vehicle') return { mechanics: 14, electrical: 4 };
+  if (actionId === 'move') {
+    const usesVehicle = vehicle?.status !== 'none' && (vehicle?.fuel ?? 0) > 0;
+    return usesVehicle ? { mechanics: 2 } : { fitness: 2, sprinting: 3 };
+  }
+  return {};
+}
+
+function selectProgressionWeapon(inventory, equippedWeaponId, firearm) {
+  const weapons = inventory.filter((item) => item.count > 0 && item.tags?.includes('weapon'));
+  const valid = weapons.filter((item) => firearm ? item.tags?.includes('firearm') : !item.tags?.includes('firearm'));
+  return valid.find((item) => item.id === equippedWeaponId) ?? valid[0] ?? null;
+}
+
+function selectTreatmentWound(wounds, item) {
+  const source = Array.isArray(wounds) ? wounds : [];
+  let candidates = source;
+  if (item?.tags?.includes('bandage')) {
+    candidates = source.filter((wound) => !wound.bandaged || wound.dirtyBandage || wound.bleeding);
+  } else if (item?.tags?.includes('disinfect')) {
+    candidates = source.filter((wound) => !wound.disinfected || wound.infected);
+  }
+  return [...candidates].sort((a, b) => {
+    const priority = (wound) => (wound.dirtyBandage ? 100 : 0) + (wound.bleeding ? 50 : 0) + (wound.infected ? 25 : 0) + (Number(wound.severity) || 0);
+    return priority(b) - priority(a);
+  })[0] ?? null;
+}
+
+function levelUpSummary(progression) {
+  return (progression?.levelUps ?? [])
+    .map((entry) => `${skillDefinitions.find((skill) => skill.id === entry.skillId)?.label ?? entry.skillId}提升至 Lv.${entry.to}`)
+    .join('、');
 }
 
 function cloneSnapshot(value) {

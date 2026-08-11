@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { marketItems } from '../src/data/zombie.js';
 import {
+  DIRTY_BANDAGE_HOURS,
   START_MINUTE,
   advanceSurvivalState,
   createBaseState,
@@ -144,6 +145,21 @@ describe('survival clock and world simulation', () => {
 });
 
 describe('combat, ammunition, and wounds', () => {
+  it('gives an untrained but fit survivor a viable high-roll escape at medium danger', () => {
+    const outcome = resolveCombatEncounter({
+      approach: 'evade',
+      node: { name: '迪克西公路', danger: 3 },
+      skills: { fitness: 5, sneaking: 0, lightfooted: 0 },
+      vitals: { fatigue: 25, panic: 20 },
+      world: { weatherId: 'clear', threat: 30 },
+      zombiePopulation: 18,
+      rng: () => 0.99,
+    });
+
+    expect(outcome.score).toBeGreaterThanOrEqual(55);
+    expect(outcome.result).toContain('绕开尸群');
+  });
+
   it('rejects firearm combat without matching ammunition', () => {
     const outcome = resolveCombatEncounter({
       approach: 'combat_firearm',
@@ -274,6 +290,41 @@ describe('combat, ammunition, and wounds', () => {
     }
 
     expect(longAction.body.wounds[0].infected).toBe(true);
+    expect(longAction.body.infectionLevel).toBeCloseTo(0.84, 5);
+    expect(splitAction.body.infectionLevel).toBeCloseTo(longAction.body.infectionLevel, 5);
+  });
+
+  it('turns an old bandage dirty and only counts infection exposure after it becomes dirty', () => {
+    const wound = {
+      id: 'bandaged-laceration',
+      bodyPart: 'left_arm',
+      type: 'laceration',
+      severity: 3,
+      bleeding: false,
+      bandaged: true,
+      dirtyBandage: false,
+      bandageAgeHours: 0,
+      disinfected: false,
+      infected: false,
+      knoxInfection: false,
+      ageHours: 0,
+      source: 'test',
+    };
+    const startingState = {
+      day: 1,
+      clockMinutes: START_MINUTE,
+      vitals: baseVitals(),
+      world: createWorldState(),
+      body: { ...createBodyState(), wounds: [wound] },
+      base: createBaseState(),
+    };
+
+    const longAction = advanceSurvivalState({ ...startingState, minutes: 10 * 60 });
+    let splitAction = startingState;
+    for (let index = 0; index < 10; index += 1) splitAction = advanceSurvivalState({ ...splitAction, minutes: 60 });
+
+    expect(DIRTY_BANDAGE_HOURS).toBe(8);
+    expect(longAction.body.wounds[0]).toMatchObject({ dirtyBandage: true, bandageAgeHours: 10, infected: true });
     expect(longAction.body.infectionLevel).toBeCloseTo(0.84, 5);
     expect(splitAction.body.infectionLevel).toBeCloseTo(longAction.body.infectionLevel, 5);
   });
