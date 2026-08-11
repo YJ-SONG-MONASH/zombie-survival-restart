@@ -69,6 +69,14 @@ import {
   trunkStorageCapacity,
 } from '../services/storage.js';
 import {
+  claimWorldLoot,
+  createWorldLootContainer,
+  normalizeWorldLootContainer,
+  previewWorldLootClaim,
+  revealWorldLootSlots,
+  summarizeWorldLootContainer,
+} from '../services/world-loot.js';
+import {
   START_MINUTE,
   advanceSurvivalState,
   bodyPartLabels,
@@ -87,7 +95,7 @@ import {
   woundTypeLabels,
 } from '../services/survival.js';
 
-export const SAVE_VERSION = 5;
+export const SAVE_VERSION = 6;
 
 const defaultState = () => ({
   saveVersion: SAVE_VERSION,
@@ -127,6 +135,8 @@ const defaultState = () => ({
   movesRemaining: 1,
   mapLog: [],
   searchedSceneObjectIds: [],
+  legacyDepletedSceneObjectIds: [],
+  worldLootContainers: {},
   nodeSearchCounts: {},
   nodeZombieStates: {},
   activeTacticalEncounter: null,
@@ -207,6 +217,20 @@ export const useGameStore = defineStore('game', {
         const display = getItemConditionDisplay(item.conditionState);
         return display.tone === 'danger';
       }).length,
+    sceneLootSummary: (state) => (searchable, searchKey = '') => {
+      const requested = typeof searchKey === 'string' ? searchKey.trim() : '';
+      const key = requested && state.worldLootContainers?.[requested]
+        ? requested
+        : sceneLootKeyForState(state, searchable, requested);
+      if (!key) return null;
+      const raw = state.worldLootContainers?.[key];
+      if (!raw) {
+        return isLegacySceneLootDepleted(state, searchable)
+          ? legacyDepletedSceneLootSummary(key)
+          : null;
+      }
+      return summarizeWorldLootContainer(raw, worldLootContextForState(state, searchable, key));
+    },
     woundList: (state) => (state.body?.wounds ?? []).map((wound) => ({
       ...wound,
       bodyPartLabel: bodyPartLabels[wound.bodyPart] ?? wound.bodyPart,
@@ -400,6 +424,13 @@ export const useGameStore = defineStore('game', {
       if (!hasOwn('activeTacticalEncounter')) this.activeTacticalEncounter = null;
       if (!hasOwn('nextEncounterSequence')) this.nextEncounterSequence = 1;
       if (!hasOwn('firearmLoads')) this.firearmLoads = {};
+      if (!hasOwn('worldLootContainers')) this.worldLootContainers = {};
+      if (!hasOwn('legacyDepletedSceneObjectIds')) {
+        const rawSaveVersion = Number(rawState.saveVersion);
+        this.legacyDepletedSceneObjectIds = !Number.isFinite(rawSaveVersion) || rawSaveVersion < 6
+          ? [...new Set((Array.isArray(rawState.searchedSceneObjectIds) ? rawState.searchedSceneObjectIds : []).filter(Boolean))].slice(-512)
+          : [];
+      }
       if (!hasOwn('nodeZombieStates')) {
         this.nodeZombieStates = normalizeNodeZombieStates({}, {
           nodes: mapNodes,
@@ -592,6 +623,9 @@ export const useGameStore = defineStore('game', {
       this.searchedSceneObjectIds = Array.isArray(this.searchedSceneObjectIds)
         ? [...new Set(this.searchedSceneObjectIds.filter(Boolean))].slice(0, 240)
         : [];
+      this.legacyDepletedSceneObjectIds = Array.isArray(this.legacyDepletedSceneObjectIds)
+        ? [...new Set(this.legacyDepletedSceneObjectIds.filter((key) => typeof key === 'string' && key).map((key) => key.slice(0, 500)))].slice(-512)
+        : [];
       this.nodeSearchCounts = normalizeNodeSearchCounts(this.nodeSearchCounts);
       const currentDanger = mapNodes.find((node) => node.id === this.currentNodeId)?.danger ?? 3;
       this.world = normalizeWorldState(this.world, {
@@ -600,6 +634,7 @@ export const useGameStore = defineStore('game', {
         nodeDanger: currentDanger,
         shelterDefense: this.shelter?.defense ?? 0,
       });
+      this.worldLootContainers = normalizeWorldLootContainersForState(this.$state, this.worldLootContainers);
       this.nodeZombieStates = normalizeNodeZombieStates(this.nodeZombieStates, {
         nodes: mapNodes,
         seed: this.world.seed,
@@ -1193,6 +1228,8 @@ export const useGameStore = defineStore('game', {
       this.movesRemaining = 1;
       this.mapLog = [];
       this.searchedSceneObjectIds = [];
+      this.legacyDepletedSceneObjectIds = [];
+      this.worldLootContainers = {};
       this.nodeSearchCounts = {};
       this.nodeZombieStates = {};
       this.activeTacticalEncounter = null;
@@ -1656,51 +1693,149 @@ export const useGameStore = defineStore('game', {
       if (actionId === 'search') this.nodeSearchCounts[node.id] = (this.nodeSearchCounts[node.id] ?? 0) + 1;
       return true;
     },
-    resolveSceneSearch(searchable, collectedItems = [], searchKey = '') {
-      if (this.isGameOver || (searchKey && this.searchedSceneObjectIds.includes(searchKey))) return false;
-      if (!this.currentNodeId) this.initializeMapState();
-      const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
-      if (!node || !(node.actions ?? []).includes('search')) return false;
-      this.ensureNodeZombieState(node.id);
-      if (!this.canPerformWorldAction('search', durationForAction('search'))) return false;
-      const outcome = resolveMapNodeAction({
-        actionId: 'search',
-        node,
-        day: this.day,
-        clockMinutes: this.clockMinutes,
-        inventory: this.inventory,
-        tags: this.hiddenTags,
-        traits: this.selectedTraits,
-        vitals: this.vitals,
-        skills: this.skills,
-        profession: this.profession,
-        vehicle: vehicleAtCurrentNodeForState(this.$state),
-        world: this.world,
-        body: this.body,
-        base: this.base,
-        equippedWeaponId: this.equippedWeaponStackId ?? this.equippedWeaponId,
-        manualLoot: {
-          sourceName: searchable?.name ?? node.name,
-          collectedItems,
-        },
-        zombiePopulation: this.nodeZombieStates[node.id]?.count ?? 0,
-      });
-      outcome.skillXpGains = skillGainsForMapAction({
-        actionId: 'search',
-        outcome,
-        inventory: this.inventory,
-        equippedWeaponId: this.equippedWeaponStackId ?? this.equippedWeaponId,
-        node,
-        vehicle: vehicleAtCurrentNodeForState(this.$state),
-      });
-      if (!this.applyMapOutcome(outcome, 'search')) return false;
-      if (searchKey) this.markSceneSearchableSearched(searchKey);
-      return true;
+    openSceneLoot(searchable, searchKey = '') {
+      const access = sceneLootAccess(this, searchable, searchKey);
+      if (!access.ok) return access;
+      const { key, node, context } = access;
+      const legacyDepleted = !this.worldLootContainers?.[key]
+        && isLegacySceneLootDepleted(this.$state, searchable);
+      if (legacyDepleted) {
+        return { ok: false, reason: 'legacy_depleted', searchKey: key, summary: legacyDepletedSceneLootSummary(key) };
+      }
+      const raw = this.worldLootContainers?.[key] ?? createSceneLootContainerForState(this.$state, context, key);
+      const container = normalizeWorldLootContainer(raw, context);
+      this.worldLootContainers = commitWorldLootContainer(this.worldLootContainers, key, container);
+      return {
+        ok: true,
+        reason: null,
+        searchKey: key,
+        nodeId: node.id,
+        container: cloneSnapshot(container),
+        summary: summarizeWorldLootContainer(container, context),
+      };
     },
-    markSceneSearchableSearched(searchKey) {
-      if (!searchKey || this.searchedSceneObjectIds.includes(searchKey)) return false;
-      this.searchedSceneObjectIds = [...this.searchedSceneObjectIds, searchKey].slice(-240);
-      return true;
+    revealSceneLoot(searchable, command = {}, searchKey = '') {
+      const access = sceneLootAccess(this, searchable, searchKey);
+      if (!access.ok) return access;
+      const { key, node, context } = access;
+      const raw = this.worldLootContainers?.[key];
+      if (!raw) {
+        const legacyDepleted = isLegacySceneLootDepleted(this.$state, searchable);
+        if (legacyDepleted) return { ok: false, reason: 'legacy_depleted', searchKey: key };
+      }
+      const container = normalizeWorldLootContainer(raw ?? createSceneLootContainerForState(this.$state, context, key), context);
+      const completedAtMinutes = this.totalWorldMinutes + (container.searchCostPaid ? 0 : container.searchCost.minutes);
+      const result = revealWorldLootSlots(container, { ...command, completedAtMinutes }, context);
+      if (!result.ok) return { ...result, searchKey: key };
+
+      let committedContainer = result.nextState;
+      if (result.cost.minutes > 0) {
+        if (!this.canPerformWorldAction('search', result.cost.minutes)) {
+          return { ok: false, reason: 'unsafe_or_insufficient_window', searchKey: key };
+        }
+        const outcome = resolveMapNodeAction({
+          actionId: 'search',
+          node,
+          day: this.day,
+          clockMinutes: this.clockMinutes,
+          inventory: this.inventory,
+          tags: this.hiddenTags,
+          traits: this.selectedTraits,
+          vitals: this.vitals,
+          skills: this.skills,
+          profession: this.profession,
+          vehicle: vehicleAtCurrentNodeForState(this.$state),
+          world: this.world,
+          body: this.body,
+          base: this.base,
+          equippedWeaponId: this.equippedWeaponStackId ?? this.equippedWeaponId,
+          manualLoot: { sourceName: searchable?.name ?? node.name, collectedItems: [] },
+          zombiePopulation: this.nodeZombieStates[node.id]?.count ?? 0,
+        });
+        if (!outcome) return { ok: false, reason: 'search_resolution_failed', searchKey: key };
+        outcome.title = `翻找 ${searchable?.name ?? node.name}`;
+        outcome.result = `你花时间翻找了${searchable?.name ?? '这个容器'}，确认了里面还能带走的物资。未拿走的东西会继续留在原处。`;
+        outcome.notes = [
+          `发现 ${result.revealedSlots.length} 处物资`,
+          ...(typeof outcome.notes === 'string' ? outcome.notes.split(' / ') : Array.isArray(outcome.notes) ? outcome.notes : [])
+            .filter((note) => note && note !== '没有带走有价值物资'),
+        ].join(' / ');
+        outcome.minutes = result.cost.minutes;
+        outcome.noiseDelta = result.cost.noise;
+        outcome.threatDelta = Math.max(0, Math.ceil(result.cost.noise / 3));
+        outcome.add = [];
+        outcome.skillXpGains = skillGainsForMapAction({
+          actionId: 'search',
+          outcome,
+          inventory: this.inventory,
+          equippedWeaponId: this.equippedWeaponStackId ?? this.equippedWeaponId,
+          node,
+          vehicle: vehicleAtCurrentNodeForState(this.$state),
+        });
+        if (!this.applyMapOutcome(outcome, 'scene_search')) {
+          return { ok: false, reason: 'search_resolution_failed', searchKey: key };
+        }
+        committedContainer = advanceWorldLootConditionStates({ [key]: result.nextState }, result.cost.minutes)[key];
+      } else if (!this.canPerformWorldAction('search', 0, false)) {
+        return { ok: false, reason: 'unsafe_or_insufficient_window', searchKey: key };
+      }
+
+      this.worldLootContainers = commitWorldLootContainer(this.worldLootContainers, key, committedContainer);
+      return {
+        ...result,
+        nextState: cloneSnapshot(committedContainer),
+        searchKey: key,
+        summary: summarizeWorldLootContainer(committedContainer, context),
+      };
+    },
+    previewSceneLootClaim(searchable, request = {}, searchKey = '') {
+      const access = sceneLootAccess(this, searchable, searchKey);
+      if (!access.ok) return access;
+      if (!this.canPerformWorldAction('loot', 0, false)) {
+        return { ok: false, reason: 'unsafe_or_insufficient_window', searchKey: access.key };
+      }
+      const raw = this.worldLootContainers?.[access.key];
+      if (!raw) return { ok: false, reason: 'container_missing', searchKey: access.key };
+      return {
+        ...previewWorldLootClaim(raw, request, {
+          ...access.context,
+          inventory: this.inventory,
+          capacity: inventoryCapacityForState(this.$state, this.inventory),
+        }),
+        searchKey: access.key,
+      };
+    },
+    claimSceneLoot(searchable, command = {}, searchKey = '') {
+      const access = sceneLootAccess(this, searchable, searchKey);
+      if (!access.ok) return access;
+      if (!this.canPerformWorldAction('loot', 0, false)) {
+        return { ok: false, reason: 'unsafe_or_insufficient_window', searchKey: access.key };
+      }
+      const raw = this.worldLootContainers?.[access.key];
+      if (!raw) return { ok: false, reason: 'container_missing', searchKey: access.key };
+      const result = claimWorldLoot(raw, command, {
+        ...access.context,
+        inventory: this.inventory,
+        capacity: inventoryCapacityForState(this.$state, this.inventory),
+      });
+      if (!result.ok) return { ...result, searchKey: access.key };
+
+      this.inventory = result.inventory;
+      this.nextItemSequence = Math.min(
+        1_000_000_000,
+        this.nextItemSequence + result.claimedStacks.reduce((sum, item) => sum + Math.max(1, Number(item.count) || 1), 0),
+      );
+      this.worldLootContainers = commitWorldLootContainer(this.worldLootContainers, access.key, result.nextState);
+      const summary = summarizeWorldLootContainer(result.nextState, access.context);
+      this.mapLog.unshift({
+        day: this.day,
+        time: this.clockLabel,
+        title: `取走 ${searchable?.name ?? '地点物资'}`,
+        text: `你带走了${result.claimedStacks.map((item) => marketItems.find((entry) => entry.id === item.id)?.name ?? item.id).join('、')}。${summary.remaining ? `原处还剩 ${summary.remaining} 件物资。` : '这里已经搜空。'}`,
+        mode: 'loot',
+      });
+      this.mapLog = this.mapLog.slice(0, 80);
+      return { ...result, searchKey: access.key, summary };
     },
     applyMapOutcome(outcome, mode = 'action', allowTerminalCommit = false) {
       if (!outcome || (this.isGameOver && !allowTerminalCommit)) return false;
@@ -1849,6 +1984,7 @@ export const useGameStore = defineStore('game', {
         refrigerated: true,
         poweredMinutes: poweredRefrigerationMinutes,
       });
+      this.worldLootContainers = advanceWorldLootConditionStates(this.worldLootContainers, elapsedMinutes);
       if (this.day > previousDay) {
         const migratedCount = this.refreshNodeZombieMigration();
         if (migratedCount > 0) result.notices.push(`尸群迁入了这个地区，附近重新出现约 ${migratedCount} 只游荡者。`);
@@ -2744,6 +2880,152 @@ function advanceInventoryConditionStates(inventory, {
     }
     return { ...item, conditionState };
   });
+}
+
+function advanceWorldLootConditionStates(containers, elapsedMinutes = 0) {
+  const elapsed = Math.max(0, Number(elapsedMinutes) || 0);
+  if (!elapsed || !containers || typeof containers !== 'object' || Array.isArray(containers)) {
+    return containers && typeof containers === 'object' && !Array.isArray(containers) ? cloneSnapshot(containers) : {};
+  }
+  return Object.fromEntries(Object.entries(cloneSnapshot(containers)).map(([key, container]) => [
+    key,
+    {
+      ...container,
+      slots: Array.isArray(container?.slots) ? container.slots.map((slot) => {
+        if (slot?.status === 'claimed' || !slot?.item) return slot;
+        const catalogItem = marketItems.find((entry) => entry.id === slot.item.id);
+        if (!catalogItem) return slot;
+        let conditionState = normalizeItemConditionState(slot.item.conditionState, catalogItem);
+        if (conditionState.freshness) conditionState = advanceFoodSpoilage(conditionState, { elapsedMinutes: elapsed });
+        return { ...slot, item: { ...slot.item, conditionState } };
+      }) : [],
+    },
+  ]));
+}
+
+function createSceneLootContainerForState(state, context, key) {
+  const generated = createWorldLootContainer(context);
+  const elapsedSinceOutbreakStart = Math.max(0, worldMinutesForState(state) - START_MINUTE);
+  return advanceWorldLootConditionStates({ [key]: generated }, elapsedSinceOutbreakStart)[key];
+}
+
+function sceneLootKeyForState(state, searchable, requestedKey = '') {
+  const nodeId = typeof state?.currentNodeId === 'string' ? state.currentNodeId : '';
+  const objectId = typeof searchable?.id === 'string' ? searchable.id.trim() : '';
+  if (!nodeId || !objectId) return '';
+  const parentSection = typeof searchable?.parentSection === 'string' ? searchable.parentSection.trim() : '';
+  const parentId = typeof searchable?.parentId === 'string' ? searchable.parentId.trim() : '';
+  const canonical = [nodeId, parentSection, parentId, objectId].filter(Boolean).join(':');
+  if (!requestedKey) return canonical;
+  return typeof requestedKey === 'string' && requestedKey.trim() === canonical ? canonical : '';
+}
+
+function legacySceneLootAliases(state, searchable) {
+  const nodeId = typeof state?.currentNodeId === 'string' ? state.currentNodeId : '';
+  const objectId = typeof searchable?.id === 'string' ? searchable.id.trim() : '';
+  return nodeId && objectId ? [`${nodeId}:${objectId}`] : [];
+}
+
+function isLegacySceneLootDepleted(state, searchable) {
+  const tombstones = new Set([
+    ...(Array.isArray(state?.legacyDepletedSceneObjectIds) ? state.legacyDepletedSceneObjectIds : []),
+    ...(Array.isArray(state?.searchedSceneObjectIds) ? state.searchedSceneObjectIds : []),
+  ]);
+  return legacySceneLootAliases(state, searchable).some((alias) => tombstones.has(alias));
+}
+
+function worldLootContextForState(state, searchable, searchKey) {
+  const sourceNodeId = state?.worldLootContainers?.[searchKey]?.source?.nodeId;
+  const node = mapNodes.find((entry) => entry.id === (sourceNodeId || state?.currentNodeId))
+    ?? { id: sourceNodeId || state?.currentNodeId || 'unknown', danger: 0, type: 'unknown' };
+  return {
+    worldSeed: state?.world?.seed,
+    searchKey,
+    searchable: searchable && typeof searchable === 'object'
+      ? cloneSnapshot(searchable)
+      : { id: state?.worldLootContainers?.[searchKey]?.source?.searchableId || searchKey.split(':').at(-1) || 'unknown', quality: 'white' },
+    node,
+    catalog: marketItems,
+  };
+}
+
+function sceneLootAccess(store, searchable, requestedKey = '') {
+  if (store.isGameOver) return { ok: false, reason: 'game_over' };
+  const node = mapNodes.find((entry) => entry.id === store.currentNodeId);
+  if (!node || !(node.actions ?? []).includes('search')) return { ok: false, reason: 'wrong_node' };
+  if (store.inspectedNodeId && store.inspectedNodeId !== node.id) return { ok: false, reason: 'wrong_node' };
+  if (!isValidSceneSearchable(node.id, searchable)) return { ok: false, reason: 'unknown_searchable' };
+  const key = sceneLootKeyForState(store.$state, searchable, requestedKey);
+  if (!key) return { ok: false, reason: 'invalid_search_key' };
+  if (!store.nodeZombieStates?.[node.id]) return { ok: false, reason: 'world_not_ready', searchKey: key };
+  if (!store.canPerformWorldAction('loot', 0, false)) {
+    return { ok: false, reason: 'unsafe_or_insufficient_window', searchKey: key };
+  }
+  return { ok: true, reason: null, key, node, context: worldLootContextForState(store.$state, searchable, key) };
+}
+
+function isValidSceneSearchable(nodeId, searchable) {
+  const detail = mapNodeDetails[nodeId];
+  const objectId = typeof searchable?.id === 'string' ? searchable.id.trim() : '';
+  if (!detail || !objectId) return false;
+  const direct = (detail.searchables ?? []).some((entry) => entry.id === objectId);
+  const parentId = typeof searchable?.parentId === 'string' ? searchable.parentId.trim() : '';
+  if (!parentId) return direct;
+  if (!['landmark', 'building'].includes(searchable?.parentSection)) return false;
+  const parentSection = searchable.parentSection === 'landmark' ? 'landmarks' : 'buildings';
+  const parentExists = (detail[parentSection] ?? []).some((entry) => entry.id === parentId);
+  return parentExists && (direct || objectId.startsWith(`${parentId}_`));
+}
+
+function commitWorldLootContainer(rawContainers, key, container) {
+  const next = rawContainers && typeof rawContainers === 'object' && !Array.isArray(rawContainers)
+    ? cloneSnapshot(rawContainers)
+    : {};
+  delete next[key];
+  next[key] = cloneSnapshot(container);
+  return Object.fromEntries(Object.entries(next).slice(-512));
+}
+
+function normalizeWorldLootContainersForState(state, rawContainers) {
+  if (!rawContainers || typeof rawContainers !== 'object' || Array.isArray(rawContainers)) return {};
+  const result = {};
+  Object.entries(rawContainers).slice(-512).forEach(([rawKey, raw]) => {
+    const key = typeof rawKey === 'string' ? rawKey.trim().slice(0, 500) : '';
+    const nodeId = typeof raw?.source?.nodeId === 'string' ? raw.source.nodeId : key.split(':')[0];
+    const node = mapNodes.find((entry) => entry.id === nodeId);
+    if (!key || !node) return;
+    const searchableId = typeof raw?.source?.searchableId === 'string'
+      ? raw.source.searchableId
+      : key.split(':').at(-1);
+    const context = {
+      worldSeed: state?.world?.seed,
+      searchKey: key,
+      searchable: { id: searchableId || 'unknown', quality: 'white' },
+      node,
+      catalog: marketItems,
+    };
+    result[key] = normalizeWorldLootContainer(raw, context);
+  });
+  return result;
+}
+
+function legacyDepletedSceneLootSummary(searchKey) {
+  return {
+    searchKey,
+    revision: 0,
+    total: 0,
+    hidden: 0,
+    revealed: 0,
+    claimed: 0,
+    remaining: 0,
+    exhausted: true,
+    complete: true,
+    legacy: true,
+    searchCost: { minutes: 0, noise: 0 },
+    searchCostPaid: true,
+    searchCompletedAtMinutes: null,
+    slots: [],
+  };
 }
 
 function poweredMinutesForInterval({ day, clockMinutes, elapsedMinutes, world, base }) {

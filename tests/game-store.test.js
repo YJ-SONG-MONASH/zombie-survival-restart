@@ -76,6 +76,32 @@ describe('game store invariants', () => {
     expect(game.inventory).toEqual(before.inventory);
   });
 
+  it('advances ordinary choices by clock time instead of consuming a whole calendar day', () => {
+    expect(game.day).toBe(1);
+    expect(game.clockMinutes).toBe(8 * 60);
+
+    expect(game.submitAction('谨慎检查周围')).toBe(true);
+
+    expect(game.day).toBe(1);
+    expect(game.clockMinutes).toBe(16 * 60);
+    expect(game.survivalStats.hoursSurvived).toBeCloseTo(8);
+  });
+
+  it('describes daytime sleep as sleep rather than pretending a night passed', () => {
+    game.currentNodeId = game.spawnLocation.id;
+    game.inspectedNodeId = game.spawnLocation.id;
+    secureNode(game, game.currentNodeId);
+
+    expect(game.resolveNodeAction('sleep')).toBe(true);
+
+    expect(game.day).toBe(1);
+    expect(game.clockMinutes).toBe(16 * 60);
+    expect(game.history.at(-1)).toEqual(expect.objectContaining({
+      title: '补足睡眠',
+      result: expect.stringContaining('还没有浪费掉整整一天'),
+    }));
+  });
+
   it('locks character setup mutations after the survival run starts', () => {
     game.initializeMapState();
     expect(game.runPhase).toBe('running');
@@ -160,17 +186,8 @@ describe('game store invariants', () => {
     expect(game.body.wounds[0].knoxInfection).toBe(true);
   });
 
-  it('commits a staged location search exactly once and records its search key', () => {
-    game.currentNodeId = 'muldraugh';
-    game.inspectedNodeId = 'muldraugh';
-    const water = catalogItem('water_bottle');
-
-    expect(game.resolveSceneSearch({ name: '厨房橱柜' }, [water], 'muldraugh:kitchen')).toBe(true);
-    expect(game.inventory.find((item) => item.id === 'water_bottle')?.count).toBe(1);
-    expect(game.searchedSceneObjectIds).toContain('muldraugh:kitchen');
-
-    expect(game.resolveSceneSearch({ name: '厨房橱柜' }, [water], 'muldraugh:kitchen')).toBe(false);
-    expect(game.inventory.find((item) => item.id === 'water_bottle')?.count).toBe(1);
+  it('does not expose the legacy UI-supplied loot injection action', () => {
+    expect(game.resolveSceneSearch).toBeUndefined();
   });
 
   it('rejects a loot action atomically when all found items do not fit', () => {

@@ -305,8 +305,8 @@ describe('v0.5 tactical save migration and projections', () => {
     const game = useGameStore();
     game.loadPersistedState();
 
-    expect(SAVE_VERSION).toBe(5);
-    expect(game.saveVersion).toBe(5);
+    expect(SAVE_VERSION).toBe(6);
+    expect(game.saveVersion).toBe(6);
     expect(game.activeTacticalEncounter).toBeNull();
     expect(game.nextEncounterSequence).toBe(1);
     expect(game.firearmLoads).toEqual({});

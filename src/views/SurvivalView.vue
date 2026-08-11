@@ -338,10 +338,10 @@
                 <div class="scene-inspection-actions">
                   <button
                     class="primary-action"
-                    :disabled="encounterActive || !selectedSearchTarget || inspectedNode?.id !== currentNode?.id || isSearchableSpent(selectedSearchTarget)"
+                    :disabled="!selectedSearchTarget || Boolean(sceneSearchDisabledReason(selectedSearchTarget))"
                     @click="openLocationSearch(selectedSearchTarget)"
                   >
-                    {{ encounterActive ? '遭遇中无法搜索' : selectedSearchTarget ? searchButtonTextFor(selectedSearchTarget) : '选择一个对象' }}
+                    {{ selectedSearchTarget ? sceneSearchDisabledReason(selectedSearchTarget) || searchButtonTextFor(selectedSearchTarget) : '选择一个对象' }}
                   </button>
                 </div>
               </template>
@@ -871,69 +871,140 @@
       </article>
     </section>
 
-    <section v-if="locationSearch" class="move-confirm-backdrop" role="dialog" aria-modal="true">
-      <article class="location-search-dialog">
+    <section
+      v-if="locationSearch"
+      class="move-confirm-backdrop location-search-backdrop"
+      @click.self="leaveLocationSearch"
+      @keydown.esc.stop.prevent="leaveLocationSearch"
+    >
+      <article
+        ref="locationSearchDialog"
+        class="location-search-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="location-search-title"
+        tabindex="-1"
+      >
         <header class="location-search-header">
-          <div>
+          <div class="location-search-heading">
             <p class="panel-kicker">AREA SEARCH</p>
-            <h2>搜索 {{ locationSearch.searchable.name }}</h2>
-            <span>{{ currentNode?.name }} · {{ locationSearch.searchable.description }}</span>
+            <h2 id="location-search-title">搜索 {{ locationSearch.descriptor.name }}</h2>
+            <span>{{ currentNode?.name }} · {{ locationSearch.descriptor.description }}</span>
           </div>
-          <div class="location-search-summary">
+          <div class="location-search-summary" aria-label="地点物资进度">
             <strong>{{ locationSearchProgressText }}</strong>
-            <small>暂存 {{ locationStagedSpace }} 格 · 剩余 {{ locationRemainingSpace }} 格</small>
+            <span>留存 {{ locationLootSummary?.revealed ?? 0 }} 项</span>
+            <small>背包剩余 {{ formatNumber(game.remainingSpace) }} 格</small>
           </div>
+          <button class="location-search-close" aria-label="暂时离开地点搜索" @click="leaveLocationSearch">×</button>
         </header>
 
-        <div class="loot-grid location-loot-grid" aria-label="地点物资搜索区">
-          <button
-            v-for="slot in locationSearch.slots"
-            :key="slot.id"
-            :class="locationLootSlotClass(slot)"
-            :disabled="isLocationSlotDisabled(slot)"
-            :title="locationLootTooltip(slot)"
-            @click="searchLocationSlot(slot)"
-          >
-            <template v-if="slot.status === 'hidden'">
-              <span class="loot-silhouette"></span>
-              <em>{{ slot.space }} 格</em>
-              <strong>未知物资</strong>
-            </template>
-
-            <template v-else-if="slot.status === 'searching'">
-              <span class="search-lens">⌕</span>
-              <strong>搜索中</strong>
-            </template>
-
-            <template v-else>
-              <span class="item-icon">
-                <img v-if="lootItem(slot)" :src="itemIconSrc(lootItem(slot))" :alt="lootItem(slot).name" @error="markLocationItemIconMissing" />
-                <span>{{ lootItem(slot)?.fallbackIcon ?? '??' }}</span>
-              </span>
-              <strong>{{ lootItem(slot)?.name ?? '未知物资' }}</strong>
-              <em>{{ slot.status === 'taken' ? `暂存 · ${slot.space} 格` : '空间不足，未拿取' }}</em>
-            </template>
-          </button>
+        <div class="location-search-context">
+          <span>{{ locationSearchCostText }}</span>
+          <strong>未带走的物资会留在这里。</strong>
         </div>
 
-        <p v-if="locationSearch.error" class="location-search-error">{{ locationSearch.error }}</p>
+        <div class="location-search-main">
+          <div v-if="locationLootSlots.length" class="loot-grid location-loot-grid" aria-label="地点物资搜索区">
+            <button
+              v-for="slot in locationLootSlots"
+              :key="slot.slotId"
+              :class="locationLootSlotClass(slot)"
+              :disabled="isLocationSlotDisabled(slot)"
+              :aria-pressed="slot.persistedStatus === 'revealed' ? slot.selected : undefined"
+              :aria-label="locationLootAriaLabel(slot)"
+              :title="locationLootTooltip(slot)"
+              @click="toggleLocationLootSelection(slot)"
+            >
+              <template v-if="slot.status === 'hidden'">
+                <span class="loot-silhouette"></span>
+                <em>未翻找</em>
+                <strong>未知物资</strong>
+              </template>
 
-        <footer class="location-search-actions">
-          <button class="secondary" :disabled="locationSearch.started || locationSearch.searchingSlotId" @click="cancelLocationSearch">放弃搜索</button>
-          <button class="secondary" :disabled="!canSearchAllLocationSlots" @click="searchAllLocationSlots">
-            {{ locationSearch.searchingSlotId ? '搜索中' : `一键搜索 ${locationHiddenSlots.length}` }}
-          </button>
-          <button class="primary-action" :disabled="!locationSearch.started || locationSearch.searchingSlotId" @click="finishLocationSearch">
-            结束搜索并结算
-          </button>
-        </footer>
+              <template v-else-if="slot.status === 'searching'">
+                <span class="search-lens">⌕</span>
+                <strong>翻找中</strong>
+              </template>
+
+              <template v-else>
+                <span class="item-icon">
+                  <img v-if="slot.item" :src="itemIconSrc(slot.item)" :alt="slot.item.name" @error="markLocationItemIconMissing" />
+                  <span>{{ slot.item?.fallbackIcon ?? '??' }}</span>
+                </span>
+                <span class="location-loot-copy">
+                  <strong>{{ slot.item?.name ?? '未知物资' }}</strong>
+                  <small v-if="(slot.item?.count ?? 1) > 1">×{{ slot.item.count }}</small>
+                  <em>{{ slot.selected ? `准备带走 · ${formatNumber(slot.space)} 格` : `留在原处 · ${formatNumber(slot.space)} 格` }}</em>
+                </span>
+                <b v-if="slot.selected" class="location-loot-check" aria-hidden="true">✓</b>
+              </template>
+            </button>
+          </div>
+
+          <div v-else class="location-search-empty-state">
+            <strong>已经搜空</strong>
+            <span>{{ locationLootSummary?.legacy ? '旧存档已记录这里被搜空，不会重新生成物资。' : '这里已经没有能够带走的物资。' }}</span>
+          </div>
+        </div>
+
+        <div class="location-search-lower">
+          <p v-if="locationSearch.error" class="location-search-error" role="alert">{{ locationSearch.error }}</p>
+          <p v-if="locationSearch.feedback" class="location-search-feedback" role="status" aria-live="polite">{{ locationSearch.feedback }}</p>
+
+          <section v-if="locationSelectedSlots.length" class="storage-transfer-tray location-claim-tray">
+            <header>
+              <span>
+                <small>SELECTED LOOT</small>
+                <strong>已选 {{ locationSelectedSlots.length }} 项 · {{ formatNumber(locationSelectedSpace) }} 格</strong>
+              </span>
+              <button class="storage-selection-close" aria-label="清除地点物资选择" @click="clearLocationLootSelection">×</button>
+            </header>
+            <p>{{ locationSearch.descriptor.name }} → 随身背包</p>
+            <small :class="{ 'storage-transfer-reason': locationClaimDisabledReason }">
+              {{ locationClaimDisabledReason || `拿取后背包剩余 ${formatNumber(locationClaimPreview?.remainingSpace ?? game.remainingSpace)} 格。` }}
+            </small>
+          </section>
+
+          <footer :class="['location-search-actions', { 'is-exhausted': locationLootSummary?.exhausted }]">
+            <button class="secondary location-leave-button" @click="leaveLocationSearch">暂时离开</button>
+            <button
+              v-if="locationHiddenSlots.length"
+              class="secondary location-reveal-button"
+              :disabled="Boolean(locationSearch.busy)"
+              @click="revealAllLocationLoot"
+            >
+              {{ locationSearch.busy === 'reveal' ? '翻找中…' : locationLootSummary?.revealed ? `继续翻找 ${locationHiddenSlots.length}` : `翻找全部 ${locationHiddenSlots.length}` }}
+            </button>
+            <button
+              v-if="!locationLootSummary?.exhausted"
+              class="primary-action location-claim-button"
+              :disabled="Boolean(locationClaimDisabledReason)"
+              @click="claimSelectedLocationLoot"
+            >
+              {{ locationSearch.busy === 'claim' ? '拿取中…' : locationSelectedSlots.length ? `拿走 ${locationSelectedSlots.length} 项（${formatNumber(locationSelectedSpace)} 格）` : '选择物资后拿取' }}
+            </button>
+          </footer>
+        </div>
       </article>
     </section>
 
-    <section v-if="resolutionReport" class="move-confirm-backdrop" role="dialog" aria-modal="true">
-      <article class="resolution-dialog">
+    <section
+      v-if="resolutionReport"
+      class="move-confirm-backdrop resolution-backdrop"
+      @click.self="closeResolutionReport"
+      @keydown.esc.stop.prevent="closeResolutionReport"
+    >
+      <article
+        ref="resolutionDialog"
+        class="resolution-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="resolution-title"
+        tabindex="-1"
+      >
         <p class="panel-kicker">RESOLUTION</p>
-        <h2>{{ resolutionReport.title }}</h2>
+        <h2 id="resolution-title">{{ resolutionReport.title }}</h2>
         <p>{{ resolutionReport.result }}</p>
 
         <dl class="resolution-meta">
@@ -951,10 +1022,45 @@
           </div>
         </dl>
 
+        <section v-if="resolutionReport.exploration" class="exploration-resolution" aria-label="探索过程与数值变化">
+          <div class="exploration-resolution-facts">
+            <span>
+              <small>实际耗时</small>
+              <strong>{{ resolutionReport.exploration.durationText }}</strong>
+            </span>
+            <span>
+              <small>发现物资</small>
+              <strong>{{ resolutionReport.exploration.discoveryText }}</strong>
+            </span>
+            <span>
+              <small>翻找代价</small>
+              <strong>{{ resolutionReport.exploration.costText }}</strong>
+            </span>
+            <span>
+              <small>受伤 / 技能</small>
+              <strong>{{ resolutionReport.exploration.injuryText }} · {{ resolutionReport.exploration.skillText }}</strong>
+            </span>
+          </div>
+
+          <dl class="exploration-metric-grid">
+            <div v-for="metric in resolutionReport.exploration.metrics" :key="metric.id" :class="metric.tone">
+              <dt>{{ metric.label }}</dt>
+              <dd>
+                <span>{{ formatNumber(metric.before) }}</span>
+                <b aria-hidden="true">→</b>
+                <span>{{ formatNumber(metric.after) }}</span>
+                <em>{{ signed(metric.delta) }}</em>
+              </dd>
+            </div>
+          </dl>
+
+          <p class="exploration-persistence-note">未拿走的物资会留在原处；暂时离开后，回来可以继续挑选。</p>
+        </section>
+
         <div class="resolution-columns">
           <section>
             <h3>状态变化</h3>
-            <p v-if="!resolutionReport.vitalChanges.length && !resolutionReport.woundChanges.length">状态没有明显变化。</p>
+            <p v-if="!resolutionReport.vitalChanges.length && !resolutionReport.woundChanges.length && !resolutionReport.skillChanges.length">状态没有明显变化。</p>
             <span
               v-for="change in resolutionReport.vitalChanges"
               :key="change.id"
@@ -968,6 +1074,13 @@
               :class="['resolution-pill', change.tone]"
             >
               {{ change.label }}
+            </span>
+            <span
+              v-for="change in resolutionReport.skillChanges"
+              :key="change.id"
+              class="resolution-pill good"
+            >
+              {{ change.label }} XP {{ signed(change.delta) }}{{ change.levelText ? ` · ${change.levelText}` : '' }}
             </span>
           </section>
 
@@ -1010,9 +1123,9 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { itemTiers, lootTierWeights, mapEdges, mapNodeTypes, marketItems, shelters, skillDefinitions, vitalDefinitions, wikiAssetManifest } from '../data/zombie.js';
+import { mapEdges, mapNodeTypes, marketItems, shelters, skillDefinitions, vitalDefinitions, wikiAssetManifest } from '../data/zombie.js';
 import { useGameStore } from '../stores/game.js';
 
 const router = useRouter();
@@ -1023,7 +1136,9 @@ const selectedSceneElement = ref(null);
 const selectedSearchTarget = ref(null);
 const sceneInspectFeedback = ref('');
 const locationSearch = ref(null);
+const locationSearchDialog = ref(null);
 const resolutionReport = ref(null);
+const resolutionDialog = ref(null);
 const selectedExternalContainerId = ref('base');
 const activeStoragePaneId = ref('carry');
 const selectedStorageContainerId = ref('');
@@ -1038,6 +1153,8 @@ const tacticalSheetExpanded = ref(false);
 const selectedTacticalWeaponId = ref('');
 const lastAutoOpenedTacticalKey = ref('');
 const tacticalStartRequested = ref(false);
+let locationSearchSessionToken = 0;
+let locationSearchCommandSequence = 0;
 const tacticalActionFallbacks = [
   { id: 'push', label: '推开', estimatedOutcome: '争取身位，打断贴身尸体', staminaCost: 5, noiseDelta: 1 },
   { id: 'melee', label: '近战攻击', estimatedOutcome: '用当前主手攻击贴身目标', staminaCost: 6, noiseLabel: '随武器' },
@@ -1049,14 +1166,6 @@ const tacticalActionFallbacks = [
   { id: 'disengage', label: '脱离', estimatedOutcome: '尝试结束接触并建立安全窗口', staminaCost: 6, noiseDelta: 0 },
   { id: 'brace', label: '稳住阵脚', estimatedOutcome: '恢复平衡并少量恢复耐力，降低下一次失误风险', staminaCost: 0, noiseDelta: 0 },
 ];
-const searchSlotCountByQuality = {
-  white: 4,
-  green: 5,
-  blue: 6,
-  purple: 7,
-  gold: 8,
-  red: 9,
-};
 const vitalsForDisplay = computed(() => vitalDefinitions.map((vital) => {
   const value = game.vitals[vital.id] ?? 0;
   return {
@@ -1383,16 +1492,67 @@ const selectedScenePassiveResult = computed(() => {
   return `${entry.name}已标记为当前区域的参考点，下方对象可以逐个翻找。`;
 });
 const selectedNestedSearchables = computed(() => nestedSearchablesForSceneElement(selectedSceneElement.value, inspectedDetail.value));
-const locationHiddenSlots = computed(() => locationSearch.value?.slots.filter((slot) => slot.status === 'hidden') ?? []);
-const locationSearchedSlots = computed(() => locationSearch.value?.slots.filter((slot) => slot.status !== 'hidden') ?? []);
-const locationStagedSlots = computed(() => locationSearch.value?.slots.filter((slot) => slot.status === 'taken') ?? []);
-const locationStagedSpace = computed(() => locationStagedSlots.value.reduce((sum, slot) => sum + slot.space, 0));
-const locationRemainingSpace = computed(() => Math.max(0, game.remainingSpace - locationStagedSpace.value));
-const locationSearchProgressText = computed(() => {
-  if (!locationSearch.value) return '';
-  return `${locationSearchedSlots.value.length}/${locationSearch.value.slots.length}`;
+const locationLootSummary = computed(() => {
+  const search = locationSearch.value;
+  if (!search) return null;
+  return game.sceneLootSummary(search.descriptor, search.key) ?? null;
 });
-const canSearchAllLocationSlots = computed(() => Boolean(locationSearch.value && locationHiddenSlots.value.length && !locationSearch.value.searchingSlotId));
+const locationLootSlots = computed(() => (locationLootSummary.value?.slots ?? [])
+  .filter((slot) => slot.status !== 'claimed')
+  .map((slot) => {
+    const catalogItem = slot.item ? marketItems.find((item) => item.id === slot.item.id) ?? null : null;
+    const count = Math.max(1, Number(slot.item?.count) || 1);
+    const item = catalogItem ? { ...catalogItem, count, stackId: slot.item.stackId } : null;
+    const space = item ? Math.max(0, Number(item.space) || 0) * count : 0;
+    const selected = Boolean(item?.stackId && locationSearch.value?.selectedStackIds.includes(item.stackId));
+    const status = locationSearch.value?.busy === 'reveal' && slot.status === 'hidden' ? 'searching' : slot.status;
+    return {
+      ...slot,
+      persistedStatus: slot.status,
+      status,
+      item,
+      space,
+      selected,
+      tier: item?.tier ?? 'white',
+      footprint: item ? footprintForSpace(space) : '1x1',
+    };
+  }));
+const locationHiddenSlots = computed(() => locationLootSlots.value.filter((slot) => slot.persistedStatus === 'hidden'));
+const locationRevealedSlots = computed(() => locationLootSlots.value.filter((slot) => slot.persistedStatus === 'revealed'));
+const locationSelectedSlots = computed(() => locationRevealedSlots.value.filter((slot) => slot.selected));
+const locationSelectedStackIds = computed(() => locationSelectedSlots.value.map((slot) => slot.item.stackId));
+const locationSelectedSpace = computed(() => locationSelectedSlots.value.reduce((sum, slot) => sum + slot.space, 0));
+const locationSearchProgressText = computed(() => {
+  const summary = locationLootSummary.value;
+  if (!summary) return '0/0';
+  return `${Math.max(0, summary.total - summary.hidden)}/${summary.total}`;
+});
+const locationSearchCostText = computed(() => {
+  const summary = locationLootSummary.value;
+  if (!summary) return '地点状态正在同步。';
+  if (summary.exhausted) return '这里已经没有能够带走的物资。';
+  if (summary.searchCostPaid) return summary.hidden > 0 ? '已经翻过一部分；继续翻找不再额外耗时。' : '翻找已经完成，可以选择要带走的物资。';
+  const minutes = Math.max(0, Number(summary.searchCost?.minutes) || 0);
+  const noise = Math.max(0, Number(summary.searchCost?.noise) || 0);
+  return `首次翻找耗时 ${formatDuration(minutes)}${noise ? ` · 噪声 +${noise}` : ' · 保持安静'}`;
+});
+const locationClaimPreview = computed(() => {
+  const search = locationSearch.value;
+  const summary = locationLootSummary.value;
+  if (!search || !summary || !locationSelectedStackIds.value.length) return null;
+  return game.previewSceneLootClaim(search.descriptor, {
+    expectedRevision: summary.revision,
+    stackIds: locationSelectedStackIds.value,
+  }, search.key);
+});
+const locationClaimDisabledReason = computed(() => {
+  if (!locationSearch.value || !locationLootSummary.value) return '地点物资状态不可用';
+  if (locationSearch.value.busy === 'reveal') return '正在翻找，稍等片刻';
+  if (locationSearch.value.busy === 'claim') return '正在拿取物资';
+  if (!locationSelectedStackIds.value.length) return '请选择要带走的物资';
+  if (locationClaimPreview.value?.ok) return '';
+  return sceneLootFailureMessage(locationClaimPreview.value, 'claim');
+});
 const noiseLabel = computed(() => signalLabel(game.world?.noise, ['安静', '可闻', '嘈杂', '刺耳']));
 const threatLabel = computed(() => signalLabel(game.world?.threat, ['零散', '游荡', '聚集', '逼近']));
 const evacuationStatus = computed(() => {
@@ -1530,6 +1690,7 @@ watch(
 watch(
   () => game.currentNodeId,
   () => {
+    if (locationSearch.value) leaveLocationSearch();
     clearStorageSelection();
     storageActionFeedback.value = '';
     const preferred = externalStorageContainers.value.find((container) => container.accessible)
@@ -1596,29 +1757,34 @@ function selectSearchTarget(entry) {
 
 function openLocationSearch(searchable = selectedSearchTarget.value) {
   if (!searchable) return;
-  if (encounterActive.value) {
-    sceneInspectFeedback.value = '尸群仍在附近，先清场或成功绕行再搜索。';
+  const disabledReason = sceneSearchDisabledReason(searchable, { allowExhausted: true });
+  if (disabledReason) {
+    sceneInspectFeedback.value = disabledReason;
     return;
   }
-  if (inspectedNode.value?.id !== currentNode.value?.id) {
-    sceneInspectFeedback.value = '需要先移动到这个节点，才能搜索这里。';
+  const descriptor = { ...searchable };
+  const requestedKey = searchKeyFor(descriptor);
+  const opened = game.openSceneLoot(descriptor, requestedKey);
+  if (!opened?.ok && opened?.reason !== 'legacy_depleted') {
+    sceneInspectFeedback.value = sceneLootFailureMessage(opened, 'open');
     return;
   }
-  if (isSearchableSpent(searchable)) {
-    sceneInspectFeedback.value = '这里已经被你翻过一遍，继续搜只会浪费时间。';
+  const summary = opened?.summary ?? game.sceneLootSummary(descriptor, opened?.searchKey ?? requestedKey);
+  if (!summary) {
+    sceneInspectFeedback.value = '地点物资状态未能建立，请重新选择这个对象。';
     return;
   }
+  locationSearchSessionToken += 1;
   locationSearch.value = {
-    searchKey: searchKeyFor(searchable),
-    searchable: { ...searchable },
-    nodeId: currentNode.value.id,
-    slots: createLocationSearchSlots(searchable, currentNode.value),
-    searchingSlotId: null,
-    started: false,
+    descriptor,
+    key: opened?.searchKey ?? requestedKey,
+    selectedStackIds: [],
+    busy: '',
     error: '',
-    initialSnapshot: captureGameSnapshot(),
+    feedback: summary.legacy ? '旧存档已经记录这里被搜空，不会重新生成物资。' : '',
   };
   sceneInspectFeedback.value = '';
+  nextTick(() => locationSearchDialog.value?.focus());
 }
 
 function queueMoveToNode(node) {
@@ -1987,61 +2153,113 @@ function drinkStoredWater() {
   });
 }
 
-async function searchLocationSlot(slot) {
-  if (!locationSearch.value || locationSearch.value.searchingSlotId || slot.status !== 'hidden') return;
-  slot.status = 'searching';
-  locationSearch.value.searchingSlotId = slot.id;
-  locationSearch.value.started = true;
-  locationSearch.value.error = '';
-  await new Promise((resolve) => globalThis.setTimeout(resolve, 800));
-  const item = lootItem(slot);
-  const staged = Boolean(item && item.space <= locationRemainingSpace.value);
-  slot.status = staged ? 'taken' : 'revealed';
-  locationSearch.value.searchingSlotId = null;
-}
-
-async function searchAllLocationSlots() {
-  if (!locationSearch.value || locationSearch.value.searchingSlotId) return;
-  const slots = locationHiddenSlots.value;
-  if (!slots.length) return;
-  slots.forEach((slot) => {
-    slot.status = 'searching';
-  });
-  locationSearch.value.searchingSlotId = 'bulk';
-  locationSearch.value.started = true;
-  locationSearch.value.error = '';
-  await new Promise((resolve) => globalThis.setTimeout(resolve, 800));
-  let remainingSpace = locationRemainingSpace.value;
-  slots.forEach((slot) => {
-    if (slot.status !== 'searching') return;
-    const item = lootItem(slot);
-    const staged = Boolean(item && item.space <= remainingSpace);
-    if (staged) remainingSpace -= item.space;
-    slot.status = staged ? 'taken' : 'revealed';
-  });
-  locationSearch.value.searchingSlotId = null;
-}
-
-function cancelLocationSearch() {
-  if (locationSearch.value?.started || locationSearch.value?.searchingSlotId) return;
-  locationSearch.value = null;
-}
-
-function finishLocationSearch() {
-  if (!locationSearch.value || locationSearch.value.searchingSlotId || !locationSearch.value.started) return;
+async function revealAllLocationLoot() {
   const search = locationSearch.value;
-  const collectedItems = search.slots
-    .filter((slot) => slot.status === 'taken')
-    .map((slot) => lootItem(slot))
-    .filter(Boolean);
-  const resolved = game.resolveSceneSearch(search.searchable, collectedItems, search.searchKey);
-  if (!resolved) {
-    search.error = '搜索结算失败：地点状态已经变化或当前无法执行搜索。请保留窗口并重试。';
+  const summary = locationLootSummary.value;
+  const slotIds = locationHiddenSlots.value.map((slot) => slot.slotId);
+  if (!search || !summary || search.busy || !slotIds.length) return;
+
+  const sessionToken = locationSearchSessionToken;
+  const beforeReveal = captureGameSnapshot();
+  search.busy = 'reveal';
+  search.error = '';
+  search.feedback = '';
+  await new Promise((resolve) => globalThis.setTimeout(resolve, 720));
+  if (sessionToken !== locationSearchSessionToken || locationSearch.value !== search) return;
+
+  let result;
+  try {
+    result = game.revealSceneLoot(search.descriptor, {
+      commandId: nextSceneLootCommandId('reveal', summary.revision),
+      expectedRevision: summary.revision,
+      slotIds,
+    }, search.key);
+  } catch (error) {
+    search.busy = '';
+    search.error = error instanceof Error ? error.message : '翻找失败，地点物资没有发生变化。';
     return;
   }
+  if (sessionToken !== locationSearchSessionToken || locationSearch.value !== search) return;
+  search.busy = '';
+  if (!result?.ok) {
+    search.error = sceneLootFailureMessage(result, 'reveal');
+    return;
+  }
+  const revealedSlots = Array.isArray(result.revealedSlots) ? result.revealedSlots : [];
+  const discoveredStacks = revealedSlots.length || slotIds.length;
+  const discoveredCount = revealedSlots.length
+    ? revealedSlots.reduce((sum, slot) => sum + Math.max(1, Number(slot?.item?.count) || 1), 0)
+    : slotIds.length;
+  search.feedback = `发现 ${discoveredCount} 件物资。点击物资选择要带走的部分，其余会留在原处。`;
+  if (Math.max(0, Number(result.cost?.minutes) || 0) > 0) {
+    showResolutionReport(beforeReveal, {
+      title: `探索结算 · ${search.descriptor.name}`,
+      result: `首次翻找完成：发现 ${discoveredCount} 件物资，但没有自动拿取。`,
+      notes: `发现 ${discoveredCount} 件物资 · 未拿走的物资会留在原处`,
+      exploration: true,
+      discoveredCount,
+      discoveredStacks,
+      cost: result.cost,
+    });
+  }
+}
+
+function toggleLocationLootSelection(slot) {
+  const search = locationSearch.value;
+  const stackId = slot?.item?.stackId;
+  if (!search || search.busy || slot?.persistedStatus !== 'revealed' || !stackId) return;
+  search.selectedStackIds = search.selectedStackIds.includes(stackId)
+    ? search.selectedStackIds.filter((id) => id !== stackId)
+    : [...search.selectedStackIds, stackId];
+  search.error = '';
+  search.feedback = '';
+}
+
+function clearLocationLootSelection() {
+  if (!locationSearch.value || locationSearch.value.busy) return;
+  locationSearch.value.selectedStackIds = [];
+  locationSearch.value.error = '';
+}
+
+async function claimSelectedLocationLoot() {
+  const search = locationSearch.value;
+  const summary = locationLootSummary.value;
+  const stackIds = [...locationSelectedStackIds.value];
+  if (!search || !summary || locationClaimDisabledReason.value || !stackIds.length) return;
+
+  const sessionToken = locationSearchSessionToken;
+  search.busy = 'claim';
+  search.error = '';
+  search.feedback = '';
+  await nextTick();
+  if (sessionToken !== locationSearchSessionToken || locationSearch.value !== search) return;
+
+  let result;
+  try {
+    result = game.claimSceneLoot(search.descriptor, {
+      commandId: nextSceneLootCommandId('claim', summary.revision),
+      expectedRevision: summary.revision,
+      stackIds,
+    }, search.key);
+  } catch (error) {
+    search.busy = '';
+    search.error = error instanceof Error ? error.message : '拿取失败，物资仍留在原处。';
+    return;
+  }
+  if (sessionToken !== locationSearchSessionToken || locationSearch.value !== search) return;
+  search.busy = '';
+  if (!result?.ok) {
+    search.error = sceneLootFailureMessage(result, 'claim');
+    return;
+  }
+  const claimedNames = (result.claimedStacks ?? []).map((item) => `${itemName(item.id)}${item.count > 1 ? ` ×${item.count}` : ''}`);
+  search.selectedStackIds = [];
+  search.feedback = `${claimedNames.length ? `已拿走${claimedNames.join('、')}。` : '物资已经拿走。'}${result.summary?.remaining ? `原处还剩 ${result.summary.remaining} 项物资。` : '这里已经搜空。'}`;
+}
+
+function leaveLocationSearch() {
+  locationSearchSessionToken += 1;
   locationSearch.value = null;
-  selectedSearchTarget.value = null;
-  showResolutionReport(search.initialSnapshot, { title: `搜索 ${search.searchable.name}` });
 }
 
 function nestedSearchablesForSceneElement(parent, detail) {
@@ -2070,6 +2288,7 @@ function normalizeNestedSearchable(entry, parent) {
     assetId: entry.assetId || parent.assetId || 'tile_locker',
     quality: entry.quality || qualityForSceneParent(parent),
     description: entry.description || `${parent.name}里还有一处可以翻找的角落。`,
+    parentSection: parent.section,
     parentId: parent.id,
     parentName: parent.name,
   };
@@ -2092,6 +2311,7 @@ function generatedSearchablesForParent(parent) {
     assetId,
     quality: shiftedQuality(quality, tierShift),
     description,
+    parentSection: parent.section,
     parentId: parent.id,
     parentName: parent.name,
   });
@@ -2174,17 +2394,70 @@ function shiftedQuality(quality, shift = 0) {
 }
 
 function searchKeyFor(searchable) {
-  return `${currentNode.value?.id ?? 'unknown'}:${searchable.id}`;
+  const nodeId = currentNode.value?.id ?? '';
+  const objectId = typeof searchable?.id === 'string' ? searchable.id.trim() : '';
+  const parentSection = typeof searchable?.parentSection === 'string' ? searchable.parentSection.trim() : '';
+  const parentId = typeof searchable?.parentId === 'string' ? searchable.parentId.trim() : '';
+  if (!nodeId || !objectId) return '';
+  return parentSection && parentId
+    ? `${nodeId}:${parentSection}:${parentId}:${objectId}`
+    : `${nodeId}:${objectId}`;
 }
 
 function isSearchableSpent(searchable) {
-  return Boolean(searchable && game.searchedSceneObjectIds?.includes(searchKeyFor(searchable)));
+  if (!searchable) return false;
+  return Boolean(game.sceneLootSummary(searchable, searchKeyFor(searchable))?.exhausted);
 }
 
 function searchButtonTextFor(searchable) {
   if (inspectedNode.value?.id !== currentNode.value?.id) return '到达后搜索';
-  if (isSearchableSpent(searchable)) return '已经搜过';
+  const summary = game.sceneLootSummary(searchable, searchKeyFor(searchable));
+  if (summary?.exhausted) return '已经搜空';
+  if (summary?.hidden && summary?.revealed) return `继续翻找 · 未知 ${summary.hidden}`;
+  if (summary?.hidden && summary?.searchCostPaid) return `继续翻找 · 未知 ${summary.hidden}`;
+  if (summary?.revealed) return `继续搜刮 · 留存 ${summary.revealed}`;
   return '搜索这里';
+}
+
+function sceneSearchDisabledReason(searchable, { allowExhausted = false } = {}) {
+  if (!searchable) return '选择一个对象';
+  if (game.isGameOver) return '本局已经结束';
+  if (encounterActive.value) return '尸群仍在附近，先清场或脱离';
+  if (inspectedNode.value?.id !== currentNode.value?.id) return '需要到达这个地点';
+  const summary = game.sceneLootSummary(searchable, searchKeyFor(searchable));
+  if (!allowExhausted && summary?.exhausted) return '这个容器已经搜空';
+  return '';
+}
+
+function sceneLootFailureMessage(result, operation = 'open') {
+  const reason = result?.reason;
+  const messages = {
+    game_over: '本局已经结束。',
+    wrong_node: '需要到达这个地点，才能接触这里的物资。',
+    invalid_search_key: '地点标识已经变化，请重新选择这个对象。',
+    world_not_ready: '地点状态还没有准备好，请稍后重试。',
+    unsafe_or_insufficient_window: '尸群仍在附近或安全窗口不足，先清场或脱离。',
+    legacy_depleted: '旧存档已经记录这里被搜空。',
+    container_missing: '地点物资尚未建立，请重新打开这个对象。',
+    invalid_request: '物资请求无效，请重新选择。',
+    invalid_command: '操作指令无效，请重试。',
+    invalid_selection: operation === 'reveal' ? '没有可继续翻找的位置。' : '请选择要带走的物资。',
+    slot_missing: '地点状态已变化，请重新打开搜索。',
+    slot_not_hidden: '其中一处已经被翻开，列表已刷新。',
+    stale_revision: '地点物资状态已变化，请重新选择。',
+    duplicate_command: '这次操作已经处理，请勿重复提交。',
+    stack_missing: '选中的物资已经不在原处。',
+    stack_not_revealed: '先翻找出这件物资，再尝试拿取。',
+    stack_id_conflict: '背包里存在冲突的物资记录，请重新打开搜索。',
+    capacity_exceeded: `背包还差 ${formatNumber(result?.overflow ?? 0)} 格。`,
+    catalog_item_missing: '这件物资的资料缺失，暂时无法拿取。',
+  };
+  return messages[reason] ?? (operation === 'claim' ? '无法拿取这些物资，它们仍留在原处。' : operation === 'reveal' ? '翻找失败，地点物资没有发生变化。' : '当前无法搜索这个对象。');
+}
+
+function nextSceneLootCommandId(kind, revision) {
+  locationSearchCommandSequence += 1;
+  return `scene-loot:${kind}:${game.totalWorldMinutes}:${revision}:${locationSearchCommandSequence}`;
 }
 
 function slugify(value = '') {
@@ -2194,147 +2467,38 @@ function slugify(value = '') {
 function locationLootSlotClass(slot) {
   return [
     'loot-slot',
+    'location-loot-slot',
     `footprint-${slot.footprint}`,
     `status-${slot.status}`,
+    { selected: slot.selected, busy: Boolean(locationSearch.value?.busy) },
     slot.status === 'hidden' || slot.status === 'searching' ? 'quality-unknown' : `quality-${slot.tier}`,
   ];
 }
 
 function isLocationSlotDisabled(slot) {
-  return slot.status === 'hidden' && Boolean(locationSearch.value?.searchingSlotId);
+  return Boolean(locationSearch.value?.busy) || slot.persistedStatus !== 'revealed';
 }
 
 function locationLootTooltip(slot) {
-  if (slot.status === 'hidden') return `未知物资\n占用：${slot.space} 格\n点击搜索。`;
-  if (slot.status === 'searching') return '搜索中';
-  const item = lootItem(slot);
+  if (slot.status === 'hidden') return '未知物资；使用下方翻找按钮揭示。';
+  if (slot.status === 'searching') return '翻找中';
+  const item = slot.item;
   if (!item) return '未知物资';
   return [
     item.name,
-    `品质：${tierMeta(item.tier).shortLabel}`,
-    `占用：${item.space} 格`,
+    item.count > 1 ? `数量：${item.count}` : '',
+    `占用：${formatNumber(slot.space)} 格`,
+    slot.selected ? '准备带走' : '留在原处',
     item.description,
   ].filter(Boolean).join('\n');
 }
 
-function createLocationSearchSlots(searchable, node) {
-  const quality = searchable?.quality ?? 'green';
-  const targetCount = searchSlotCountByQuality[quality] ?? 5;
-  const slots = [];
-  const searchKey = searchKeyFor(searchable);
-  const rng = createSearchRandom(game.world?.seed, searchKey);
-  const guaranteedItem = pickLocationSearchItem(searchable, node, quality, rng);
-  if (guaranteedItem) slots.push(createLocationSearchSlot(guaranteedItem, slots.length, searchable, 'marked'));
-  let attempts = 0;
-  while (slots.length < targetCount && attempts < targetCount * 30) {
-    attempts += 1;
-    const tier = pickLocationLootTier(rng);
-    const item = pickLocationSearchItem(searchable, node, tier, rng);
-    if (item) slots.push(createLocationSearchSlot(item, slots.length, searchable, 'random'));
-  }
-  return slots;
-}
-
-function createLocationSearchSlot(item, index, searchable, source) {
-  return {
-    id: `area-${searchable.id}-${index}-${item.id}`,
-    itemId: item.id,
-    status: 'hidden',
-    space: item.space,
-    footprint: footprintForSpace(item.space),
-    tier: item.tier,
-    source,
-  };
-}
-
-function createSearchRandom(worldSeed, searchKey) {
-  const normalizedSeed = Number.isFinite(Number(worldSeed)) ? Math.trunc(Number(worldSeed)) : 0;
-  const input = `${normalizedSeed}:${searchKey}`;
-  let state = (2166136261 ^ (normalizedSeed >>> 0)) >>> 0;
-  for (let index = 0; index < input.length; index += 1) {
-    state ^= input.charCodeAt(index);
-    state = Math.imul(state, 16777619) >>> 0;
-  }
-  return () => {
-    state = (state + 0x6D2B79F5) >>> 0;
-    let mixed = state;
-    mixed = Math.imul(mixed ^ (mixed >>> 15), mixed | 1);
-    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
-    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function pickLocationLootTier(rng) {
-  const totalWeight = lootTierWeights.reduce((sum, entry) => sum + entry.weight, 0);
-  let roll = rng() * totalWeight;
-  for (const entry of lootTierWeights) {
-    roll -= entry.weight;
-    if (roll < 0) return entry.tier;
-  }
-  return lootTierWeights[lootTierWeights.length - 1].tier;
-}
-
-function pickLocationSearchItem(searchable, node, tier, rng) {
-  const candidates = marketItems.filter((item) => item.tier === tier);
-  const pool = candidates.length ? candidates : marketItems;
-  const weighted = pool.map((item) => ({ item, weight: locationItemWeight(item, searchable, node) }));
-  const totalWeight = weighted.reduce((sum, entry) => sum + entry.weight, 0);
-  let roll = rng() * totalWeight;
-  for (const entry of weighted) {
-    roll -= entry.weight;
-    if (roll < 0) return entry.item;
-  }
-  return weighted[weighted.length - 1]?.item ?? null;
-}
-
-function locationItemWeight(item, searchable, node) {
-  const text = `${searchable?.name ?? ''} ${searchable?.description ?? ''} ${searchable?.assetId ?? ''} ${node?.resourceHint ?? ''} ${node?.type ?? ''}`.toLowerCase();
-  const bias = searchBiasFromText(text);
-  let weight = 1;
-  if (bias.categories.includes(item.category)) weight += 6;
-  (item.tags ?? []).forEach((tag) => {
-    if (bias.tags.includes(tag)) weight += 4;
-  });
-  if (bias.items.includes(item.id)) weight += 9;
-  if (item.tier === searchable?.quality) weight += 2;
-  return weight;
-}
-
-function searchBiasFromText(text) {
-  const bias = { categories: [], tags: [], items: [] };
-  const add = (field, values) => values.forEach((value) => {
-    if (!bias[field].includes(value)) bias[field].push(value);
-  });
-  if (/药|医|诊|hospital|clinic|medical|med/.test(text)) add('categories', ['medical']);
-  if (/警|枪|弹|gun|police|ammo|cruiser/.test(text)) {
-    add('categories', ['weapon', 'ammo']);
-    add('tags', ['firearm', 'ammo', 'weapon']);
-    add('items', ['m9_pistol', 'm36_revolver', 'shotgun_shells', '9mm_rounds']);
-  }
-  if (/消防|斧|fire/.test(text)) {
-    add('categories', ['weapon', 'tool', 'base']);
-    add('tags', ['axe', 'tool']);
-    add('items', ['fire_axe', 'hand_axe', 'crowbar']);
-  }
-  if (/餐|厨|食|饮|罐头|冰柜|杂货|store|restaurant|kitchen|pantry|shelf/.test(text)) {
-    add('categories', ['food', 'morale']);
-    add('tags', ['food', 'water', 'morale']);
-  }
-  if (/仓|工具|车库|柜|箱|托盘|warehouse|locker|crate|storage|garage/.test(text)) {
-    add('categories', ['tool', 'base', 'bag']);
-    add('tags', ['tool', 'material', 'repair', 'capacity']);
-  }
-  if (/加油|燃油|车辆|后备箱|车|gas|fuel|trunk|wreck|vehicle/.test(text)) {
-    add('categories', ['vehicle', 'tool', 'bag', 'food']);
-    add('tags', ['vehicle', 'fuel', 'mechanics', 'capacity']);
-    add('items', ['gas_can', 'jack', 'lug_wrench']);
-  }
-  if (/农|种子|园艺|钓|河|farm|seed|fishing|camp/.test(text)) {
-    add('categories', ['survival', 'food', 'tool']);
-    add('tags', ['farming', 'fishing', 'seed', 'water']);
-  }
-  if (!bias.categories.length) add('categories', ['food', 'tool', 'medical']);
-  return bias;
+function locationLootAriaLabel(slot) {
+  if (slot.status === 'hidden') return '未知物资，尚未翻找';
+  if (slot.status === 'searching') return '未知物资，翻找中';
+  const item = slot.item;
+  if (!item) return '未知物资';
+  return `${item.name}${item.count > 1 ? `，数量 ${item.count}` : ''}，占用 ${formatNumber(slot.space)} 格，${slot.selected ? '已选择，点击留在原处' : '留在原处，点击准备带走'}`;
 }
 
 function footprintForSpace(space) {
@@ -2352,6 +2516,8 @@ function captureGameSnapshot() {
     clockMinutes: game.clockMinutes,
     clockLabel: game.clockLabel,
     vitals: { ...game.vitals },
+    skills: { ...game.skills },
+    skillXp: { ...game.skillXp },
     inventory: Object.fromEntries(game.inventory.map((item) => [item.id, { count: item.count, name: item.name }])),
     hiddenTags: [...game.hiddenTags],
     vehicle: { ...game.vehicle },
@@ -2370,12 +2536,20 @@ function captureGameSnapshot() {
 
 function showResolutionReport(before, context = {}) {
   resolutionReport.value = buildResolutionReport(before, captureGameSnapshot(), context);
+  nextTick(() => resolutionDialog.value?.focus());
 }
 
 function buildResolutionReport(before, after, context = {}) {
   const latestHistory = game.history[game.history.length - 1];
   const latestMapLog = game.mapLog[0];
   const elapsedMinutes = Math.max(0, (after.day - before.day) * 24 * 60 + (after.clockMinutes - before.clockMinutes));
+  const woundChanges = woundDiff(before.body, after.body);
+  const skillChanges = skillXpDiff(before, after);
+  const discoveredCount = Math.max(0, Number(context.discoveredCount) || 0);
+  const discoveredStacks = Math.max(0, Number(context.discoveredStacks) || 0);
+  const searchCostMinutes = Math.max(0, Number(context.cost?.minutes) || 0);
+  const searchCostNoise = Math.max(0, Number(context.cost?.noise) || 0);
+  const totalSkillXp = skillChanges.reduce((sum, change) => sum + change.delta, 0);
   return {
     title: context.title ?? latestHistory?.title ?? latestMapLog?.title ?? '行动结算',
     result: context.result ?? latestHistory?.result ?? latestMapLog?.text ?? '行动已经结算。',
@@ -2396,12 +2570,65 @@ function buildResolutionReport(before, after, context = {}) {
         };
       })
       .filter(Boolean),
-    woundChanges: woundDiff(before.body, after.body),
+    woundChanges,
+    skillChanges,
     inventoryChanges: inventoryDiff(before.inventory, after.inventory),
     tagChanges: tagDiff(before.hiddenTags, after.hiddenTags),
     vehicleChange: vehicleDiff(before.vehicle, after.vehicle),
     worldChanges: worldDiff(before, after),
+    exploration: context.exploration ? {
+      durationText: formatDuration(elapsedMinutes),
+      discoveryText: discoveredStacks && discoveredStacks !== discoveredCount
+        ? `${formatNumber(discoveredCount)} 件 · ${formatNumber(discoveredStacks)} 组`
+        : `${formatNumber(discoveredCount)} 件`,
+      costText: `${formatDuration(searchCostMinutes)}${searchCostNoise ? ` · 噪声 +${formatNumber(searchCostNoise)}` : ' · 无额外噪声'}`,
+      injuryText: woundChanges.length ? `${woundChanges.length} 项伤势变化` : '无新增伤势',
+      skillText: totalSkillXp > 0 ? `经验 +${formatNumber(totalSkillXp)}` : '无经验变化',
+      metrics: explorationMetricDiff(before, after),
+    } : null,
   };
+}
+
+function explorationMetricDiff(before, after) {
+  const definitions = [
+    { id: 'health', label: '生命', group: 'vitals', positiveIsBad: false },
+    { id: 'endurance', label: '耐力', group: 'vitals', positiveIsBad: false },
+    { id: 'fatigue', label: '疲劳', group: 'vitals', positiveIsBad: true },
+    { id: 'panic', label: '恐慌', group: 'vitals', positiveIsBad: true },
+    { id: 'stress', label: '压力', group: 'vitals', positiveIsBad: true },
+    { id: 'noise', label: '噪声', group: 'world', positiveIsBad: true },
+    { id: 'threat', label: '威胁', group: 'world', positiveIsBad: true },
+  ];
+  return definitions.map((definition) => {
+    const beforeValue = Number(before[definition.group]?.[definition.id]) || 0;
+    const afterValue = Number(after[definition.group]?.[definition.id]) || 0;
+    const delta = Math.round((afterValue - beforeValue) * 10) / 10;
+    const bad = definition.positiveIsBad ? delta > 0 : delta < 0;
+    return {
+      ...definition,
+      before: beforeValue,
+      after: afterValue,
+      delta,
+      tone: delta === 0 ? 'neutral' : bad ? 'bad' : 'good',
+    };
+  });
+}
+
+function skillXpDiff(before = {}, after = {}) {
+  return skillDefinitions
+    .map((skill) => {
+      const delta = Math.round(((Number(after.skillXp?.[skill.id]) || 0) - (Number(before.skillXp?.[skill.id]) || 0)) * 100) / 100;
+      if (delta <= 0) return null;
+      const beforeLevel = Math.max(0, Number(before.skills?.[skill.id]) || 0);
+      const afterLevel = Math.max(0, Number(after.skills?.[skill.id]) || 0);
+      return {
+        id: skill.id,
+        label: skill.label,
+        delta,
+        levelText: afterLevel > beforeLevel ? `Lv.${beforeLevel} → Lv.${afterLevel}` : '',
+      };
+    })
+    .filter(Boolean);
 }
 
 function inventoryDiff(before, after) {
@@ -2740,16 +2967,8 @@ function itemIconSrc(item) {
   return `${import.meta.env.BASE_URL}pz-items/${catalogItem.iconFile}`;
 }
 
-function lootItem(slot) {
-  return marketItems.find((item) => item.id === slot.itemId);
-}
-
 function itemName(id) {
   return marketItems.find((item) => item.id === id)?.name ?? id;
-}
-
-function tierMeta(tierId) {
-  return itemTiers.find((tier) => tier.id === tierId) ?? itemTiers[0];
 }
 
 function assetById(assetId) {

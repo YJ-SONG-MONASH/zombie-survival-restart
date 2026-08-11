@@ -255,8 +255,8 @@ describe('v0.4 save migration', () => {
 
     game.loadPersistedState();
 
-    expect(SAVE_VERSION).toBe(5);
-    expect(game.saveVersion).toBe(5);
+    expect(SAVE_VERSION).toBe(6);
+    expect(game.saveVersion).toBe(6);
     expect(game.baseInventory).toEqual([]);
     expect(game.vehicleInventory).toEqual([]);
     expect(game.inventory.every((entry) => entry.stackId && entry.conditionState)).toBe(true);

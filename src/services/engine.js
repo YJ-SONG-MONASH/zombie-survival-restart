@@ -272,6 +272,8 @@ export function resolveNodeAction({
   }
 
   if (actionId === 'sleep') {
+    const sleepMinutes = durationForAction('sleep');
+    const sleepCrossesNight = clockMinutes < 6 * 60 || clockMinutes >= 18 * 60 || clockMinutes + sleepMinutes >= 24 * 60;
     vitalDelta.health = base?.defense >= 4 ? 4 : 1;
     vitalDelta.endurance = 12;
     vitalDelta.fatigue = -20;
@@ -280,8 +282,8 @@ export function resolveNodeAction({
     notes.push('完整睡眠');
     return mapOutcome({
       day,
-      title: '熬过一夜',
-      result: `你在${node.name}把入口重新检查一遍，然后断断续续睡了几个小时。${(world?.threat ?? 0) >= 70 ? '远处持续有撞击和拖行声，今晚并不安稳。' : '天亮前没有东西真正靠近你的藏身处。'}`,
+      title: sleepCrossesNight ? '熬过一夜' : '补足睡眠',
+      result: `你在${node.name}把入口重新检查一遍，然后断断续续睡了几个小时。${(world?.threat ?? 0) >= 70 ? '远处持续有撞击和拖行声，这段睡眠并不安稳。' : sleepCrossesNight ? '天亮前没有东西真正靠近你的藏身处。' : '醒来时附近依旧安静，你还没有浪费掉整整一天。'}`,
       notes,
       score: 72 + (base?.defense ?? 0) * 3 - danger * 4,
       vitalDelta,
@@ -289,7 +291,7 @@ export function resolveNodeAction({
       add,
       addTags,
       removeTags,
-      minutes: durationForAction('sleep'),
+      minutes: sleepMinutes,
       mode: 'sleep',
       noiseDelta: -12,
       threatDelta: -8,
