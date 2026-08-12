@@ -23,6 +23,9 @@ const secureNode = (game, nodeId) => {
   state.lastRefreshDay = game.day;
   return state;
 };
+const syncPressureClock = (game) => {
+  game.localPressure.lastProcessedMinute = game.totalWorldMinutes;
+};
 
 describe('game store invariants', () => {
   let localStorage;
@@ -254,6 +257,7 @@ describe('game store invariants', () => {
     game.visitedNodeIds = ['west_point'];
     game.knownNodeIds = ['west_point', 'valley_checkpoint'];
     game.vitals.health = 2;
+    syncPressureClock(game);
     secureNode(game, 'west_point');
     secureNode(game, 'valley_checkpoint');
 
@@ -274,6 +278,7 @@ describe('game store invariants', () => {
     game.inspectedNodeId = 'west_point';
     game.visitedNodeIds = ['west_point'];
     game.knownNodeIds = ['west_point', 'valley_checkpoint'];
+    syncPressureClock(game);
     secureNode(game, 'west_point');
     const checkpointState = game.ensureNodeZombieState('valley_checkpoint');
     checkpointState.count = Math.max(1, checkpointState.count);
@@ -305,6 +310,7 @@ describe('game store invariants', () => {
     game.inspectedNodeId = 'west_point';
     game.visitedNodeIds = ['west_point'];
     game.knownNodeIds = ['west_point', 'valley_checkpoint'];
+    syncPressureClock(game);
     secureNode(game, 'west_point');
 
     expect(game.moveToNode('valley_checkpoint')).toBe(true);

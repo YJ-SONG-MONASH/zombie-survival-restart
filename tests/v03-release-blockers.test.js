@@ -45,6 +45,7 @@ function prepareEvacuation(game, { count, graceMinutes = 0 }) {
   game.initializeMapState();
   game.day = game.maxDay;
   game.clockMinutes = 10 * 60;
+  game.localPressure.lastProcessedMinute = game.totalWorldMinutes;
   const state = setActiveEncounter(game, 'valley_checkpoint', count);
   state.evasionUntilMinutes = graceMinutes > 0 ? game.totalWorldMinutes + graceMinutes : 0;
   if (count === 0) state.clearedDay = game.day;
@@ -263,6 +264,7 @@ describe('v0.3 compatibility and midnight ordering', () => {
     const game = useGameStore();
     game.initializeMapState();
     game.clockMinutes = 23 * 60 + 59;
+    game.localPressure.lastProcessedMinute = game.totalWorldMinutes;
     const state = setActiveEncounter(game, 'muldraugh', 1);
     game.inventory = [catalogItem('baseball_bat')];
     game.equippedWeaponId = 'baseball_bat';

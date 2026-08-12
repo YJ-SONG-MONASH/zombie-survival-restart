@@ -2255,6 +2255,32 @@ input:focus {
   line-height: 1.5;
 }
 
+.node-local-pressure-detail dd {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  align-items: center;
+}
+
+.node-local-pressure-detail dd span {
+  display: inline-flex;
+  gap: 5px;
+  align-items: baseline;
+  white-space: nowrap;
+}
+
+.node-local-pressure-detail dd b {
+  color: #f1e2a8;
+  font-size: 0.72rem;
+}
+
+.node-local-pressure-detail dd em {
+  flex-basis: 100%;
+  color: #fbbf24;
+  font-size: 0.76rem;
+  font-style: normal;
+}
+
 .movement-targets,
 .map-actions {
   display: grid;
@@ -3040,6 +3066,197 @@ input:focus {
   min-width: 0;
   overflow-x: hidden;
   padding-bottom: 2px;
+}
+
+.tactical-action-dock {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid rgba(248, 113, 113, 0.52);
+  border-radius: 8px;
+  background:
+    linear-gradient(145deg, rgba(69, 10, 10, 0.96), rgba(9, 12, 7, 0.985)),
+    #080b06;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.46);
+}
+
+.tactical-action-dock.details-open {
+  box-shadow: 0 9px 24px rgba(0, 0, 0, 0.6);
+}
+
+.tactical-dock-heading,
+.tactical-dock-action-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.tactical-dock-heading > div {
+  min-width: 0;
+}
+
+.tactical-dock-heading h3,
+.tactical-dock-heading p {
+  margin: 0;
+}
+
+.tactical-dock-heading h3 {
+  color: #fff1f2;
+  font-size: 1rem;
+}
+
+.tactical-dock-heading > span {
+  flex: 0 0 auto;
+  color: #fca5a5;
+  font-size: 0.65rem;
+}
+
+.tactical-dock-context {
+  display: grid;
+  grid-template-columns: 1.6fr repeat(2, minmax(0, 0.7fr));
+  gap: 6px;
+  min-width: 0;
+}
+
+.tactical-dock-context > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 6px 7px;
+  border: 1px solid rgba(248, 113, 113, 0.2);
+  border-radius: 5px;
+  overflow: hidden;
+  color: #f8fafc;
+  background: rgba(2, 6, 23, 0.42);
+  font-size: 0.68rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tactical-dock-context b {
+  color: #94a3b8;
+  font-size: 0.56rem;
+  letter-spacing: 0.05em;
+}
+
+.tactical-dock-hint,
+.tactical-dock-result {
+  min-height: 32px;
+  margin: 0 !important;
+  padding: 7px 8px;
+  border: 1px solid rgba(200, 180, 107, 0.3);
+  border-radius: 5px;
+  overflow-wrap: anywhere;
+  color: #fef3c7 !important;
+  background: rgba(60, 48, 18, 0.28);
+  font-size: 0.68rem;
+  line-height: 1.35 !important;
+}
+
+.tactical-dock-result.tone-good {
+  border-color: rgba(74, 222, 128, 0.46);
+  color: #bbf7d0 !important;
+  background: rgba(20, 83, 45, 0.3);
+}
+
+.tactical-dock-result.tone-danger {
+  border-color: rgba(248, 113, 113, 0.58);
+  color: #fecaca !important;
+  background: rgba(127, 29, 29, 0.38);
+}
+
+.tactical-dock-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  min-width: 0;
+}
+
+.tactical-dock-action {
+  display: grid;
+  gap: 3px;
+  align-content: start;
+  min-width: 0;
+  min-height: 70px;
+  padding: 7px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 6px;
+  color: #e2e8f0;
+  background: rgba(15, 23, 42, 0.66);
+  text-align: left;
+  cursor: pointer;
+}
+
+.tactical-dock-action:hover:not(:disabled),
+.tactical-dock-action:focus-visible,
+.tactical-dock-action.recommended:not(:disabled) {
+  border-color: #facc15;
+  outline: none;
+  color: #fff7d6;
+  background: linear-gradient(145deg, rgba(113, 63, 18, 0.6), rgba(31, 41, 23, 0.78));
+}
+
+.tactical-dock-action:disabled,
+.tactical-dock-action.blocked {
+  opacity: 0.54;
+  cursor: not-allowed;
+}
+
+.tactical-dock-action-heading strong {
+  overflow: hidden;
+  color: inherit;
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tactical-dock-action-heading em {
+  flex: 0 0 auto;
+  padding: 1px 4px;
+  border-radius: 999px;
+  color: #1c1917;
+  background: #facc15;
+  font-size: 0.52rem;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.tactical-dock-action > span:not(.tactical-dock-action-heading),
+.tactical-dock-action small {
+  overflow: hidden;
+  font-size: 0.6rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tactical-dock-action > span:not(.tactical-dock-action-heading) {
+  color: #fca5a5;
+}
+
+.tactical-dock-action small {
+  color: #94a3b8;
+}
+
+.tactical-details-toggle {
+  min-height: 44px;
+  border: 1px solid rgba(122, 143, 92, 0.42);
+  border-radius: 6px;
+  color: #d9d7bd;
+  background: rgba(28, 37, 20, 0.92);
+  cursor: pointer;
+}
+
+.tactical-details-toggle:hover,
+.tactical-details-toggle:focus-visible {
+  border-color: #c8b46b;
+  outline: none;
+  color: #fffbe1;
 }
 
 .tactical-situation-card,
@@ -4931,6 +5148,70 @@ input:focus {
   color: #e0dfc4;
 }
 
+.map-current-node-heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.map-current-node-heading h2 {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.local-pressure-inline {
+  display: flex;
+  flex: 1 1 210px;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  min-width: 0;
+}
+
+.local-pressure-chip,
+.local-pressure-migration {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: 22px;
+  padding: 3px 6px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 999px;
+  color: #cbd5e1;
+  background: rgba(15, 23, 42, 0.58);
+  font-size: 0.62rem;
+  font-style: normal;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.local-pressure-chip b {
+  color: #e0dfc4;
+  font-size: inherit;
+}
+
+.local-pressure-chip.tone-medium {
+  border-color: rgba(250, 204, 21, 0.34);
+  color: #fde68a;
+  background: rgba(113, 63, 18, 0.26);
+}
+
+.local-pressure-chip.tone-high,
+.local-pressure-chip.tone-extreme {
+  border-color: rgba(248, 113, 113, 0.48);
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.3);
+}
+
+.local-pressure-migration {
+  border-color: rgba(200, 180, 107, 0.45);
+  color: #f1e2a8;
+  background: rgba(92, 73, 20, 0.34);
+}
+
 .map-quick-panel p {
   color: #cbd5e1;
   line-height: 1.48;
@@ -5236,7 +5517,7 @@ input:focus {
 }
 
 .map-drawer-tabs button {
-  min-height: 42px;
+  min-height: 44px;
   border: 1px solid rgba(122, 143, 92, 0.35);
   border-radius: 6px;
   color: #cbd5e1;
@@ -7290,6 +7571,53 @@ input:focus {
     font-size: 1rem;
   }
 
+  .map-current-node-heading {
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+
+  .map-current-node-heading h2 {
+    flex: 0 1 62px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .local-pressure-inline {
+    flex: 1 1 auto;
+    flex-wrap: nowrap;
+    gap: 2px;
+  }
+
+  .local-pressure-inline::before {
+    content: '本地';
+    flex: 0 0 auto;
+    color: #94a3b8;
+    font-size: 0.52rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+  }
+
+  .local-pressure-chip,
+  .local-pressure-migration {
+    min-height: 19px;
+    padding: 2px 4px;
+    font-size: 0.55rem;
+  }
+
+  .local-pressure-chip .local-pressure-prefix {
+    display: none;
+  }
+
+  .local-pressure-migration {
+    flex: 0 1 auto;
+    justify-content: center;
+  }
+
+  .map-current-node-heading:has(.local-pressure-migration) h2 {
+    display: none;
+  }
+
   .local-zombie-strip {
     grid-template-columns: 22px minmax(0, 1fr);
     gap: 6px;
@@ -7782,6 +8110,7 @@ input:focus {
   }
 
   .tactical-encounter-drawer {
+    position: fixed;
     top: auto;
     right: 0;
     bottom: 0;
@@ -7815,6 +8144,50 @@ input:focus {
   .tactical-drawer-section {
     gap: 9px;
     padding-right: 1px;
+  }
+
+  .tactical-action-dock {
+    gap: 6px;
+    padding: 8px;
+    border-radius: 7px;
+  }
+
+  .tactical-dock-heading h3 {
+    font-size: 0.92rem;
+  }
+
+  .tactical-dock-heading > span {
+    font-size: 0.59rem;
+  }
+
+  .tactical-dock-context > span {
+    padding: 4px 5px;
+    font-size: 0.62rem;
+  }
+
+  .tactical-dock-hint,
+  .tactical-dock-result {
+    min-height: 28px;
+    padding: 5px 6px;
+    font-size: 0.62rem;
+  }
+
+  .tactical-dock-actions {
+    gap: 5px;
+  }
+
+  .tactical-dock-action {
+    min-height: 64px;
+    padding: 6px;
+  }
+
+  .tactical-dock-action-heading strong {
+    font-size: 0.7rem;
+  }
+
+  .tactical-details-toggle {
+    min-height: 44px;
+    font-size: 0.72rem;
   }
 
   .tactical-situation-card,

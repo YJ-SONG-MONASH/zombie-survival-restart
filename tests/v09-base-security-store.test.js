@@ -51,6 +51,10 @@ function setExteriorPopulation(game, count) {
   };
 }
 
+function syncPressureClock(game) {
+  game.localPressure.lastProcessedMinute = game.totalWorldMinutes;
+}
+
 function prepareRun(game, shelterId = 'gated_villa') {
   game.shelter = clone(shelters.find((entry) => entry.id === shelterId) ?? shelters[0]);
   game.initializeMapState();
@@ -283,6 +287,7 @@ describe('v0.9 base security Store integration', () => {
   it('crosses midnight by the exact work duration and commits the command once', () => {
     game.day = 1;
     game.clockMinutes = 23 * 60 + 30;
+    syncPressureClock(game);
     game.baseSecurity = createBaseSecurity({ shelter: game.shelter, totalMinutes: game.totalWorldMinutes });
     const materials = installWorkMaterials(game);
     const command = workCommand(game, materials, { commandId: 'midnight-once' });
@@ -298,6 +303,7 @@ describe('v0.9 base security Store integration', () => {
     game.shelter = clone(shelters.find((entry) => entry.id === 'basement'));
     game.day = 1;
     game.clockMinutes = 0;
+    syncPressureClock(game);
     game.baseSecurity = createBaseSecurity({ shelter: game.shelter, totalMinutes: 0 });
     game.baseSecurity.openings.forEach((opening) => {
       opening.integrity = 5;
@@ -324,6 +330,7 @@ describe('v0.9 base security Store integration', () => {
   it('is perimeter-equivalent for one twelve-hour advance and six two-hour advances', () => {
     game.day = 1;
     game.clockMinutes = 0;
+    syncPressureClock(game);
     setExteriorPopulation(game, 0);
     game.baseSecurity = createBaseSecurity({ shelter: game.shelter, totalMinutes: 0, legacyBarricades: 3 });
     const initial = clone(game.$state);
@@ -342,6 +349,7 @@ describe('v0.9 base security Store integration', () => {
   it('does not let midnight migrants attack an earlier observation in a long sleep', () => {
     game.day = 1;
     game.clockMinutes = 17 * 60;
+    syncPressureClock(game);
     game.world.seed = 4;
     game.world.threat = 0;
     game.world.noise = 0;
@@ -408,7 +416,7 @@ describe('v0.9 base security migration', () => {
 
     restored.loadPersistedState();
 
-    expect(SAVE_VERSION).toBe(10);
+    expect(SAVE_VERSION).toBe(11);
     expect(restored.saveVersion).toBe(SAVE_VERSION);
     expect(restored.baseSecurity).toMatchObject({ revision: 0, lastProcessedHour: 82, lastIncident: null });
     expect(restored.baseSecuritySummary).toMatchObject({ totalBarricade: 125, legacyBarricades: 5 });

@@ -37,6 +37,10 @@ function secureNode(game, nodeId) {
   return state;
 }
 
+function syncPressureClock(game) {
+  game.localPressure.lastProcessedMinute = game.totalWorldMinutes;
+}
+
 function prepareSafeRun(game) {
   game.shelter = clone(shelters[0]);
   expect(game.initializeMapState()).toBe(true);
@@ -432,7 +436,7 @@ describe('v0.10 Store transaction release blockers', () => {
     expect(game.inspectedNodeDetail).toBeNull();
   });
 
-  it('uses danger squared with zero edge risk and produces a real fastest/safest route split', () => {
+  it('uses danger as a floor plus live local pressure and produces a real fastest/safest route split', () => {
     prepareSafeRun(game);
     game.currentNodeId = 'riverside';
     game.inspectedNodeId = 'riverside';
@@ -450,12 +454,15 @@ describe('v0.10 Store transaction release blockers', () => {
     expect(fastest.outboundPath).not.toEqual(safest.outboundPath);
     expect(fastest.travelMinutes).toBeLessThan(safest.travelMinutes);
     expect(fastest.riskScore).toBeGreaterThan(safest.riskScore);
+    let dynamicRiskSegments = 0;
     for (const profile of [fastest, safest]) {
       for (const segment of profile.outboundSegments) {
         const destination = mapNodes.find((node) => node.id === segment.toNodeId);
-        expect(segment.risk).toBe(destination.danger ** 2);
+        expect(segment.risk).toBeGreaterThanOrEqual(destination.danger ** 2);
+        if (segment.risk > destination.danger ** 2) dynamicRiskSegments += 1;
       }
     }
+    expect(dynamicRiskSegments).toBeGreaterThan(0);
   });
 
   it('rolls back inventory, container, log, and expedition when the exact claim hook fails', () => {
@@ -515,7 +522,7 @@ describe('v0.10 Store transaction release blockers', () => {
     localStorage.values.set('moshi-survival-state', JSON.stringify({ game: legacy }));
     const migrated = useGameStore(createPinia());
     migrated.loadPersistedState();
-    expect(migrated.saveVersion).toBe(10);
+    expect(migrated.saveVersion).toBe(11);
     expect(migrated.expedition).toEqual({
       version: 1,
       revision: 0,
@@ -629,6 +636,7 @@ describe('v0.10 Store transaction release blockers', () => {
     game.inspectedNodeId = 'west_point';
     game.visitedNodeIds = ['west_point'];
     game.knownNodeIds = ['west_point', 'valley_checkpoint'];
+    syncPressureClock(game);
     secureNode(game, 'west_point');
     secureNode(game, 'valley_checkpoint');
     startPlan(game, { targetNodeId: 'valley_checkpoint' });
@@ -649,6 +657,7 @@ describe('v0.10 Store transaction release blockers', () => {
     game.inspectedNodeId = 'west_point';
     game.visitedNodeIds = ['west_point'];
     game.knownNodeIds = ['west_point', 'valley_checkpoint'];
+    syncPressureClock(game);
     secureNode(game, 'west_point');
     const checkpoint = game.ensureNodeZombieState('valley_checkpoint');
     checkpoint.count = 1;

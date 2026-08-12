@@ -106,7 +106,33 @@
 
       <aside :class="['map-quick-panel', { 'has-active-encounter': encounterActive || tacticalModeVisible, 'has-tactical-encounter': tacticalModeVisible, 'has-active-expedition': expeditionPlanView.active }]">
         <p class="panel-kicker">CURRENT NODE</p>
-        <h2>{{ currentNode?.name ?? '未定位' }}</h2>
+        <div class="map-current-node-heading">
+          <h2>{{ currentNode?.name ?? '未定位' }}</h2>
+          <div
+            v-if="currentNodePressure || currentNodePressureMigration"
+            class="local-pressure-inline"
+            aria-label="当前地点的本地噪声与活动度，不是世界全局值"
+            title="仅代表当前地点，不是世界全局值"
+          >
+            <span
+              v-if="currentNodePressure"
+              :class="['local-pressure-chip', `tone-${currentNodePressure.noiseBand}`]"
+            >
+              <b>⌁ <span class="local-pressure-prefix">本地</span>噪声</b>
+              {{ localPressureBandLabel(currentNodePressure.noiseBand, 'noise') }} {{ formatNumber(currentNodePressure.noise) }}
+            </span>
+            <span
+              v-if="currentNodePressure"
+              :class="['local-pressure-chip', `tone-${currentNodePressure.activityBand}`]"
+            >
+              <b>◉ <span class="local-pressure-prefix">本地</span>活动</b>
+              {{ localPressureBandLabel(currentNodePressure.activityBand, 'activity') }} {{ formatNumber(currentNodePressure.activity) }}
+            </span>
+            <em v-if="currentNodePressureMigration" class="local-pressure-migration">
+              {{ currentNodePressureMigration.text }}
+            </em>
+          </div>
+        </div>
         <div class="node-meta-row">
           <span>{{ currentNodeType?.label ?? '未知类型' }}</span>
           <span>风险 {{ dangerStars(currentNode?.danger) }}</span>
@@ -290,6 +316,20 @@
               <div>
                 <dt>可挂载庇护所</dt>
                 <dd>{{ shelterNames(inspectedNode?.shelterIds).join(' / ') || '暂无记录' }}</dd>
+              </div>
+              <div v-if="inspectedNodePressure" class="node-local-pressure-detail">
+                <dt>本地动静</dt>
+                <dd title="仅代表这个地点，不是世界全局值">
+                  <span>
+                    <b>⌁ 噪声</b>
+                    {{ localPressureBandLabel(inspectedNodePressure.noiseBand, 'noise') }} · {{ formatNumber(inspectedNodePressure.noise) }}
+                  </span>
+                  <span>
+                    <b>◉ 活动</b>
+                    {{ localPressureBandLabel(inspectedNodePressure.activityBand, 'activity') }} · {{ formatNumber(inspectedNodePressure.activity) }}
+                  </span>
+                  <em v-if="inspectedNodePressureMigration">{{ inspectedNodePressureMigration.text }}</em>
+                </dd>
               </div>
             </dl>
 
@@ -663,6 +703,71 @@
 
         <section v-else-if="activeDrawer === 'survival'" :class="['drawer-section', 'survival-drawer-section', { 'tactical-drawer-section': tacticalModeVisible }]">
           <template v-if="tacticalModeVisible">
+            <section
+              v-if="!tacticalTerminal"
+              :class="['tactical-action-dock', { 'details-open': tacticalDetailsExpanded }]"
+              aria-labelledby="tactical-action-dock-heading"
+            >
+              <div class="tactical-dock-heading">
+                <div>
+                  <p class="panel-kicker">CONTEXT ACTIONS</p>
+                  <h3 id="tactical-action-dock-heading">现在就能做</h3>
+                </div>
+                <span>{{ tacticalActions.filter((action) => !action.disabled).length }} 个可立即执行</span>
+              </div>
+
+              <div class="tactical-dock-context" aria-label="当前战术上下文">
+                <span>
+                  <b>目标</b>
+                  {{ tacticalDockTargetLabel }}
+                </span>
+                <span>
+                  <b>距离</b>
+                  {{ tacticalRangeLabel }}
+                </span>
+                <span>
+                  <b>脱离</b>
+                  {{ tacticalSummary.escapeProgress }}%
+                </span>
+              </div>
+
+              <p
+                v-if="tacticalActionFeedback"
+                :class="['tactical-dock-result', `tone-${tacticalActionFeedbackTone}`]"
+                role="status"
+                aria-live="polite"
+              >
+                {{ tacticalActionFeedback }}
+              </p>
+              <p v-else class="tactical-dock-hint" role="status">
+                {{ tacticalActionBusy ? '正在结算这一回合…' : tacticalDockHint }}
+              </p>
+
+              <div class="tactical-dock-actions" aria-label="推荐战术行动">
+                <button
+                  v-for="action in tacticalDockActions"
+                  :key="`dock-${action.id}`"
+                  :class="['tactical-dock-action', `tone-${action.tone}`, { blocked: action.disabled, recommended: action.dockRecommended }]"
+                  :disabled="action.disabled || tacticalActionBusy || game.isGameOver"
+                  :title="action.disabledReason || action.description"
+                  @click="performTacticalAction(action)"
+                >
+                  <span class="tactical-dock-action-heading">
+                    <strong>{{ action.label }}</strong>
+                    <em v-if="action.dockRecommended">建议</em>
+                  </span>
+                  <span>{{ action.riskLabel }}</span>
+                  <small v-if="action.disabledReason">{{ action.disabledReason }}</small>
+                  <small v-else>{{ formatDuration(action.minutes) }} · 体力 {{ action.staminaLabel }}</small>
+                </button>
+              </div>
+
+              <button class="tactical-details-toggle" @click="toggleTacticalDetails">
+                {{ tacticalDetailsExpanded ? '收起完整战况' : `展开完整战况 · ${tacticalTargets.length} 个目标 / ${tacticalActions.length} 个动作` }}
+              </button>
+            </section>
+
+            <template v-if="tacticalDetailsExpanded || tacticalTerminal">
             <section :class="['tactical-situation-card', `tone-${tacticalSummary.tone}`]">
               <div class="drawer-subheading tactical-situation-heading">
                 <div>
@@ -812,18 +917,11 @@
                 </li>
               </ol>
             </section>
+            </template>
 
-            <footer class="tactical-drawer-footer">
-              <template v-if="tacticalTerminal">
-                <button class="secondary" @click="endTacticalEncounter">结束遭遇</button>
-                <button class="primary-action" @click="continueAfterTactical">继续探索</button>
-              </template>
-              <template v-else>
-                <span>{{ tacticalFooterHint }}</span>
-                <button class="tactical-sheet-toggle" @click="tacticalSheetExpanded = !tacticalSheetExpanded">
-                  {{ tacticalSheetExpanded ? '收起面板' : '展开面板' }}
-                </button>
-              </template>
+            <footer v-if="tacticalTerminal" class="tactical-drawer-footer">
+              <button class="secondary" @click="endTacticalEncounter">结束遭遇</button>
+              <button class="primary-action" @click="continueAfterTactical">继续探索</button>
             </footer>
           </template>
 
@@ -1723,6 +1821,7 @@ const tacticalActionBusy = ref(false);
 const tacticalActionFeedback = ref('');
 const tacticalActionFeedbackTone = ref('neutral');
 const tacticalSheetExpanded = ref(false);
+const tacticalDetailsExpanded = ref(false);
 const selectedTacticalWeaponId = ref('');
 const selectedTacticalTargetId = ref('');
 const lastAutoOpenedTacticalKey = ref('');
@@ -2102,14 +2201,51 @@ const tacticalActions = computed(() => {
   source.push(...supplied.filter((action) => action?.id && !fallbackIds.has(action.id)));
   return source.map(normalizeTacticalAction);
 });
+const tacticalDockActionPriority = ['disengage', 'step_back', 'brace', 'push', 'melee', 'fire', 'aim', 'reload', 'stomp'];
+const tacticalDockActions = computed(() => {
+  const enabled = tacticalActions.value.filter((action) => !action.disabled);
+  const enabledById = new Map(enabled.map((action) => [action.id, action]));
+  const orderedEnabled = tacticalDockActionPriority
+    .map((id) => enabledById.get(id))
+    .filter(Boolean);
+  orderedEnabled.push(...enabled.filter((action) => !tacticalDockActionPriority.includes(action.id)));
+
+  // Prefer immediate escape only when the Store says it is legal; the dock
+  // never overrides or recalculates the service's action eligibility.
+  const recommendedId = enabledById.has('disengage')
+    ? 'disengage'
+    : enabledById.has('step_back')
+      ? 'step_back'
+      : orderedEnabled[0]?.id;
+  const selected = orderedEnabled.slice(0, 3);
+  if (selected.length >= 3) {
+    return selected.map((action) => ({ ...action, dockRecommended: action.id === recommendedId }));
+  }
+
+  const usedIds = new Set(selected.map((action) => action.id));
+  const blocked = tacticalDockActionPriority
+    .map((id) => tacticalActions.value.find((action) => action.id === id))
+    .filter((action) => action && !usedIds.has(action.id))
+    .slice(0, 3 - selected.length);
+  return [...selected, ...blocked].map((action) => ({
+    ...action,
+    dockRecommended: action.id === recommendedId,
+  }));
+});
+const tacticalDockTargetLabel = computed(() => {
+  if (!selectedTacticalTarget.value) return '未锁定';
+  return `${selectedTacticalTarget.value.typeLabel} · HP ${selectedTacticalTarget.value.hp}/${selectedTacticalTarget.value.maxHp}`;
+});
+const tacticalDockHint = computed(() => {
+  const recommended = tacticalDockActions.value.find((action) => action.dockRecommended && !action.disabled);
+  if (!recommended) return '没有可立即执行的动作，展开完整战况检查距离、目标和武器。';
+  return `建议 ${recommended.label}：${recommended.estimatedOutcome}`;
+});
 const tacticalLog = computed(() => {
   const source = game.tacticalEncounterSummary?.log ?? tacticalEncounterState.value?.log ?? [];
   if (!Array.isArray(source)) return [];
   return source.slice(-8).reverse().map(normalizeTacticalLogEntry);
 });
-const tacticalFooterHint = computed(() => tacticalActionBusy.value
-  ? '正在结算这一回合…'
-  : `${tacticalPressureLabel.value} · ${tacticalWeapon.value?.name ?? '徒手'} · 先确认退路`);
 const securedUntilLabel = computed(() => {
   const until = normalizedSecuredUntilMinute.value;
   if (until === null) return currentNodeSecured.value ? '状态有效' : '未建立';
@@ -2184,6 +2320,23 @@ const inspectedNode = computed(() => nodeById.value[game.inspectedNodeId] ?? gam
 const inspectedDetail = computed(() => game.inspectedNodeDetail);
 const inspectedNodeType = computed(() => mapNodeTypes.find((type) => type.id === inspectedNode.value?.type) ?? null);
 const canShowInspectedDetail = computed(() => Boolean(inspectedNode.value && inspectedNode.value.visibility !== 'unknown' && inspectedDetail.value));
+const currentNodePressure = computed(() => normalizeLocalPressureSummary(
+  game.currentNodePressureSummary,
+  currentNode.value?.id,
+));
+const inspectedNodePressure = computed(() => {
+  const nodeId = inspectedNode.value?.id;
+  if (!nodeId || inspectedNode.value?.visibility === 'unknown') return null;
+  if (nodeId === currentNode.value?.id && currentNodePressure.value) return currentNodePressure.value;
+  if (typeof game.nodePressureSummaryFor !== 'function') return null;
+  try {
+    return normalizeLocalPressureSummary(game.nodePressureSummaryFor(nodeId), nodeId);
+  } catch {
+    return null;
+  }
+});
+const currentNodePressureMigration = computed(() => latestLocalPressureMigrationForNode(currentNode.value?.id));
+const inspectedNodePressureMigration = computed(() => latestLocalPressureMigrationForNode(inspectedNode.value?.id));
 const sceneAsset = computed(() => assetById(inspectedDetail.value?.sceneImage));
 const shelterLandmark = computed(() => {
   if (!game.shelter || inspectedNode.value?.id !== game.spawnLocation?.id) return null;
@@ -2651,6 +2804,7 @@ watch(
       if (lastAutoOpenedTacticalKey.value !== encounterKey) {
         lastAutoOpenedTacticalKey.value = encounterKey;
         tacticalSheetExpanded.value = false;
+        tacticalDetailsExpanded.value = false;
         tacticalActionFeedback.value = '';
         activeDrawer.value = 'survival';
       }
@@ -2963,6 +3117,7 @@ async function performTacticalAction(action) {
   const encounterId = tacticalEncounterState.value?.id ?? tacticalEncounterState.value?.encounterId;
   const expectedTurn = tacticalEncounterState.value?.turn;
   const targetBefore = selectedTacticalTarget.value ? { ...selectedTacticalTarget.value } : null;
+  const beforeSummary = captureTacticalFeedbackSnapshot();
   try {
     const result = await game.performTacticalAction(action.id, {
       encounterId,
@@ -2970,22 +3125,38 @@ async function performTacticalAction(action) {
       weaponStackId: tacticalWeapon.value?.stackId ?? null,
       targetId: targetBefore?.id ?? null,
     });
+    // Store commits can trigger encounter/target watchers in the same tick.
+    // Let those settle before capturing and publishing the durable dock result.
+    await nextTick();
+    const afterSummary = captureTacticalFeedbackSnapshot();
     if (result === false || result?.ok === false) {
-      tacticalActionFeedback.value = tacticalDisabledReason(result?.disabledReason ?? result?.reason) || '行动未能执行，状态没有变化。';
-      tacticalActionFeedbackTone.value = 'danger';
+      const formatted = formatTacticalResult(result, action, targetBefore, beforeSummary, afterSummary);
+      const reason = tacticalDisabledReason(result?.disabledReason ?? result?.reason);
+      tacticalActionFeedback.value = reason ? `${formatted.text.slice(0, -1)} · ${reason}。` : formatted.text;
+      tacticalActionFeedbackTone.value = formatted.tone;
       return;
     }
-    tacticalActionFeedback.value = formatTacticalResult(result, action, targetBefore);
-    tacticalActionFeedbackTone.value = 'neutral';
+    const formatted = formatTacticalResult(result, action, targetBefore, beforeSummary, afterSummary);
+    tacticalActionFeedback.value = formatted.text;
+    tacticalActionFeedbackTone.value = formatted.tone;
   } catch (error) {
-    tacticalActionFeedback.value = error instanceof Error ? error.message : '战术行动结算失败';
-    tacticalActionFeedbackTone.value = 'danger';
+    await nextTick();
+    const afterSummary = captureTacticalFeedbackSnapshot();
+    const formatted = formatTacticalResult(false, action, targetBefore, beforeSummary, afterSummary);
+    const reason = error instanceof Error ? error.message : '战术行动结算异常';
+    tacticalActionFeedback.value = `${formatted.text.slice(0, -1)} · ${reason}。`;
+    tacticalActionFeedbackTone.value = formatted.tone;
   } finally {
     // Keep the input lock through the browser's double-click window. The
     // captured encounter/turn above also lets the Store reject stale commands.
     await new Promise((resolve) => setTimeout(resolve, 280));
     tacticalActionBusy.value = false;
   }
+}
+
+function toggleTacticalDetails() {
+  tacticalDetailsExpanded.value = !tacticalDetailsExpanded.value;
+  tacticalSheetExpanded.value = tacticalDetailsExpanded.value;
 }
 
 function selectTacticalTarget(target) {
@@ -3011,6 +3182,7 @@ function endTacticalEncounter() {
   tacticalStartRequested.value = true;
   if (typeof game.dismissTacticalEncounter === 'function') game.dismissTacticalEncounter();
   tacticalSheetExpanded.value = false;
+  tacticalDetailsExpanded.value = false;
   activeDrawer.value = '';
 }
 
@@ -3018,6 +3190,7 @@ function continueAfterTactical() {
   tacticalStartRequested.value = true;
   if (typeof game.dismissTacticalEncounter === 'function') game.dismissTacticalEncounter();
   tacticalSheetExpanded.value = false;
+  tacticalDetailsExpanded.value = false;
   activeDrawer.value = 'location';
 }
 
@@ -4970,10 +5143,10 @@ function tacticalDamageDetail(payload, fallbackTarget = null) {
   const damage = firstNumber(['damageDealt', 'dealtDamage', 'targetDamage', 'damageAmount', 'damage']);
   const remainingHp = firstNumber(['targetRemainingHp', 'remainingHp', 'targetHp', 'hpAfter', 'currentHp', 'hp']);
   const maximumHp = firstNumber(['targetMaxHp', 'maxHp', 'maxHealth', 'healthMax']) ?? currentTarget?.maxHp ?? null;
-  if (damage === null && remainingHp === null) return '';
+  if ((damage === null || damage <= 0) && remainingHp === null) return '';
   const targetName = firstValue(['targetLabel', 'targetName', 'enemyName']) ?? currentTarget?.typeLabel ?? '目标';
   const details = [];
-  if (damage !== null) details.push(`造成 ${Math.max(0, Math.round(damage))} 伤害`);
+  if (damage !== null && damage > 0) details.push(`造成 ${Math.round(damage)} 伤害`);
   if (remainingHp !== null) {
     const maximum = maximumHp === null ? '' : ` / ${Math.max(1, Math.round(maximumHp))}`;
     details.push(`剩余 HP ${Math.max(0, Math.round(remainingHp))}${maximum}`);
@@ -4984,7 +5157,7 @@ function tacticalDamageDetail(payload, fallbackTarget = null) {
 function appendTacticalDamageDetail(baseText, payload, fallbackTarget = null) {
   const base = String(baseText ?? '').trim();
   const detail = tacticalDamageDetail(payload, fallbackTarget);
-  if (!detail || base.includes('剩余 HP')) return base;
+  if (!detail || base.includes('剩余 HP') || base.includes('造成 ')) return base;
   return base ? `${base} ${detail}` : detail;
 }
 
@@ -5016,14 +5189,51 @@ function describeTacticalEvent(event) {
   return appendTacticalDamageDetail(labels[event.type] ?? event.description ?? event.type ?? '战况已更新。', event);
 }
 
-function formatTacticalResult(result, action, fallbackTarget = null) {
-  if (typeof result === 'string') return result;
-  let summary = '';
-  if (result?.message) summary = result.message;
-  else if (result?.summary) summary = typeof result.summary === 'string' ? result.summary : action.estimatedOutcome;
-  else if (Array.isArray(result?.events) && result.events.length) summary = describeTacticalEvent(result.events[result.events.length - 1]);
-  else summary = `${action.label}已结算，战况与消耗已同步。`;
-  return appendTacticalDamageDetail(summary, result, fallbackTarget);
+function captureTacticalFeedbackSnapshot() {
+  const target = selectedTacticalTarget.value;
+  return {
+    health: finiteRoundedOrNull(tacticalSummary.value.health ?? game.vitals?.health) ?? 0,
+    rangeBand: tacticalSummary.value.rangeBand,
+    rangeLabel: tacticalRangeLabel.value,
+    escapeProgress: finiteRoundedOrNull(tacticalSummary.value.escapeProgress) ?? 0,
+    target: target ? {
+      id: target.id,
+      label: target.typeLabel,
+      hp: target.hp,
+      maxHp: target.maxHp,
+    } : null,
+  };
+}
+
+function formatTacticalResult(result, action, fallbackTarget = null, before = null, after = null) {
+  const actionEvent = Array.isArray(result?.events)
+    ? [...result.events].reverse().find((event) => event?.type === 'player_action' && event.actionId === action.id)
+    : null;
+  const commandSuccess = typeof result === 'boolean'
+    ? result
+    : typeof result?.ok === 'boolean' ? result.ok : null;
+  const knownSuccess = typeof actionEvent?.success === 'boolean' ? actionEvent.success : commandSuccess;
+  const outcomeLabel = knownSuccess === true ? '成功' : knownSuccess === false ? '失败' : '已结算';
+  const parts = [`${action.label}${outcomeLabel}`];
+  const resultTarget = result?.target && typeof result.target === 'object' ? result.target : null;
+  const beforeTarget = before?.target ?? fallbackTarget;
+  if (resultTarget && beforeTarget) {
+    const hpBefore = finiteRoundedOrNull(resultTarget.hpBefore ?? beforeTarget.hp);
+    const hpAfter = finiteRoundedOrNull(resultTarget.hpAfter);
+    const maxHp = finiteRoundedOrNull(resultTarget.maxHp ?? beforeTarget.maxHp);
+    if (hpBefore !== null && hpAfter !== null) {
+      parts.push(`${resultTarget.targetName ?? beforeTarget.label ?? '目标'} HP ${hpBefore}→${hpAfter}${maxHp === null ? '' : `/${maxHp}`}`);
+    }
+  }
+  if (before && after) {
+    parts.push(`生命 HP ${before.health}→${after.health}`);
+    parts.push(`距离 ${before.rangeLabel}→${after.rangeLabel}`);
+    parts.push(`脱离 ${before.escapeProgress}%→${after.escapeProgress}%`);
+  }
+  const tone = knownSuccess === false || (before && after && after.health < before.health)
+    ? 'danger'
+    : knownSuccess === true ? 'good' : 'neutral';
+  return { text: `${parts.join(' · ')}。`, tone };
 }
 
 function finiteOrNull(value) {
@@ -5034,6 +5244,49 @@ function finiteOrNull(value) {
 function finiteRoundedOrNull(value) {
   const number = finiteOrNull(value);
   return number === null ? null : Math.max(0, Math.round(number));
+}
+
+function normalizeLocalPressureSummary(raw, expectedNodeId) {
+  if (!raw || typeof raw !== 'object' || !expectedNodeId || raw.nodeId !== expectedNodeId) return null;
+  const noise = finiteOrNull(raw.noise);
+  const activity = finiteOrNull(raw.activity);
+  const validBands = new Set(['quiet', 'low', 'medium', 'high', 'extreme']);
+  if (noise === null || activity === null || !validBands.has(raw.noiseBand) || !validBands.has(raw.activityBand)) return null;
+  return {
+    nodeId: raw.nodeId,
+    noise,
+    activity,
+    noiseBand: raw.noiseBand,
+    activityBand: raw.activityBand,
+  };
+}
+
+function localPressureBandLabel(band, kind) {
+  const labels = kind === 'activity'
+    ? { quiet: '沉寂', low: '零星', medium: '活跃', high: '高涨', extreme: '失控' }
+    : { quiet: '安静', low: '轻微', medium: '明显', high: '嘈杂', extreme: '震耳' };
+  return labels[band] ?? '未知';
+}
+
+function latestLocalPressureMigrationForNode(nodeId) {
+  if (!nodeId) return null;
+  const events = Array.isArray(game.localPressureSummary?.recentMigrations)
+    ? game.localPressureSummary.recentMigrations
+    : [];
+  const event = [...events].reverse().find((entry) => (
+    entry
+    && entry.type === 'migration'
+    && entry.reason === 'local_sound'
+    && (entry.fromNodeId === nodeId || entry.toNodeId === nodeId)
+  ));
+  const count = finiteRoundedOrNull(event?.count);
+  if (!event || count === null || count <= 0) return null;
+  const incoming = event.toNodeId === nodeId;
+  return {
+    ...event,
+    direction: incoming ? 'incoming' : 'outgoing',
+    text: `声音${incoming ? '引来' : '带走'} ${count} 只`,
+  };
 }
 
 function formatNumber(value) {

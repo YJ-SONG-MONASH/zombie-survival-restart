@@ -24,12 +24,50 @@ const MAX_COMMAND_LEDGER = 64;
 const MAX_RUNTIME_ID_LENGTH = 180;
 
 const SEMANTIC_PROFILES = Object.freeze([
-  { tokens: ['medical', 'clinic', 'hospital', 'pharmacy', 'medcab', 'medcrate', '急救', '医疗', '药'], categories: ['medical'], tags: ['medical', 'suture'] },
-  { tokens: ['gun', 'police', 'checkpoint', 'ammo', '警局', '枪', '弹药'], categories: ['ammo', 'weapon', 'medical'], tags: ['ammo', 'firearm'] },
-  { tokens: ['garage', 'locker', 'hardware', 'warehouse', 'tool', 'industrial', '车库', '五金', '仓库', '工具'], categories: ['tool', 'base', 'vehicle'], tags: ['tool', 'repair', 'carpentry', 'mechanics'] },
-  { tokens: ['kitchen', 'restaurant', 'store', 'commercial', 'vending', '厨房', '餐馆', '商店', '货架'], categories: ['food', 'drink', 'medical'], tags: ['food', 'water', 'canned'] },
-  { tokens: ['farm', 'river', 'camp', 'wild', 'seed', '农', '河', '营地', '种子'], categories: ['survival', 'food', 'tool'], tags: ['farming', 'fishing', 'food'] },
-  { tokens: ['gas', 'wreck', 'trunk', 'road', 'vehicle', '加油', '残骸', '后备箱', '公路'], categories: ['vehicle', 'tool', 'food'], tags: ['vehicle', 'fuel', 'mechanics'] },
+  {
+    id: 'medical',
+    tokens: ['medical', 'clinic', 'hospital', 'pharmacy', 'medcab', 'medcrate', 'first aid', 'first_aid', 'medicine', '急救', '医疗', '药品', '药物', '药房', '药柜', '药店', '药材', '诊所', '绷带', '消毒', '止痛', '缝合', '抗生素'],
+    categories: ['medical'],
+    tags: ['medical', 'suture', 'bandage', 'disinfect'],
+  },
+  {
+    id: 'firearms',
+    tokens: ['firearm', 'gun', 'ammo', 'ammunition', 'pistol', 'shotgun', 'police', 'cruiser', '枪', '弹药', '手枪', '霰弹', '警局', '警车', '警用'],
+    // A generic melee weapon is not a gun-store promise. Firearms qualify by
+    // tag, while ammunition qualifies by either category or tag.
+    categories: ['ammo'],
+    tags: ['ammo', 'firearm'],
+  },
+  {
+    id: 'maintenance',
+    tokens: ['garage', 'hardware', 'warehouse', 'tool', 'industrial', 'repair', 'workshop', 'mechanic', 'tape', 'hammer', 'wrench', 'axe', 'battery', '车库', '五金', '仓库', '工具', '维修', '修车', '胶带', '锤', '扳手', '喷灯', '斧', '农具', '电池'],
+    categories: ['tool'],
+    tags: ['tool', 'repair', 'carpentry', 'mechanics', 'fuel', 'metalworking'],
+  },
+  {
+    id: 'kitchen',
+    tokens: ['kitchen', 'restaurant', 'vending', 'freezer', 'pantry', 'grocery', 'food', 'drink', 'canned', 'water bottle', 'teabag', 'snack', 'fridge', '厨房', '后厨', '餐馆', '食品', '食物', '饮料', '罐头', '水瓶', '茶包', '零食', '冰柜', '杂货'],
+    categories: ['food', 'drink'],
+    tags: ['food', 'water', 'canned', 'food_prep'],
+  },
+  {
+    id: 'farming',
+    tokens: ['farm', 'seed', 'fishing', 'tackle', 'trowel', 'camp', '农', '种子', '钓', '渔具', '鱼线', '小铲', '营地', '菜种'],
+    categories: ['survival'],
+    tags: ['farming', 'fishing', 'seed', 'food'],
+  },
+  {
+    id: 'vehicle',
+    tokens: ['fuel', 'gas', 'vehicle', 'trunk', 'wreck', 'pump', 'road', '燃油', '汽油', '车辆', '后备箱', '残骸', '加油', '修车', '千斤顶', '轮胎', '公路'],
+    categories: ['vehicle'],
+    tags: ['vehicle', 'fuel', 'mechanics'],
+  },
+  {
+    id: 'bags',
+    tokens: ['backpack', 'luggage', 'bag', '背包', '行李'],
+    categories: ['bag'],
+    tags: ['bag', 'capacity'],
+  },
 ]);
 
 /**
@@ -41,13 +79,24 @@ export function createWorldLootContainer(context = {}) {
   const quality = normalizeQuality(generation.searchable.quality);
   const requestedSlots = SLOT_COUNT_BY_QUALITY[quality];
   const slotCount = Math.min(requestedSlots, generation.catalog.length);
+  const semantic = semanticProfileFor(generation.searchable, generation.node);
+  const relevantCatalog = generation.catalog.filter((item) => itemMatchesSemanticPromise(item, semantic));
+  // When the catalog can satisfy the fixture's promise, reserve a strict
+  // majority of its slots. With a reduced/modded catalog, reserve every
+  // relevant unique item instead of duplicating or inventing one.
+  const promisedSlotCount = semantic.profileIds.length > 0
+    ? Math.min(slotCount, relevantCatalog.length, Math.floor(slotCount / 2) + 1)
+    : 0;
   const selectedIds = new Set();
   const slots = [];
 
   for (let index = 0; index < slotCount; index += 1) {
     const remaining = generation.catalog.filter((item) => !selectedIds.has(item.id));
-    const candidates = remaining.length ? remaining : generation.catalog;
-    const item = deterministicCatalogPick(candidates, generation, quality, index);
+    const promised = index < promisedSlotCount
+      ? remaining.filter((item) => itemMatchesSemanticPromise(item, semantic))
+      : [];
+    const candidates = promised.length ? promised : remaining.length ? remaining : generation.catalog;
+    const item = deterministicCatalogPick(candidates, generation, quality, index, semantic);
     if (!item) break;
     selectedIds.add(item.id);
     slots.push(createGeneratedSlot(item, generation, index, WORLD_LOOT_SLOT_STATUS.HIDDEN));
@@ -415,9 +464,8 @@ function createGeneratedSlot(catalogItem, generation, slotIndex, status, overrid
   };
 }
 
-function deterministicCatalogPick(catalog, generation, quality, slotIndex) {
+function deterministicCatalogPick(catalog, generation, quality, slotIndex, semantic) {
   if (!catalog.length) return null;
-  const semantic = semanticProfileFor(generation.searchable, generation.node);
   const weighted = catalog.map((item) => ({ item, weight: itemWeight(item, quality, semantic) }));
   const totalWeight = weighted.reduce((sum, entry) => sum + entry.weight, 0);
   if (totalWeight <= 0) return catalog[hash32(`${generation.seed}|${generation.searchKey}|${slotIndex}`) % catalog.length];
@@ -443,23 +491,35 @@ function itemWeight(item, quality, semantic) {
 }
 
 function semanticProfileFor(searchable, node) {
-  const text = [
-    searchable.id,
-    searchable.name,
-    searchable.assetId,
-    searchable.description,
-    node.type,
-    node.resourceHint,
-    node.description,
-  ].filter((value) => typeof value === 'string').join(' ').toLowerCase();
+  // The exact fixture is the player's promise. Parent metadata is a fallback
+  // for generic generated children, and the broad node profile is used only
+  // when neither of those says what the container is for.
+  const textLevels = [
+    [searchable.description],
+    [searchable.name],
+    [searchable.id, searchable.assetId],
+    [searchable.parentSection, searchable.parentId, searchable.parentName, searchable.parentDescription],
+    [node.id, node.name, node.type, node.resourceHint, node.description],
+  ];
+  let profiles = [];
+  for (const values of textLevels) {
+    const text = values.filter((value) => typeof value === 'string').join(' ').toLowerCase();
+    profiles = SEMANTIC_PROFILES.filter((profile) => profile.tokens.some((token) => text.includes(token)));
+    if (profiles.length) break;
+  }
   const categories = new Set();
   const tags = new Set();
-  SEMANTIC_PROFILES.forEach((profile) => {
-    if (!profile.tokens.some((token) => text.includes(token))) return;
+  profiles.forEach((profile) => {
     profile.categories.forEach((category) => categories.add(category));
     profile.tags.forEach((tag) => tags.add(tag));
   });
-  return { categories, tags };
+  return { profileIds: profiles.map((profile) => profile.id), categories, tags };
+}
+
+function itemMatchesSemanticPromise(item, semantic) {
+  if (!semantic.profileIds.length) return false;
+  if (semantic.categories.has(item.category)) return true;
+  return Array.isArray(item.tags) && item.tags.some((tag) => semantic.tags.has(tag));
 }
 
 function deterministicItemCount(item, seed) {

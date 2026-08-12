@@ -119,8 +119,14 @@ import {
   startExpedition as startExpeditionProjection,
   summarizeExpedition,
 } from '../services/expedition.js';
+import {
+  advanceLocalPressure,
+  createLocalPressureState,
+  normalizeLocalPressureState,
+  summarizeLocalPressure,
+} from '../services/local-pressure.js';
 
-export const SAVE_VERSION = 10;
+export const SAVE_VERSION = 11;
 
 const TARGETED_TACTICAL_ACTION_IDS = new Set(['push', 'melee', 'stomp', 'fire']);
 
@@ -169,6 +175,11 @@ const defaultState = () => ({
   foodPreparationCommandIds: [],
   nodeSearchCounts: {},
   nodeZombieStates: {},
+  localPressure: createLocalPressureState({
+    nodes: mapNodes,
+    edges: mapEdges,
+    totalMinutes: START_MINUTE,
+  }),
   activeTacticalEncounter: null,
   nextEncounterSequence: 1,
   firearmLoads: {},
@@ -280,6 +291,12 @@ export const useGameStore = defineStore('game', {
         day: state.day,
       });
     },
+    localPressureSummary: (state) => summarizeLocalPressure(
+      state.localPressure,
+      localPressureGraphContext(state),
+    ),
+    currentNodePressureSummary: (state) => localPressureNodeSummaryForState(state, state.currentNodeId),
+    nodePressureSummaryFor: (state) => (nodeId) => localPressureNodeSummaryForState(state, nodeId),
     baseSecuritySummary: (state) => decorateBaseSecuritySummary(
       summarizeBaseSecurity(state.baseSecurity, baseSecurityContextForState(state))
     ),
@@ -509,6 +526,15 @@ export const useGameStore = defineStore('game', {
       if (!hasOwn('equippedWeaponStackId')) this.equippedWeaponStackId = null;
       if (!hasOwn('equippedBagStackId')) this.equippedBagStackId = '__legacy_auto__';
       if (!hasOwn('nodeSearchCounts')) this.nodeSearchCounts = {};
+      if (!hasOwn('localPressure')) {
+        this.localPressure = createLocalPressureState({
+          ...localPressureGraphContext(this.$state),
+          totalMinutes: worldMinutesForState(this.$state),
+          initialNodeId: this.currentNodeId ?? location.id,
+          initialNoise: this.world?.noise,
+          initialActivity: this.world?.threat,
+        });
+      }
       if (!hasOwn('skillXp')) this.skillXp = createSkillExperience(normalizeSkills(this.skills));
       if (!hasOwn('lastSkillGains')) this.lastSkillGains = {};
       if (!hasOwn('activeTacticalEncounter')) this.activeTacticalEncounter = null;
@@ -738,6 +764,8 @@ export const useGameStore = defineStore('game', {
         seed: this.world.seed,
         day: this.day,
       });
+      this.localPressure = reconcileLocalPressureForState(this.$state);
+      syncCurrentWorldPressureProjection(this.$state);
       this.nextEncounterSequence = clampInteger(this.nextEncounterSequence, 1, 1_000_000_000, 1);
       const recoveredLoads = {
         ...(this.activeTacticalEncounter?.player?.loadedByWeapon ?? {}),
@@ -1548,12 +1576,10 @@ export const useGameStore = defineStore('game', {
       this.base.generatorOn = true;
       this.base.installedGeneratorStackId = generator.stackId;
       this.world.powerOn = true;
-      this.world.noise = Math.min(100, this.world.noise + 18);
-      this.world.threat = Math.min(100, this.world.threat + 8);
       this.mapLog.unshift({ day: this.day, time: this.clockLabel, title: '启动发电机', text: '据点恢复供电，但引擎低鸣会持续吸引附近尸群。', mode: 'base' });
       this.survivalStats.actions += 1;
       this.grantSkillXp({ electrical: 8 });
-      this.advanceSimulation({ minutes: 20, mode: 'active', noiseDelta: 4, threatDelta: 2 });
+      this.advanceSimulation({ minutes: 20, mode: 'active', noiseDelta: 22, threatDelta: 10 });
       this.finishIfGameOver();
       return true;
     },
@@ -1583,6 +1609,10 @@ export const useGameStore = defineStore('game', {
       this.expedition = createExpeditionState();
       this.nodeSearchCounts = {};
       this.nodeZombieStates = {};
+      this.localPressure = createLocalPressureState({
+        ...localPressureGraphContext(this.$state),
+        totalMinutes: worldMinutesForState(this.$state),
+      });
       this.activeTacticalEncounter = null;
       this.nextEncounterSequence = 1;
       this.firearmLoads = {};
@@ -1605,18 +1635,22 @@ export const useGameStore = defineStore('game', {
         danger: node.danger,
         seed: this.world?.seed,
         day: this.day,
-        worldThreat: this.world?.threat,
+        worldThreat: localPressureNodeSummaryForState(this.$state, node.id)?.activity ?? 0,
       });
       this.nodeZombieStates = { ...(this.nodeZombieStates ?? {}), [node.id]: refreshed };
       return refreshed;
     },
-    refreshNodeZombieMigration() {
+    refreshNodeZombieMigration(extraLockedNodeIds = []) {
       const previousCurrent = this.nodeZombieStates?.[this.currentNodeId]?.count ?? null;
       const refreshed = {};
       const lockedTacticalNodeId = this.activeTacticalEncounter
         && !isTacticalEncounterTerminal(this.activeTacticalEncounter)
         ? this.activeTacticalEncounter.nodeId
         : null;
+      const lockedNodeIds = new Set([
+        ...(Array.isArray(extraLockedNodeIds) ? extraLockedNodeIds : []),
+        lockedTacticalNodeId,
+      ].filter((nodeId) => mapNodes.some((node) => node.id === nodeId)));
       mapNodes.forEach((node) => {
         const current = this.nodeZombieStates?.[node.id] ?? createNodeZombieState({
           nodeId: node.id,
@@ -1624,7 +1658,7 @@ export const useGameStore = defineStore('game', {
           seed: this.world?.seed,
           day: this.day,
         });
-        if (node.id === lockedTacticalNodeId) {
+        if (lockedNodeIds.has(node.id)) {
           refreshed[node.id] = {
             ...cloneSnapshot(current),
             lastRefreshDay: Math.max(clampInteger(current.lastRefreshDay, 1, 999999, this.day), this.day),
@@ -1635,7 +1669,7 @@ export const useGameStore = defineStore('game', {
           danger: node.danger,
           seed: this.world?.seed,
           day: this.day,
-          worldThreat: this.world?.threat,
+          worldThreat: localPressureNodeSummaryForState(this.$state, node.id)?.activity ?? 0,
         });
       });
       this.nodeZombieStates = refreshed;
@@ -1862,6 +1896,7 @@ export const useGameStore = defineStore('game', {
       const resultText = [eventText, targetText].filter(Boolean).join(' ');
 
       const beforeCommitState = cloneSnapshot(this.$state);
+      try {
       this.inventory = projectedInventory;
       this.firearmLoads = projectedLoads;
       this.vitals = projectedVitals;
@@ -1906,6 +1941,7 @@ export const useGameStore = defineStore('game', {
         mode: 'active',
         noiseDelta: effects.noiseDelta ?? 0,
         threatDelta: effects.threatDelta ?? 0,
+        lockedNodeIds: [node.id],
       });
       if (this.isGameOver && this.activeTacticalEncounter && !isTacticalEncounterTerminal(this.activeTacticalEncounter)) {
         const survivorDied = this.vitals.health <= 0 || (this.body?.infectionLevel ?? 0) >= 100;
@@ -1948,6 +1984,10 @@ export const useGameStore = defineStore('game', {
         result.killed = targetOutcome.killed;
       }
       return result;
+      } catch {
+        this.$state = beforeCommitState;
+        return false;
+      }
     },
     dismissTacticalEncounter() {
       if (!this.activeTacticalEncounter || !isTacticalEncounterTerminal(this.activeTacticalEncounter)) return false;
@@ -1956,6 +1996,7 @@ export const useGameStore = defineStore('game', {
     },
     canPerformWorldAction(kind = 'world', minutes = 0, requireFullWindow = true) {
       if (this.isGameOver) return false;
+      if (Number(this.localPressure?.lastProcessedMinute) !== this.totalWorldMinutes) return false;
       if (this.activeTacticalEncounter && !isTacticalEncounterTerminal(this.activeTacticalEncounter)) {
         return kind === 'tactical' || kind === 'equip';
       }
@@ -2066,6 +2107,8 @@ export const useGameStore = defineStore('game', {
         this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, this.currentNodeId, ...neighborsForNode(this.currentNodeId)]);
         if (!this.inspectedNodeId) this.inspectedNodeId = this.currentNodeId;
         this.movesRemaining = this.movementAllowance();
+        this.localPressure = reconcileLocalPressureForState(this.$state);
+        syncCurrentWorldPressureProjection(this.$state);
         return true;
       }
       const spawnNode = mapNodes.find((node) => node.id === this.spawnLocation?.id) ?? mapNodes.find((node) => node.id === 'muldraugh');
@@ -2101,6 +2144,12 @@ export const useGameStore = defineStore('game', {
           spawnState.clearedDay = this.day;
         }
       }
+      const pressureContext = {
+        ...localPressureGraphContext(this.$state),
+        totalMinutes: worldMinutesForState(this.$state),
+      };
+      this.localPressure = normalizeLocalPressureState(this.localPressure, pressureContext);
+      syncCurrentWorldPressureProjection(this.$state);
       this.activeEvent = null;
       this.mapLog = [{
         day: this.day,
@@ -2164,6 +2213,10 @@ export const useGameStore = defineStore('game', {
         this.inspectedNodeId = node.id;
         this.visitedNodeIds = uniqueValidNodeIds([...this.visitedNodeIds, node.id]);
         this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, node.id, ...neighborsForNode(node.id)]);
+        // World noise/threat are a compatibility projection of the survivor's
+        // current node. Switching the projection before travel is resolved
+        // prevents the source node's sound from teleporting to the destination.
+        syncCurrentWorldPressureProjection(this.$state);
         const usingVehicle = travelVehicle?.status !== 'none' && (travelVehicle.fuel ?? 0) > 0;
         if (usingVehicle) {
           this.vehicle = {
@@ -2632,16 +2685,25 @@ export const useGameStore = defineStore('game', {
       if (!deferTerminalCommit) this.finishIfGameOver();
       return true;
     },
-    advanceSimulation({ minutes = 0, mode = 'active', noiseDelta = 0, threatDelta = 0 } = {}) {
+    advanceSimulation({ minutes = 0, mode = 'active', noiseDelta = 0, threatDelta = 0, lockedNodeIds = [] } = {}) {
       const previousDay = this.day;
       const startTotalMinutes = worldMinutesForState(this.$state);
+      const pressureBefore = summarizeLocalPressure(this.localPressure, localPressureGraphContext());
+      const currentPressureBefore = pressureBefore.nodes.find((entry) => entry.nodeId === this.currentNodeId)
+        ?? { noise: 0, activity: 0 };
+      const homePressureBefore = pressureBefore.nodes.find((entry) => entry.nodeId === this.spawnLocation?.id)
+        ?? { noise: 0, activity: 0 };
       const startingExteriorPopulation = Math.max(
         0,
         Math.round(Number(this.nodeZombieStates?.[this.spawnLocation?.id]?.count) || 0),
       );
       const startingSecurityPressure = {
-        threat: this.world?.threat,
-        noise: this.world?.noise,
+        threat: this.currentNodeId === this.spawnLocation?.id
+          ? pressureValue(this.world?.threat, homePressureBefore.activity)
+          : homePressureBefore.activity,
+        noise: this.currentNodeId === this.spawnLocation?.id
+          ? pressureValue(this.world?.noise, homePressureBefore.noise)
+          : homePressureBefore.noise,
         generatorOn: Boolean(this.base?.generatorOn),
       };
       const elapsedMinutes = Math.max(0, Math.round(Number(minutes) || 0));
@@ -2653,12 +2715,20 @@ export const useGameStore = defineStore('game', {
         base: this.base,
       });
       const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
+      const projectedWorld = {
+        ...this.world,
+        // Public world fields remain as a compatibility projection for older
+        // engine rules. Any direct legacy mutation is interpreted as a local
+        // change at the survivor's current node below.
+        noise: pressureValue(this.world?.noise, currentPressureBefore.noise),
+        threat: pressureValue(this.world?.threat, currentPressureBefore.activity),
+      };
       const result = advanceSurvivalState({
         day: this.day,
         clockMinutes: this.clockMinutes,
         minutes,
         vitals: this.vitals,
-        world: this.world,
+        world: projectedWorld,
         body: this.body,
         base: this.base,
         traits: this.selectedTraits,
@@ -2667,6 +2737,93 @@ export const useGameStore = defineStore('game', {
         mode,
         noiseDelta,
         threatDelta,
+      });
+      const endTotalMinutes = (result.day - 1) * 24 * 60 + result.clockMinutes;
+      const localEmissions = [];
+      const localNoiseDelta = pressureValue(projectedWorld.noise, currentPressureBefore.noise)
+        - currentPressureBefore.noise + Number(noiseDelta || 0);
+      const localActivityDelta = pressureValue(projectedWorld.threat, currentPressureBefore.activity)
+        - currentPressureBefore.activity + Number(threatDelta || 0);
+      if (this.currentNodeId && (Math.abs(localNoiseDelta) > 0.0001 || Math.abs(localActivityDelta) > 0.0001)) {
+        localEmissions.push({
+          id: `action:${startTotalMinutes}:${endTotalMinutes}:${this.currentNodeId}:${mode}`,
+          nodeId: this.currentNodeId,
+          atMinutes: startTotalMinutes,
+          noiseDelta: Math.max(-100, Math.min(100, localNoiseDelta)),
+          activityDelta: Math.max(-100, Math.min(100, localActivityDelta)),
+        });
+      }
+      for (let crossedDay = previousDay + 1; crossedDay <= result.day; crossedDay += 1) {
+        const boundaryMinute = (crossedDay - 1) * 24 * 60;
+        if (crossedDay === 9 && this.currentNodeId) {
+          localEmissions.push({
+            id: 'world:helicopter:day-9',
+            nodeId: this.currentNodeId,
+            atMinutes: boundaryMinute,
+            noiseDelta: 18,
+            activityDelta: 26,
+          });
+        }
+        if (crossedDay === 15 && this.currentNodeId) {
+          localEmissions.push({
+            id: 'world:horde-south:day-15',
+            nodeId: this.currentNodeId,
+            atMinutes: boundaryMinute,
+            noiseDelta: 0,
+            activityDelta: 14,
+          });
+        }
+      }
+      const lockedTacticalNodeId = this.activeTacticalEncounter
+        && !isTacticalEncounterTerminal(this.activeTacticalEncounter)
+        ? this.activeTacticalEncounter.nodeId
+        : null;
+      const migrationLockedNodeIds = [...new Set([
+        ...(Array.isArray(lockedNodeIds) ? lockedNodeIds : []),
+        lockedTacticalNodeId,
+      ].filter((nodeId) => mapNodes.some((entry) => entry.id === nodeId)))];
+      const mapWasInitialized = Boolean(this.currentNodeId);
+      const normalizedZombieInput = normalizeNodeZombieStates(this.nodeZombieStates, {
+        nodes: mapNodes,
+        seed: result.world?.seed,
+        day: previousDay,
+      });
+      for (const mapNode of mapNodes) {
+        const rawZombieState = this.nodeZombieStates?.[mapNode.id];
+        if (!rawZombieState || typeof rawZombieState !== 'object') continue;
+        const rawCount = Math.max(0, Math.round(Number(rawZombieState.count) || 0));
+        normalizedZombieInput[mapNode.id] = {
+          ...normalizedZombieInput[mapNode.id],
+          ...cloneSnapshot(rawZombieState),
+          nodeId: mapNode.id,
+          count: rawCount,
+          capacity: Math.max(rawCount, Math.max(0, Math.round(Number(rawZombieState.capacity) || 0))),
+        };
+      }
+      const localAdvance = advanceLocalPressure(this.localPressure, {
+        ...localPressureGraphContext(),
+        fromTotalMinutes: startTotalMinutes,
+        toTotalMinutes: endTotalMinutes,
+        worldSeed: result.world?.seed,
+        // Local activity must only influence its own node/edge. Feeding the
+        // loudest remote node back as a global multiplier would recreate the
+        // same teleporting pressure this system replaces.
+        worldThreat: 0,
+        nodeZombieStates: normalizedZombieInput,
+        emissions: localEmissions,
+        lockedNodeIds: migrationLockedNodeIds,
+      });
+      if (!localAdvance.ok) throw new Error(`local_pressure_${localAdvance.reason}`);
+      const securityAdvance = advanceBaseSecurity(this.baseSecurity, {
+        fromTotalMinutes: startTotalMinutes,
+        toTotalMinutes: endTotalMinutes,
+        worldSeed: result.world?.seed,
+        day: previousDay,
+        threat: startingSecurityPressure.threat,
+        noise: startingSecurityPressure.noise,
+        generatorOn: startingSecurityPressure.generatorOn,
+        exteriorPopulation: startingExteriorPopulation,
+        shelterDefense: this.shelter?.defense ?? 0,
       });
       this.day = result.day;
       this.clockMinutes = result.clockMinutes;
@@ -2682,18 +2839,9 @@ export const useGameStore = defineStore('game', {
         poweredMinutes: poweredRefrigerationMinutes,
       });
       this.worldLootContainers = advanceWorldLootConditionStates(this.worldLootContainers, elapsedMinutes);
-      const endTotalMinutes = worldMinutesForState(this.$state);
-      const securityAdvance = advanceBaseSecurity(this.baseSecurity, {
-        fromTotalMinutes: startTotalMinutes,
-        toTotalMinutes: endTotalMinutes,
-        worldSeed: this.world?.seed,
-        day: previousDay,
-        threat: startingSecurityPressure.threat,
-        noise: startingSecurityPressure.noise,
-        generatorOn: startingSecurityPressure.generatorOn,
-        exteriorPopulation: startingExteriorPopulation,
-        shelterDefense: this.shelter?.defense ?? 0,
-      });
+      this.localPressure = localAdvance.nextState;
+      if (mapWasInitialized) this.nodeZombieStates = localAdvance.nextNodeZombieStates;
+      syncCurrentWorldPressureProjection(this.$state);
       this.baseSecurity = securityAdvance.nextState;
       syncLegacyBaseProjection(this.$state);
       const baseSecurityNoticeTexts = new Set();
@@ -2711,8 +2859,28 @@ export const useGameStore = defineStore('game', {
         });
       });
       result.baseSecurity = cloneSnapshot(securityAdvance);
+      result.localPressure = {
+        ok: true,
+        reason: null,
+        processedBoundaryMinutes: cloneSnapshot(localAdvance.processedBoundaryMinutes),
+        totals: cloneSnapshot(localAdvance.totals),
+        events: cloneSnapshot(localAdvance.events),
+        summary: cloneSnapshot(summarizeLocalPressure(this.localPressure, localPressureGraphContext())),
+      };
+      result.localMigrations = cloneSnapshot(localAdvance.events);
+      localAdvance.events.forEach((event) => {
+        const fromNode = mapNodes.find((entry) => entry.id === event.fromNodeId);
+        const toNode = mapNodes.find((entry) => entry.id === event.toNodeId);
+        this.mapLog.unshift({
+          day: event.day,
+          time: formatClock(event.boundaryMinute % (24 * 60)),
+          title: '声音引动尸群',
+          text: `${fromNode?.name ?? event.fromNodeId}有 ${event.count} 只游荡者沿声音迁向${toNode?.name ?? event.toNodeId}。`,
+          mode: 'migration',
+        });
+      });
       if (this.day > previousDay) {
-        const migratedCount = this.refreshNodeZombieMigration();
+        const migratedCount = this.refreshNodeZombieMigration(migrationLockedNodeIds);
         if (migratedCount > 0) result.notices.push(`尸群迁入了这个地区，附近重新出现约 ${migratedCount} 只游荡者。`);
       }
       this.survivalStats.hoursSurvived += result.elapsedHours;
@@ -2958,6 +3126,49 @@ function loadedStateIsTerminal(state) {
   return Boolean(zombieState && isNodeSecured(zombieState, worldMinutesForState(state)));
 }
 
+function localPressureGraphContext() {
+  return {
+    nodes: mapNodes.map((node) => ({ id: node.id, danger: node.danger ?? 0 })),
+    edges: mapEdges.map(([from, to]) => [from, to]),
+  };
+}
+
+function pressureValue(value, fallback = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return Math.max(0, Math.min(100, Number(fallback) || 0));
+  return Math.max(0, Math.min(100, numeric));
+}
+
+function localPressureNodeSummaryForState(state, nodeId) {
+  if (!nodeId || !mapNodes.some((node) => node.id === nodeId)) return null;
+  const summary = summarizeLocalPressure(state?.localPressure, localPressureGraphContext());
+  return summary.nodes.find((node) => node.nodeId === nodeId) ?? null;
+}
+
+function reconcileLocalPressureForState(state) {
+  const totalMinutes = worldMinutesForState(state);
+  const pressure = normalizeLocalPressureState(state?.localPressure, {
+    ...localPressureGraphContext(),
+    totalMinutes,
+    initialNodeId: state?.currentNodeId ?? state?.spawnLocation?.id,
+    initialNoise: state?.world?.noise,
+    initialActivity: state?.world?.threat,
+  });
+  if (pressure.lastProcessedMinute === totalMinutes) return pressure;
+  // Old or manually edited saves can have a valid pressure map on a stale
+  // clock. Preserve its signals, but align the cursor so the next real action
+  // cannot replay or skip world time.
+  return { ...pressure, lastProcessedMinute: totalMinutes };
+}
+
+function syncCurrentWorldPressureProjection(state) {
+  if (!state?.world || !state?.currentNodeId) return;
+  const local = localPressureNodeSummaryForState(state, state.currentNodeId);
+  if (!local) return;
+  state.world.noise = local.noise;
+  state.world.threat = local.activity;
+}
+
 function survivorTerminalFailureForState(state) {
   return (Number(state?.vitals?.health) || 0) <= 0
     || (Number(state?.body?.infectionLevel) || 0) >= 100
@@ -2971,6 +3182,10 @@ function expeditionContextForState(state, overrides = {}) {
     state?.currentNodeId,
   ]));
   const knownNodes = mapNodes.filter((node) => allowedNodeIds.has(node.id));
+  const localPressureByNode = new Map(
+    summarizeLocalPressure(state?.localPressure, localPressureGraphContext()).nodes
+      .map((entry) => [entry.nodeId, entry]),
+  );
   const tacticalActive = Boolean(
     state?.activeTacticalEncounter
     && !isTacticalEncounterTerminal(state.activeTacticalEncounter)
@@ -2981,7 +3196,16 @@ function expeditionContextForState(state, overrides = {}) {
     // preview or a persisted expedition result.
     nodes: knownNodes.map((node) => ({
       id: node.id,
-      risk: Math.max(0, Number(node.danger) || 0) ** 2,
+      risk: (() => {
+        const local = localPressureByNode.get(node.id) ?? { noise: 0, activity: 0 };
+        const population = Math.max(0, Number(state?.nodeZombieStates?.[node.id]?.count) || 0);
+        return Math.round((
+          Math.max(0, Number(node.danger) || 0) ** 2
+          + Math.min(30, population / 4)
+          + local.noise * 0.12
+          + local.activity * 0.25
+        ) * 100) / 100;
+      })(),
     })),
     edges: mapEdges
       .filter(([from, to]) => allowedNodeIds.has(from) && allowedNodeIds.has(to))
@@ -3593,13 +3817,15 @@ function baseSecurityContextForState(state) {
     0,
     Math.round(Number(state.nodeZombieStates?.[state.spawnLocation?.id]?.count) || 0),
   );
+  const local = localPressureNodeSummaryForState(state, state.spawnLocation?.id) ?? { noise: 0, activity: 0 };
+  const isCurrentHome = state.currentNodeId === state.spawnLocation?.id;
   return {
     shelter: state.shelter,
     shelterDefense: state.shelter?.defense ?? 0,
     totalMinutes: worldMinutesForState(state),
     day: state.day,
-    threat: state.world?.threat,
-    noise: state.world?.noise,
+    threat: isCurrentHome ? pressureValue(state.world?.threat, local.activity) : local.activity,
+    noise: isCurrentHome ? pressureValue(state.world?.noise, local.noise) : local.noise,
     generatorOn: Boolean(state.base?.generatorOn),
     exteriorPopulation,
   };
