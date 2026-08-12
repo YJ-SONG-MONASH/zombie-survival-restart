@@ -25,6 +25,7 @@ const secureNode = (game, nodeId) => {
 };
 const syncPressureClock = (game) => {
   game.localPressure.lastProcessedMinute = game.totalWorldMinutes;
+  game.fishing.lastProcessedMinute = game.totalWorldMinutes;
 };
 
 describe('game store invariants', () => {

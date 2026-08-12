@@ -1450,6 +1450,7 @@ export const mapNodeTypes = [
 export const mapNodeActions = [
   { id: 'search', label: '搜索周边', stat: 'scout', description: '在当前区域搜刮补给，会受到节点风险和资源倾向影响。' },
   { id: 'scout', label: '侦察路线', stat: 'scout', description: '压低风险，扩大已知地图范围，但收益较少。' },
+  { id: 'fish', label: '捕鱼', stat: 'fishing', description: '在有鱼群的河岸消耗时间捕鱼；连续捕捞会耗尽本地鱼群，休养后才会恢复。' },
   { id: 'rest', label: '临时休整', stat: 'san', description: '用四小时恢复体力、压低恐慌，但不能代替完整睡眠。' },
   { id: 'sleep', label: '睡眠八小时', stat: 'san', description: '在低危地点或据点睡眠；防御不足且尸群逼近时可能被惊醒。' },
   { id: 'vehicle', label: '寻找车辆', stat: 'vehicle', description: '尝试修复、撬开或找到可用车辆。机械、电工、窃贼和汽油桶会提高收益。' },
@@ -1458,6 +1459,12 @@ export const mapNodeActions = [
   { id: 'combat_firearm', label: '枪械突围', stat: 'fight', description: '消耗弹药快速打出缺口；枪声会显著抬高附近尸群压力。' },
   { id: 'forage', label: '野外觅食', stat: 'scout', description: '在森林和农田寻找食物、种子与草药，收益受天气和觅食技能影响。' },
   { id: 'fortify', label: '加固据点', stat: 'defense', description: '在初始据点消耗木板和钉子搭设路障，需要锤子。' },
+];
+
+export const fishingSpots = [
+  { nodeId: 'riverside', capacity: 4, regenPerDay: 1, baseCatchChance: 0.38 },
+  { nodeId: 'riverside_farms', capacity: 3, regenPerDay: 1, baseCatchChance: 0.35 },
+  { nodeId: 'west_point', capacity: 6, regenPerDay: 2, baseCatchChance: 0.42 },
 ];
 
 export const vehicleEvents = [
@@ -1505,7 +1512,7 @@ export const mapNodes = [
     description: '河岸边的低密度城镇，前几天较稳，离大型高危区域较远。',
     region: 'Riverside',
     shelterIds: ['gated_villa', 'two_story_house', 'single_floor_house'],
-    actions: ['search', 'scout', 'rest', 'vehicle'],
+    actions: ['search', 'scout', 'fish', 'rest', 'vehicle'],
     connections: ['riverside_farms', 'riverside_bridge'],
   },
   {
@@ -1519,7 +1526,7 @@ export const mapNodes = [
     description: '开阔农地和零散农舍，视野好，夜间撤离路线也多。',
     region: 'Riverside',
     shelterIds: ['forest_camp_hut', 'riverside_fishing_shed'],
-    actions: ['search', 'scout', 'rest', 'vehicle'],
+    actions: ['search', 'scout', 'fish', 'rest', 'vehicle'],
     connections: ['riverside', 'muldraugh_crossroads', 'ivy_kettle'],
   },
   {
@@ -1547,7 +1554,7 @@ export const mapNodes = [
     description: '资源密度高，尸群压力也高，任何枪声都会把街区变成陷阱。',
     region: 'West Point',
     shelterIds: ['west_point_hardware_roof', 'west_point_gun_store', 'commercial_block'],
-    actions: ['search', 'scout', 'rest', 'vehicle'],
+    actions: ['search', 'scout', 'fish', 'rest', 'vehicle'],
     connections: ['riverside_bridge', 'dixie_highway_north', 'valley_checkpoint', 'west_point_gun_store'],
   },
   {
@@ -3063,6 +3070,8 @@ export const marketItems = [
   { id: 'milk', name: '牛奶', canonicalName: 'Milk', category: 'food', tier: 'green', price: 70, space: 1, iconFile: '', fallbackIcon: 'MI', effects: { hunger: -10, thirst: -18, stress: -1 }, spoilage: { freshForMinutes: 2 * 24 * 60, rottenAfterMinutes: 5 * 24 * 60 }, description: '停电前很珍贵，停电后很快就会变成必须处理的麻烦。', tags: ['food', 'perishable'] },
   { id: 'fresh_meat', name: '鲜肉', canonicalName: 'Fresh Meat', category: 'food', tier: 'blue', price: 130, space: 2, iconFile: '', fallbackIcon: 'ME', effects: { hunger: -30, health: -5, stress: 3 }, spoilage: { freshForMinutes: 1 * 24 * 60, rottenAfterMinutes: 3 * 24 * 60 }, description: '高热量但极易腐败；没有烹饪条件就直接下肚，会付出健康代价。', tags: ['food', 'perishable'] },
   { id: 'cooked_meat', name: '熟肉', canonicalName: 'Cooked Meat', category: 'food', tier: 'blue', price: 155, space: 2, iconFile: '', fallbackIcon: 'CM', effects: { hunger: -38, health: 3, stress: -2 }, spoilage: { freshForMinutes: 2 * 24 * 60, rottenAfterMinutes: 5 * 24 * 60 }, description: '彻底加热后的肉更安全也更顶饿，但离开冷藏后仍然放不了太久。', tags: ['food', 'prepared', 'perishable'] },
+  { id: 'fresh_fish', name: '鲜鱼', canonicalName: 'Fresh Fish', category: 'food', tier: 'green', price: 90, space: 2, iconFile: '', fallbackIcon: 'FI', effects: { hunger: -24, health: -4, stress: 2 }, spoilage: { freshForMinutes: 1 * 24 * 60, rottenAfterMinutes: 3 * 24 * 60 }, description: '刚从河里捕到的鱼，能救急，但生食有风险，而且常温下很快就会腐败。', tags: ['food', 'fishing', 'raw', 'perishable'] },
+  { id: 'cooked_fish', name: '熟鱼', canonicalName: 'Cooked Fish', category: 'food', tier: 'green', price: 115, space: 2, iconFile: '', fallbackIcon: 'CF', effects: { hunger: -34, health: 2, stress: -1 }, spoilage: { freshForMinutes: 2 * 24 * 60, rottenAfterMinutes: 5 * 24 * 60 }, description: '彻底煮熟的河鱼，安全、顶饿，但仍需在几天内吃掉。', tags: ['food', 'fishing', 'prepared', 'perishable'] },
   { id: 'vegetable_soup', name: '蔬菜汤', canonicalName: 'Vegetable Soup', category: 'food', tier: 'green', price: 90, space: 2, iconFile: '', fallbackIcon: 'VS', effects: { hunger: -34, thirst: -14, health: 1, stress: -3 }, spoilage: { freshForMinutes: 36 * 60, rottenAfterMinutes: 4 * 24 * 60 }, description: '热汤把蔬菜和饮水变成一顿安稳的饭，恢复扎实但不能久放。', tags: ['food', 'prepared', 'perishable'] },
   { id: 'meat_stew', name: '肉菜炖锅', canonicalName: 'Meat Stew', category: 'food', tier: 'blue', price: 225, space: 3, iconFile: '', fallbackIcon: 'MS', effects: { hunger: -52, thirst: -10, health: 4, stress: -5 }, spoilage: { freshForMinutes: 36 * 60, rottenAfterMinutes: 4 * 24 * 60 }, description: '肉和蔬菜熬成的高热量正餐，回报很高，也值得为保鲜认真规划。', tags: ['food', 'prepared', 'perishable'] },
   { id: 'fruit_salad', name: '水果沙拉', canonicalName: 'Fruit Salad', category: 'food', tier: 'green', price: 75, space: 1, iconFile: '', fallbackIcon: 'FS', effects: { hunger: -28, thirst: -10, stress: -4 }, spoilage: { freshForMinutes: 18 * 60, rottenAfterMinutes: 2 * 24 * 60 }, description: '把尚且新鲜的水果集中处理，入口轻松、提振情绪，但很快就会变质。', tags: ['food', 'prepared', 'perishable'] },

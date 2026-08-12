@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import {
   craftingRecipes,
+  fishingSpots,
   hiddenProfessionAliases,
   hiddenSurvivorPresets,
   lootTierWeights,
@@ -125,8 +126,16 @@ import {
   normalizeLocalPressureState,
   summarizeLocalPressure,
 } from '../services/local-pressure.js';
+import {
+  advanceFishingState,
+  createFishingState,
+  normalizeFishingState,
+  previewFishing as previewFishingProjection,
+  resolveFishing as resolveFishingProjection,
+  summarizeFishing,
+} from '../services/fishing.js';
 
-export const SAVE_VERSION = 11;
+export const SAVE_VERSION = 12;
 
 const TARGETED_TACTICAL_ACTION_IDS = new Set(['push', 'melee', 'stomp', 'fire']);
 
@@ -178,6 +187,10 @@ const defaultState = () => ({
   localPressure: createLocalPressureState({
     nodes: mapNodes,
     edges: mapEdges,
+    totalMinutes: START_MINUTE,
+  }),
+  fishing: createFishingState({
+    spotDefs: fishingSpotDefinitions(),
     totalMinutes: START_MINUTE,
   }),
   activeTacticalEncounter: null,
@@ -297,6 +310,8 @@ export const useGameStore = defineStore('game', {
     ),
     currentNodePressureSummary: (state) => localPressureNodeSummaryForState(state, state.currentNodeId),
     nodePressureSummaryFor: (state) => (nodeId) => localPressureNodeSummaryForState(state, nodeId),
+    fishingSummary: (state) => summarizeFishing(state.fishing, fishingContextForState(state)),
+    currentFishingSummary: (state) => currentFishingSummaryForState(state),
     baseSecuritySummary: (state) => decorateBaseSecuritySummary(
       summarizeBaseSecurity(state.baseSecurity, baseSecurityContextForState(state))
     ),
@@ -416,7 +431,8 @@ export const useGameStore = defineStore('game', {
           let disabledReason = id === 'search'
             ? '请从“查看地点”选择具体容器进行搜索'
             : '';
-          const actionMinutes = durationForAction(id);
+          const fishingStatus = id === 'fish' ? fishingActionStateForState(state) : null;
+          const actionMinutes = fishingStatus?.minutes ?? durationForAction(id);
           const encounterAction = ['evade', 'combat_melee', 'combat_firearm'].includes(id);
           if (encounterActive && !encounterAction) disabledReason = `附近还有 ${zombieState.count} 只游荡者，先战斗或绕行`;
           if (encounterAction && (zombieState?.count ?? 0) <= 0) disabledReason = '这个地区暂时已经清空';
@@ -435,6 +451,9 @@ export const useGameStore = defineStore('game', {
               && state.inventory.some((item) => item.id === 'gas_can' && item.count > 0);
             if (!canRefuelCurrentVehicle) disabledReason = '后备箱还有物资，先回到原车卸货再更换车辆';
           }
+          if (id === 'fish') {
+            disabledReason = fishingStatus?.disabledReason ?? '';
+          }
           if (id === 'search' && (state.nodeSearchCounts?.[node?.id] ?? 0) >= 3 && !disabledReason) disabledReason = '周边已被搜空，请检查具体建筑容器';
           return {
             ...action,
@@ -442,6 +461,12 @@ export const useGameStore = defineStore('game', {
             minutes: actionMinutes,
             disabled: Boolean(disabledReason),
             disabledReason,
+            ...(fishingStatus ? {
+              chancePercent: fishingStatus.chancePercent,
+              stockBand: fishingStatus.stockBand,
+              stockLabel: fishingStatus.stockLabel,
+              attemptsRemaining: fishingStatus.attemptsRemaining,
+            } : {}),
           };
         })
         .filter(Boolean);
@@ -533,6 +558,12 @@ export const useGameStore = defineStore('game', {
           initialNodeId: this.currentNodeId ?? location.id,
           initialNoise: this.world?.noise,
           initialActivity: this.world?.threat,
+        });
+      }
+      if (!hasOwn('fishing')) {
+        this.fishing = createFishingState({
+          spotDefs: fishingSpotDefinitions(),
+          totalMinutes: worldMinutesForState(this.$state),
         });
       }
       if (!hasOwn('skillXp')) this.skillXp = createSkillExperience(normalizeSkills(this.skills));
@@ -765,6 +796,7 @@ export const useGameStore = defineStore('game', {
         day: this.day,
       });
       this.localPressure = reconcileLocalPressureForState(this.$state);
+      this.fishing = reconcileFishingForState(this.$state);
       syncCurrentWorldPressureProjection(this.$state);
       this.nextEncounterSequence = clampInteger(this.nextEncounterSequence, 1, 1_000_000_000, 1);
       const recoveredLoads = {
@@ -1220,6 +1252,140 @@ export const useGameStore = defineStore('game', {
       this.finishIfGameOver();
       return true;
     },
+    fishingCommandToken(kind = 'fish') {
+      const fishingState = normalizeFishingState(this.fishing, fishingContextForState(this.$state));
+      const safeKind = `${kind ?? 'fish'}`.trim().replace(/[^a-zA-Z0-9:_-]+/g, '-').slice(0, 72) || 'fish';
+      return {
+        commandId: `${safeKind}:${this.currentNodeId ?? 'unknown'}:r${fishingState.revision}:t${this.totalWorldMinutes}`.slice(0, 180),
+        expectedRevision: fishingState.revision,
+      };
+    },
+    currentFishingCommand(kind = 'fish') {
+      const rod = this.inventory.find((item) => item.id === 'fishing_rod' && item.count > 0);
+      const tackle = this.inventory.find((item) => item.id === 'fishing_tackle' && item.count > 0);
+      return {
+        ...this.fishingCommandToken(kind),
+        nodeId: this.currentNodeId,
+        rodStackId: rod?.stackId ?? '',
+        tackleStackId: tackle?.stackId ?? '',
+        destinationId: STORAGE_CONTAINERS.CARRY,
+      };
+    },
+    previewFishing(request = {}) {
+      const command = { ...this.currentFishingCommand('fish'), ...(request && typeof request === 'object' ? request : {}) };
+      let preview;
+      try {
+        preview = previewFishingProjection(this.fishing, command, fishingContextForState(this.$state));
+      } catch {
+        return fishingStoreFailure(this.$state, 'projection_failed', command);
+      }
+      if (!preview?.ok) return preview;
+      if (!this.canPerformWorldAction('fishing', preview.minutes)) {
+        return fishingStoreFailure(this.$state, 'insufficient_safe_window', command, preview);
+      }
+      return preview;
+    },
+    fish(command = {}) {
+      const resolvedCommand = {
+        ...this.currentFishingCommand('fish'),
+        ...(command && typeof command === 'object' ? command : {}),
+      };
+      let resolved;
+      try {
+        resolved = resolveFishingProjection(this.fishing, resolvedCommand, fishingContextForState(this.$state));
+      } catch {
+        return fishingStoreFailure(this.$state, 'projection_failed', resolvedCommand);
+      }
+      if (!resolved?.ok) return resolved;
+      if (!this.canPerformWorldAction('fishing', resolved.minutes)) {
+        return fishingStoreFailure(this.$state, 'insufficient_safe_window', resolvedCommand, resolved);
+      }
+      if (!validFishingProjection(resolved, this.$state, resolvedCommand)) {
+        return fishingStoreFailure(this.$state, 'invalid_projection', resolvedCommand, resolved);
+      }
+
+      const beforeState = cloneSnapshot(this.$state);
+      const actionDay = this.day;
+      const actionTime = this.clockLabel;
+      const populationBefore = Math.max(0, Number(this.nodeZombieStates?.[this.currentNodeId]?.count) || 0);
+      try {
+        this.fishing = cloneSnapshot(resolved.nextState.fishing);
+        this.inventory = cloneInventory(resolved.nextState.inventory);
+        this.nextItemSequence = clampInteger(
+          resolved.nextState.nextItemSequence,
+          1,
+          1_000_000_000,
+          this.nextItemSequence,
+        );
+        this.reconcileEquipment();
+        this.survivalStats.actions += 1;
+        const progression = this.grantSkillXp({ fishing: Math.max(0, Number(resolved.skillXp) || 0) });
+        const levelUpText = levelUpSummary(progression);
+        const resultText = resolved.caught
+          ? '浮漂猛地沉下去，你收获了一条鲜鱼。'
+          : '水面重新归于平静，这次鱼饵被吃掉了。';
+        const stockText = fishingStockLabel(resolved.stockBand, resolved.stockAfter);
+        this.history.push({
+          day: actionDay,
+          time: actionTime,
+          title: '河岸垂钓',
+          log: '有限水域捕鱼',
+          action: '垂钓一次',
+          result: resultText,
+          notes: [
+            `耗时 ${formatFishingDuration(resolved.minutes)}`,
+            '消耗钓具 1',
+            stockText,
+            `钓鱼经验 +${Math.max(0, Number(resolved.skillXp) || 0)}`,
+            levelUpText,
+          ].filter(Boolean).join(' / '),
+          score: Math.min(100, 45 + (this.skills.fishing ?? 0) * 5 + (resolved.caught ? 20 : 0)),
+        });
+        this.mapLog.unshift({
+          day: actionDay,
+          time: actionTime,
+          title: resolved.caught ? '钓到鲜鱼' : '鱼钩落空',
+          text: [resultText, stockText, levelUpText].filter(Boolean).join(' '),
+          mode: 'fishing',
+        });
+        this.mapLog = this.mapLog.slice(0, 80);
+        const simulation = this.advanceSimulation({
+          minutes: resolved.minutes,
+          mode: 'active',
+          noiseDelta: resolved.noiseDelta,
+          threatDelta: resolved.activityDelta,
+          localEmissionTiming: 'end',
+        });
+        const populationAfter = Math.max(0, Number(this.nodeZombieStates?.[this.currentNodeId]?.count) || 0);
+        const committedSummary = cloneSnapshot(this.currentFishingSummary);
+        const committedCaughtStack = resolved.caughtStack?.stackId
+          ? cloneSnapshot(this.inventory.find((item) => item.stackId === resolved.caughtStack.stackId) ?? null)
+          : null;
+        this.finishIfGameOver();
+        return {
+          ...resolved,
+          revision: this.fishing.revision,
+          committed: true,
+          stockAfter: committedSummary?.stock ?? resolved.stockAfter,
+          stockBand: committedSummary?.stockBand ?? resolved.stockBand,
+          attemptsToday: committedSummary?.attemptsToday ?? resolved.attemptsToday,
+          attemptsRemaining: committedSummary?.attemptsRemaining ?? resolved.attemptsRemaining,
+          caughtStack: committedCaughtStack,
+          nextState: {
+            fishing: cloneSnapshot(this.fishing),
+            inventory: cloneInventory(this.inventory),
+            nextItemSequence: this.nextItemSequence,
+          },
+          progression,
+          simulation,
+          newZombieCount: Math.max(0, populationAfter - populationBefore),
+          fishingSummary: committedSummary,
+        };
+      } catch {
+        this.$state = beforeState;
+        return fishingStoreFailure(this.$state, 'commit_failed', resolvedCommand, resolved);
+      }
+    },
     previewFoodPreparation(request = {}) {
       const gate = foodPreparationAccessFailure(this);
       if (gate) return foodPreparationFailure(this.$state, gate);
@@ -1613,6 +1779,10 @@ export const useGameStore = defineStore('game', {
         ...localPressureGraphContext(this.$state),
         totalMinutes: worldMinutesForState(this.$state),
       });
+      this.fishing = createFishingState({
+        spotDefs: fishingSpotDefinitions(),
+        totalMinutes: worldMinutesForState(this.$state),
+      });
       this.activeTacticalEncounter = null;
       this.nextEncounterSequence = 1;
       this.firearmLoads = {};
@@ -1997,6 +2167,7 @@ export const useGameStore = defineStore('game', {
     canPerformWorldAction(kind = 'world', minutes = 0, requireFullWindow = true) {
       if (this.isGameOver) return false;
       if (Number(this.localPressure?.lastProcessedMinute) !== this.totalWorldMinutes) return false;
+      if (Number(this.fishing?.lastProcessedMinute) !== this.totalWorldMinutes) return false;
       if (this.activeTacticalEncounter && !isTacticalEncounterTerminal(this.activeTacticalEncounter)) {
         return kind === 'tactical' || kind === 'equip';
       }
@@ -2108,6 +2279,7 @@ export const useGameStore = defineStore('game', {
         if (!this.inspectedNodeId) this.inspectedNodeId = this.currentNodeId;
         this.movesRemaining = this.movementAllowance();
         this.localPressure = reconcileLocalPressureForState(this.$state);
+        this.fishing = reconcileFishingForState(this.$state);
         syncCurrentWorldPressureProjection(this.$state);
         return true;
       }
@@ -2149,6 +2321,7 @@ export const useGameStore = defineStore('game', {
         totalMinutes: worldMinutesForState(this.$state),
       };
       this.localPressure = normalizeLocalPressureState(this.localPressure, pressureContext);
+      this.fishing = reconcileFishingForState(this.$state);
       syncCurrentWorldPressureProjection(this.$state);
       this.activeEvent = null;
       this.mapLog = [{
@@ -2271,7 +2444,7 @@ export const useGameStore = defineStore('game', {
     },
     resolveNodeAction(actionId) {
       if (this.isGameOver) return false;
-      if (actionId === 'fortify' || actionId === 'search') return false;
+      if (actionId === 'fortify' || actionId === 'search' || actionId === 'fish') return false;
       if (!this.currentNodeId) this.initializeMapState();
       const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
       const action = mapNodeActions.find((entry) => entry.id === actionId);
@@ -2685,7 +2858,14 @@ export const useGameStore = defineStore('game', {
       if (!deferTerminalCommit) this.finishIfGameOver();
       return true;
     },
-    advanceSimulation({ minutes = 0, mode = 'active', noiseDelta = 0, threatDelta = 0, lockedNodeIds = [] } = {}) {
+    advanceSimulation({
+      minutes = 0,
+      mode = 'active',
+      noiseDelta = 0,
+      threatDelta = 0,
+      lockedNodeIds = [],
+      localEmissionTiming = 'start',
+    } = {}) {
       const previousDay = this.day;
       const startTotalMinutes = worldMinutesForState(this.$state);
       const pressureBefore = summarizeLocalPressure(this.localPressure, localPressureGraphContext());
@@ -2739,16 +2919,23 @@ export const useGameStore = defineStore('game', {
         threatDelta,
       });
       const endTotalMinutes = (result.day - 1) * 24 * 60 + result.clockMinutes;
+      const fishingAdvance = advanceFishingState(this.fishing, {
+        spotDefs: fishingSpotDefinitions(),
+        fromTotalMinutes: startTotalMinutes,
+        toTotalMinutes: endTotalMinutes,
+      });
+      if (!fishingAdvance.ok) throw new Error(`fishing_${fishingAdvance.reason}`);
       const localEmissions = [];
       const localNoiseDelta = pressureValue(projectedWorld.noise, currentPressureBefore.noise)
         - currentPressureBefore.noise + Number(noiseDelta || 0);
       const localActivityDelta = pressureValue(projectedWorld.threat, currentPressureBefore.activity)
         - currentPressureBefore.activity + Number(threatDelta || 0);
       if (this.currentNodeId && (Math.abs(localNoiseDelta) > 0.0001 || Math.abs(localActivityDelta) > 0.0001)) {
+        const emissionAtMinutes = localEmissionTiming === 'end' ? endTotalMinutes : startTotalMinutes;
         localEmissions.push({
-          id: `action:${startTotalMinutes}:${endTotalMinutes}:${this.currentNodeId}:${mode}`,
+          id: `action:${startTotalMinutes}:${endTotalMinutes}:${this.currentNodeId}:${mode}:${localEmissionTiming === 'end' ? 'end' : 'start'}`,
           nodeId: this.currentNodeId,
-          atMinutes: startTotalMinutes,
+          atMinutes: emissionAtMinutes,
           noiseDelta: Math.max(-100, Math.min(100, localNoiseDelta)),
           activityDelta: Math.max(-100, Math.min(100, localActivityDelta)),
         });
@@ -2839,6 +3026,7 @@ export const useGameStore = defineStore('game', {
         poweredMinutes: poweredRefrigerationMinutes,
       });
       this.worldLootContainers = advanceWorldLootConditionStates(this.worldLootContainers, elapsedMinutes);
+      this.fishing = fishingAdvance.nextState;
       this.localPressure = localAdvance.nextState;
       if (mapWasInitialized) this.nodeZombieStates = localAdvance.nextNodeZombieStates;
       syncCurrentWorldPressureProjection(this.$state);
@@ -2866,6 +3054,12 @@ export const useGameStore = defineStore('game', {
         totals: cloneSnapshot(localAdvance.totals),
         events: cloneSnapshot(localAdvance.events),
         summary: cloneSnapshot(summarizeLocalPressure(this.localPressure, localPressureGraphContext())),
+      };
+      result.fishing = {
+        ok: true,
+        reason: null,
+        processedBoundaryMinutes: cloneSnapshot(fishingAdvance.processedBoundaryMinutes),
+        summary: cloneSnapshot(summarizeFishing(this.fishing, fishingContextForState(this.$state))),
       };
       result.localMigrations = cloneSnapshot(localAdvance.events);
       localAdvance.events.forEach((event) => {
@@ -3131,6 +3325,223 @@ function localPressureGraphContext() {
     nodes: mapNodes.map((node) => ({ id: node.id, danger: node.danger ?? 0 })),
     edges: mapEdges.map(([from, to]) => [from, to]),
   };
+}
+
+function fishingSpotDefinitions() {
+  return fishingSpots.map((spot) => ({
+    nodeId: spot.nodeId,
+    stockCap: clampInteger(spot.capacity, 1, 1000, 1),
+    regenPerDay: clampInteger(spot.regenPerDay, 0, 1000, 0),
+    baseCatchChance: Math.max(0, Math.min(1, Number(spot.baseCatchChance) || 0.35)),
+  }));
+}
+
+function fishingRunPhaseForState(state) {
+  if (loadedStateIsTerminal(state)) return 'ended';
+  return state?.currentNodeId ? 'running' : 'setup';
+}
+
+function fishingContextForState(state) {
+  const totalMinutes = worldMinutesForState(state);
+  const currentNodeId = typeof state?.currentNodeId === 'string' ? state.currentNodeId : null;
+  const zombieState = currentNodeId ? state?.nodeZombieStates?.[currentNodeId] : null;
+  return {
+    spotDefs: fishingSpotDefinitions(),
+    catalog: marketItems,
+    inventory: cloneInventory(state?.inventory),
+    capacity: inventoryCapacityForState(state, state?.inventory),
+    worldSeed: state?.world?.seed ?? 0,
+    skill: clampInteger(state?.skills?.fishing, 0, 10, 0),
+    day: Math.floor(totalMinutes / (24 * 60)) + 1,
+    clockMinutes: totalMinutes % (24 * 60),
+    totalMinutes,
+    nextItemSequence: clampInteger(state?.nextItemSequence, 1, 1_000_000_000, 1),
+    currentNodeId,
+    // A temporary evasion window is deliberately insufficient: fishing keeps
+    // the survivor exposed in one place and requires the river bank cleared.
+    nodeSecured: Boolean(zombieState && Math.max(0, Number(zombieState.count) || 0) === 0),
+    activeTactical: Boolean(
+      state?.activeTacticalEncounter
+      && !isTacticalEncounterTerminal(state.activeTacticalEncounter)
+    ),
+    runPhase: fishingRunPhaseForState(state),
+  };
+}
+
+function reconcileFishingForState(state) {
+  const context = fishingContextForState(state);
+  const rawPresent = state?.fishing && typeof state.fishing === 'object' && !Array.isArray(state.fishing);
+  if (!rawPresent) {
+    return createFishingState({
+      spotDefs: context.spotDefs,
+      totalMinutes: context.totalMinutes,
+    });
+  }
+  const normalized = normalizeFishingState(state.fishing, context);
+  if (normalized.lastProcessedMinute === context.totalMinutes) return normalized;
+  if (normalized.lastProcessedMinute > context.totalMinutes) {
+    return createFishingState({
+      spotDefs: context.spotDefs,
+      totalMinutes: context.totalMinutes,
+    });
+  }
+  const advanced = advanceFishingState(normalized, {
+    spotDefs: context.spotDefs,
+    fromTotalMinutes: normalized.lastProcessedMinute,
+    toTotalMinutes: context.totalMinutes,
+  });
+  return advanced.ok
+    ? advanced.nextState
+    : createFishingState({ spotDefs: context.spotDefs, totalMinutes: context.totalMinutes });
+}
+
+function currentFishingSummaryForState(state) {
+  const context = fishingContextForState(state);
+  const summary = summarizeFishing(state?.fishing, context);
+  const spot = summary.spots.find((entry) => entry.nodeId === context.currentNodeId) ?? null;
+  if (!spot) return null;
+  return {
+    ...spot,
+    chancePercent: fishingChancePercentForState(state, spot),
+    minutes: fishingMinutesForState(state),
+    stockLabel: fishingStockLabel(spot.stockBand, spot.stock),
+    timelineCurrent: summary.timelineCurrent,
+    maxAttemptsPerDay: summary.maxAttemptsPerDay,
+  };
+}
+
+function fishingMinutesForState(state) {
+  return Math.max(75, 120 - clampInteger(state?.skills?.fishing, 0, 10, 0) * 5);
+}
+
+function fishingChancePercentForState(state, spot = null) {
+  const definition = fishingSpots.find((entry) => entry.nodeId === (spot?.nodeId ?? state?.currentNodeId));
+  if (!definition) return 0;
+  const clockMinutes = worldMinutesForState(state) % (24 * 60);
+  const dawnOrDusk = (clockMinutes >= 5 * 60 && clockMinutes < 8 * 60)
+    || (clockMinutes >= 17 * 60 && clockMinutes < 20 * 60);
+  const chance = Math.max(0.15, Math.min(
+    0.85,
+    Number(definition.baseCatchChance) + clampInteger(state?.skills?.fishing, 0, 10, 0) * 0.04 + (dawnOrDusk ? 0.1 : 0),
+  ));
+  return Math.round(chance * 100);
+}
+
+function fishingActionStateForState(state) {
+  const summary = currentFishingSummaryForState(state);
+  if (!summary) {
+    return {
+      minutes: fishingMinutesForState(state),
+      chancePercent: 0,
+      stockBand: 'depleted',
+      stockLabel: '这里不是可捕鱼水域',
+      attemptsRemaining: 0,
+      disabledReason: '这里没有适合垂钓的水域',
+    };
+  }
+  const context = fishingContextForState(state);
+  const fishingState = normalizeFishingState(state?.fishing, context);
+  const rod = context.inventory.find((item) => item.id === 'fishing_rod' && item.count > 0);
+  const tackle = context.inventory.find((item) => item.id === 'fishing_tackle' && item.count > 0);
+  const command = {
+    commandId: `preview:${context.currentNodeId}:r${fishingState.revision}:t${context.totalMinutes}`,
+    expectedRevision: fishingState.revision,
+    nodeId: context.currentNodeId,
+    rodStackId: rod?.stackId ?? '',
+    tackleStackId: tackle?.stackId ?? '',
+    destinationId: STORAGE_CONTAINERS.CARRY,
+  };
+  let preview;
+  try {
+    preview = previewFishingProjection(fishingState, command, context);
+  } catch {
+    preview = { ok: false, reason: 'projection_failed' };
+  }
+  let disabledReason = preview.ok ? '' : fishingDisabledReason(preview.reason);
+  if (!disabledReason && Number(state?.localPressure?.lastProcessedMinute) !== context.totalMinutes) {
+    disabledReason = '世界时间线需要修复后才能垂钓';
+  }
+  return {
+    minutes: preview.minutes ?? summary.minutes,
+    chancePercent: preview.chancePercent ?? summary.chancePercent,
+    stockBand: preview.stockBand ?? summary.stockBand,
+    stockLabel: fishingStockLabel(preview.stockBand ?? summary.stockBand, preview.stockBefore ?? summary.stock),
+    attemptsRemaining: preview.attemptsRemaining ?? summary.attemptsRemaining,
+    disabledReason,
+  };
+}
+
+function fishingDisabledReason(reason) {
+  const labels = {
+    run_not_active: '本局已经结束',
+    tactical_active: '先结束当前战术遭遇',
+    not_fishing_spot: '这里没有适合垂钓的水域',
+    wrong_node: '必须抵达目标水域才能垂钓',
+    node_unsafe: '必须先真正清空水边尸群，临时绕行不足以垂钓',
+    rod_missing: '随身背包里需要一根鱼竿',
+    tackle_missing: '随身背包里需要钓具或鱼饵',
+    stock_depleted: '这片水域今天已经没有可捕的鱼',
+    daily_limit: '今天已经垂钓三次，让水面安静到明天',
+    capacity_exceeded: '随身背包至少需要为一条鱼留出空间',
+    timeline_mismatch: '捕鱼时间线需要修复',
+    invalid_destination: '鱼获只能先放入随身背包',
+    output_missing: '鲜鱼目录数据缺失',
+    projection_failed: '暂时无法估算这次垂钓',
+  };
+  return labels[reason] ?? '当前条件不允许垂钓';
+}
+
+function fishingStockLabel(band, stock = 0) {
+  const label = band === 'abundant'
+    ? '鱼群充足'
+    : band === 'fair' ? '鱼群一般' : band === 'scarce' ? '鱼群稀少' : '水域已耗尽';
+  return `${label} · 约 ${Math.max(0, Math.round(Number(stock) || 0))} 条`;
+}
+
+function formatFishingDuration(minutes) {
+  const duration = Math.max(0, Math.round(Number(minutes) || 0));
+  const hours = Math.floor(duration / 60);
+  const remainder = duration % 60;
+  return [hours ? `${hours} 小时` : '', remainder ? `${remainder} 分钟` : ''].filter(Boolean).join(' ') || '0 分钟';
+}
+
+function fishingStoreFailure(state, reason, command = {}, details = {}) {
+  const context = fishingContextForState(state);
+  const fishing = normalizeFishingState(state?.fishing, context);
+  return {
+    ...(details && typeof details === 'object' ? details : {}),
+    ok: false,
+    reason,
+    replayed: Boolean(details?.replayed),
+    committed: false,
+    commandId: typeof command?.commandId === 'string' ? command.commandId : '',
+    revision: fishing.revision,
+    ...(command?.nodeId ? { nodeId: command.nodeId } : {}),
+    nextState: {
+      fishing: cloneSnapshot(fishing),
+      inventory: cloneInventory(state?.inventory),
+      nextItemSequence: clampInteger(state?.nextItemSequence, 1, 1_000_000_000, 1),
+    },
+  };
+}
+
+function validFishingProjection(result, state, command) {
+  if (!result?.ok || result.committed !== true || !result.nextState) return false;
+  const context = fishingContextForState(state);
+  const before = normalizeFishingState(state?.fishing, context);
+  const after = normalizeFishingState(result.nextState.fishing, context);
+  if (Number(command?.expectedRevision) !== before.revision) return false;
+  if (after.revision !== before.revision + 1) return false;
+  if (after.lastProcessedMinute !== context.totalMinutes) return false;
+  if (!after.appliedCommandIds.includes(command.commandId)) return false;
+  if (!Array.isArray(result.nextState.inventory)) return false;
+  if (storageUsedSpace(result.nextState.inventory) > context.capacity) return false;
+  const sequence = Number(result.nextState.nextItemSequence);
+  if (!Number.isInteger(sequence) || sequence < context.nextItemSequence || sequence > 1_000_000_000) return false;
+  const beforeStock = before.spots[command.nodeId]?.stock;
+  const afterStock = after.spots[command.nodeId]?.stock;
+  if (!Number.isInteger(beforeStock) || afterStock !== beforeStock - (result.caught ? 1 : 0)) return false;
+  return true;
 }
 
 function pressureValue(value, fallback = 0) {

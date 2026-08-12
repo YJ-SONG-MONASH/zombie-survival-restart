@@ -5484,6 +5484,37 @@ input:focus {
   font-size: 0.66rem;
 }
 
+.fishing-action-chip {
+  min-width: 168px;
+}
+
+.fishing-action-summary {
+  display: flex;
+  gap: 4px 6px;
+  align-items: center;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.fishing-action-summary span {
+  overflow: hidden;
+  flex: 1 1 auto;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+
+.fishing-action-summary b,
+.fishing-action-summary i {
+  flex: 0 0 auto;
+  color: #fef3c7;
+  font-size: inherit;
+  font-style: normal;
+}
+
+.fishing-action-summary i {
+  color: #bbf7d0;
+}
+
 .map-action-chip em {
   overflow: hidden;
   color: #fca5a5;
@@ -5736,7 +5767,7 @@ input:focus {
 }
 
 .node-detail-actions button {
-  min-height: 42px;
+  min-height: 44px;
 }
 
 .node-detail-actions span {
@@ -6616,6 +6647,33 @@ input:focus {
   min-height: 48px;
 }
 
+.fishing-confirm-dialog {
+  width: min(620px, 100%);
+  border-color: rgba(96, 165, 250, 0.46);
+}
+
+.fishing-confirm-grid > div {
+  min-width: 0;
+}
+
+.fishing-confirm-grid dd {
+  overflow-wrap: anywhere;
+}
+
+.fishing-confirm-error,
+.fishing-confirm-note {
+  padding: 9px 11px;
+  border-left: 3px solid #60a5fa;
+  background: rgba(30, 58, 138, 0.22);
+  font-size: 0.78rem;
+}
+
+.fishing-confirm-error {
+  border-left-color: #ef4444;
+  color: #fecaca !important;
+  background: rgba(127, 29, 29, 0.24);
+}
+
 .location-search-dialog,
 .resolution-dialog {
   display: grid;
@@ -7062,6 +7120,59 @@ input:focus {
   border-left: 3px solid #86efac;
   color: #dcfce7 !important;
   background: rgba(20, 83, 45, 0.22);
+  font-size: 0.78rem;
+}
+
+.fishing-resolution {
+  display: grid;
+  gap: 10px;
+  padding: 11px;
+  border: 1px solid rgba(96, 165, 250, 0.42);
+  border-radius: 7px;
+  background:
+    linear-gradient(135deg, rgba(30, 64, 175, 0.14), transparent 54%),
+    rgba(0, 0, 0, 0.28);
+}
+
+.fishing-resolution-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.fishing-resolution-facts > span {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(96, 165, 250, 0.25);
+  border-radius: 6px;
+  background: rgba(4, 12, 25, 0.58);
+}
+
+.fishing-resolution-facts > span.wide {
+  grid-column: span 2;
+}
+
+.fishing-resolution-facts small {
+  color: #93c5fd;
+  font-size: 0.68rem;
+}
+
+.fishing-resolution-facts strong {
+  min-width: 0;
+  color: #eff6ff;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.fishing-persistence-note {
+  padding: 8px 10px;
+  border-left: 3px solid #60a5fa;
+  color: #dbeafe !important;
+  background: rgba(30, 64, 175, 0.2);
   font-size: 0.78rem;
 }
 
@@ -7677,6 +7788,7 @@ input:focus {
 
   .exploration-resolution-facts,
   .cooking-resolution-facts,
+  .fishing-resolution-facts,
   .perimeter-resolution-facts,
   .exploration-metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -8049,6 +8161,7 @@ input:focus {
 
   .exploration-resolution-facts,
   .cooking-resolution-facts,
+  .fishing-resolution-facts,
   .perimeter-resolution-facts,
   .exploration-metric-grid {
     gap: 6px;
@@ -8056,6 +8169,7 @@ input:focus {
 
   .exploration-resolution-facts > span,
   .cooking-resolution-facts > span,
+  .fishing-resolution-facts > span,
   .perimeter-resolution-facts > span,
   .exploration-metric-grid > div {
     padding: 7px;
@@ -8085,11 +8199,13 @@ input:focus {
   }
 
   .cooking-resolution-facts,
+  .fishing-resolution-facts,
   .perimeter-resolution-facts {
     grid-template-columns: 1fr;
   }
 
-  .cooking-resolution-facts > span.wide {
+  .cooking-resolution-facts > span.wide,
+  .fishing-resolution-facts > span.wide {
     grid-column: span 1;
   }
 
@@ -8399,6 +8515,14 @@ input:focus {
   .map-survival-screen {
     max-width: 100%;
     overflow-x: hidden;
+  }
+
+  .map-survival-screen button {
+    min-height: 44px;
+  }
+
+  .map-playfield button.map-node.scale-minor {
+    min-height: 44px;
   }
 
   .map-playfield,

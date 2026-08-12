@@ -104,7 +104,7 @@ describe('v0.6 persistent scene loot store boundary', () => {
   });
 
   it('uses the current save version and opens one deterministic, idempotent world container without spending time', () => {
-    expect(SAVE_VERSION).toBe(11);
+    expect(SAVE_VERSION).toBe(12);
     expect(game.saveVersion).toBe(SAVE_VERSION);
     expect(game.worldLootContainers).toEqual({});
     prepareSafeNode(game, 'muldraugh');
@@ -454,6 +454,7 @@ describe('v0.6 persistent scene loot store boundary', () => {
     game.day = 3;
     game.clockMinutes = 8 * 60;
     game.localPressure.lastProcessedMinute = game.totalWorldMinutes;
+    game.fishing.lastProcessedMinute = game.totalWorldMinutes;
     const { opened } = openFirstPerishableContainer(game, 'riverside');
     const perishable = opened.container.slots.find((slot) => slot.item.conditionState?.freshness?.perishable);
 

@@ -85,7 +85,7 @@ describe('v0.11 Store-owned local pressure', () => {
   });
 
   it('ships save version 11 with a complete pressure graph and projects the current node', () => {
-    expect(SAVE_VERSION).toBe(11);
+    expect(SAVE_VERSION).toBe(12);
     expect(game.saveVersion).toBe(SAVE_VERSION);
     expect(game.localPressure).toMatchObject({
       version: 1,
@@ -123,7 +123,7 @@ describe('v0.11 Store-owned local pressure', () => {
     const restored = useGameStore(createPinia());
     restored.loadPersistedState();
 
-    expect(restored.saveVersion).toBe(11);
+    expect(restored.saveVersion).toBe(12);
     expect(restored.localPressure.lastProcessedMinute).toBe(restored.totalWorldMinutes);
     expect(restored.currentNodePressureSummary).toEqual(expect.objectContaining({
       nodeId: 'dixie_highway_north',

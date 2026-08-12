@@ -7,6 +7,7 @@ import {
 
 const NEW_FOOD_IDS = [
   'cooked_meat',
+  'cooked_fish',
   'vegetable_soup',
   'meat_stew',
   'fruit_salad',
@@ -16,6 +17,7 @@ const NEW_FOOD_IDS = [
 const RECIPE_CATALOG_IDS = [
   'cooking_pot',
   'fresh_meat',
+  'fresh_fish',
   'cabbage',
   'water_bottle',
   'apple',
@@ -68,6 +70,8 @@ describe('v0.7 food preparation catalog', () => {
     expect(item('cooked_meat').effects.hunger).toBeLessThan(item('fresh_meat').effects.hunger);
     expect(item('cooked_meat').effects.health).toBeGreaterThan(item('fresh_meat').effects.health);
     expect(item('cooked_meat').effects.stress).toBeLessThan(item('fresh_meat').effects.stress);
+    expect(item('cooked_fish').effects.hunger).toBeLessThan(item('fresh_fish').effects.hunger);
+    expect(item('cooked_fish').effects.health).toBeGreaterThan(item('fresh_fish').effects.health);
 
     expect(item('vegetable_soup').effects.hunger).toBeLessThan(item('cabbage').effects.hunger);
     expect(item('meat_stew').effects.health).toBeGreaterThan(item('fresh_meat').effects.health);

@@ -12,6 +12,7 @@ const HOUR = 60;
 
 const catalog = [
   food('fresh_meat', 2, 24 * HOUR, 72 * HOUR),
+  food('fresh_fish', 2, 24 * HOUR, 72 * HOUR),
   food('cabbage', 1, 3 * 24 * HOUR, 7 * 24 * HOUR),
   food('apple', 1, 5 * 24 * HOUR, 10 * 24 * HOUR),
   food('wild_berries', 1, 2 * 24 * HOUR, 4 * 24 * HOUR),
@@ -21,6 +22,7 @@ const catalog = [
   tool('hunting_knife', 1),
   tool('machete', 3),
   food('cooked_meat', 2, 2 * 24 * HOUR, 4 * 24 * HOUR),
+  food('cooked_fish', 2, 2 * 24 * HOUR, 5 * 24 * HOUR),
   food('vegetable_soup', 2, 24 * HOUR, 3 * 24 * HOUR),
   food('meat_stew', 2, 24 * HOUR, 3 * 24 * HOUR),
   food('fruit_salad', 1, 12 * HOUR, 36 * HOUR),
@@ -68,6 +70,7 @@ function baseContext(overrides = {}) {
       carry: [],
       base: [
         stack('fresh_meat', 2, 1),
+        stack('fresh_fish', 2, 8),
         stack('cabbage', 2, 2),
         stack('apple', 2, 3),
         stack('wild_berries', 2, 4),
@@ -128,10 +131,11 @@ function deepFreeze(value) {
 }
 
 describe('food preparation recipe contract', () => {
-  it('publishes a JSON-safe fixed five-recipe catalog', () => {
+  it('publishes a JSON-safe fixed six-recipe catalog', () => {
     expect(FOOD_PREPARATION_VERSION).toBe(1);
     expect(FOOD_PREPARATION_RECIPES.map((recipe) => recipe.resultId)).toEqual([
       'cooked_meat',
+      'cooked_fish',
       'vegetable_soup',
       'meat_stew',
       'fruit_salad',
@@ -142,6 +146,7 @@ describe('food preparation recipe contract', () => {
 
   it.each([
     ['cook_meat', ['fresh_meat'], 'cooked_meat'],
+    ['cook_fish', ['fresh_fish'], 'cooked_fish'],
     ['vegetable_soup', ['cabbage'], 'vegetable_soup'],
     ['meat_stew', ['fresh_meat', 'cabbage'], 'meat_stew'],
     ['fruit_salad', ['apple', 'wild_berries'], 'fruit_salad'],
@@ -178,9 +183,10 @@ describe('food preparation recipe contract', () => {
     const before = snapshot(context);
     const options = listFoodPreparationOptions(context);
 
-    expect(options).toHaveLength(5);
+    expect(options).toHaveLength(6);
     expect(options.find((entry) => entry.id === 'fruit_salad')).toMatchObject({ enabled: true, disabledReason: '' });
     expect(options.find((entry) => entry.id === 'cook_meat')).toMatchObject({ enabled: false, disabledReason: 'power_unavailable' });
+    expect(options.find((entry) => entry.id === 'cook_fish')).toMatchObject({ enabled: false, disabledReason: 'power_unavailable' });
     expect(options.find((entry) => entry.id === 'fruit_salad').suggestedIngredientSelections)
       .toEqual(expect.arrayContaining([
         expect.objectContaining({ containerId: 'base', stackId: ingredient(context, 'apple').stackId }),

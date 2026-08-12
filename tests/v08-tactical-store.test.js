@@ -143,7 +143,7 @@ describe('v0.8 tactical Store integration', () => {
     const restored = useGameStore(createPinia());
     restored.loadPersistedState();
 
-    expect(SAVE_VERSION).toBe(11);
+    expect(SAVE_VERSION).toBe(12);
     expect(restored.saveVersion).toBe(SAVE_VERSION);
     expect(restored.activeTacticalEncounter).toMatchObject({
       version: 2,

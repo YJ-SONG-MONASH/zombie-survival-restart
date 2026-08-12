@@ -36,6 +36,7 @@ const actionMinutes = {
   sleep: 480,
   vehicle: 180,
   forage: 150,
+  fish: 120,
   fortify: 240,
   combat_melee: 90,
   combat_firearm: 60,

@@ -53,6 +53,7 @@ function setExteriorPopulation(game, count) {
 
 function syncPressureClock(game) {
   game.localPressure.lastProcessedMinute = game.totalWorldMinutes;
+  game.fishing.lastProcessedMinute = game.totalWorldMinutes;
 }
 
 function prepareRun(game, shelterId = 'gated_villa') {
@@ -416,7 +417,7 @@ describe('v0.9 base security migration', () => {
 
     restored.loadPersistedState();
 
-    expect(SAVE_VERSION).toBe(11);
+    expect(SAVE_VERSION).toBe(12);
     expect(restored.saveVersion).toBe(SAVE_VERSION);
     expect(restored.baseSecurity).toMatchObject({ revision: 0, lastProcessedHour: 82, lastIncident: null });
     expect(restored.baseSecuritySummary).toMatchObject({ totalBarricade: 125, legacyBarricades: 5 });

@@ -341,7 +341,7 @@ describe('v0.5 tactical save migration and projections', () => {
     const game = useGameStore();
     game.loadPersistedState();
 
-    expect(SAVE_VERSION).toBe(11);
+    expect(SAVE_VERSION).toBe(12);
     expect(game.saveVersion).toBe(SAVE_VERSION);
     expect(game.activeTacticalEncounter).toBeNull();
     expect(game.nextEncounterSequence).toBe(1);
@@ -846,6 +846,7 @@ describe('v0.5 tactical persistence, terminal ordering, and dismissal', () => {
     prepareRun(game, { zombies: 1 });
     game.clockMinutes = 23 * 60 + 59;
     game.localPressure.lastProcessedMinute = game.totalWorldMinutes;
+    game.fishing.lastProcessedMinute = game.totalWorldMinutes;
     game.skills.strength = 10;
     game.skills.fitness = 10;
     synchronizeSkillXp(game);
@@ -886,6 +887,7 @@ describe('v0.5 tactical persistence, terminal ordering, and dismissal', () => {
     prepareRun(game, { zombies: 6 });
     game.clockMinutes = 23 * 60 + 59;
     game.localPressure.lastProcessedMinute = game.totalWorldMinutes;
+    game.fishing.lastProcessedMinute = game.totalWorldMinutes;
     startEncounter(game, 'evade');
     const startingPopulation = game.currentZombieState.count;
 
@@ -909,6 +911,7 @@ describe('v0.5 tactical persistence, terminal ordering, and dismissal', () => {
     game.day = game.evacuationDeadline;
     game.clockMinutes = 23 * 60 + 59;
     game.localPressure.lastProcessedMinute = game.totalWorldMinutes;
+    game.fishing.lastProcessedMinute = game.totalWorldMinutes;
     game.currentZombieState.lastRefreshDay = game.day;
     startEncounter(game, 'evade');
 

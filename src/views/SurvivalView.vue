@@ -217,12 +217,17 @@
           <button
             v-for="action in currentNodeActionsForDisplay"
             :key="action.id"
-            :class="['map-action-chip', { blocked: action.disabled }]"
-            :disabled="action.disabled || game.isGameOver"
+            :class="['map-action-chip', { blocked: action.disabled, 'fishing-action-chip': action.id === 'fish' }]"
+            :disabled="action.disabled || game.isGameOver || (action.id === 'fish' && fishingActionBusy)"
             :title="action.disabledReason || action.description"
-            @click="runNodeAction(action.id)"
+            @click="runNodeAction(action)"
           >
             <strong>{{ action.label }}</strong>
+            <small v-if="action.id === 'fish'" class="fishing-action-summary">
+              <span>{{ action.stockLabel }}</span>
+              <b>{{ action.chancePercent }}%</b>
+              <i>余 {{ action.attemptsRemaining }} 次</i>
+            </small>
             <small>{{ formatDuration(action.minutes) }}</small>
             <em v-if="action.disabledReason">{{ action.disabledReason }}</em>
           </button>
@@ -1495,6 +1500,66 @@
     </section>
 
     <section
+      v-if="pendingFishingAction"
+      class="move-confirm-backdrop"
+      @click.self="closeFishingConfirmation"
+      @keydown.esc.stop.prevent="closeFishingConfirmation"
+    >
+      <article
+        ref="fishingConfirmDialog"
+        class="move-confirm-dialog fishing-confirm-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="fishing-confirm-title"
+        tabindex="-1"
+      >
+        <p class="panel-kicker">CONFIRM FISHING</p>
+        <h2 id="fishing-confirm-title">在 {{ currentNode?.name ?? '当前水域' }} 捕鱼</h2>
+        <p>鱼竿会保留；每次尝试都会消耗 1 份钓具。水面动静会增加当前地点的本地压力。</p>
+        <dl class="move-risk-grid fishing-confirm-grid">
+          <div>
+            <dt>耗时</dt>
+            <dd>{{ formatDuration(pendingFishingAction.minutes) }}</dd>
+          </div>
+          <div>
+            <dt>水域鱼量</dt>
+            <dd>{{ pendingFishingAction.stockLabel }}</dd>
+          </div>
+          <div>
+            <dt>本次成功率</dt>
+            <dd>{{ pendingFishingAction.chancePercent }}%</dd>
+          </div>
+          <div>
+            <dt>今日剩余</dt>
+            <dd>{{ pendingFishingAction.attemptsRemaining }} 次</dd>
+          </div>
+          <div>
+            <dt>钓竿 / 钓具</dt>
+            <dd>{{ pendingFishingAction.rodLabel }}（保留） · {{ pendingFishingAction.tackleLabel }} ×1（消耗）</dd>
+          </div>
+          <div>
+            <dt>声响</dt>
+            <dd>本地噪音 +{{ pendingFishingAction.noiseDelta }} · 活动 +{{ pendingFishingAction.activityDelta }}</dd>
+          </div>
+        </dl>
+        <p v-if="pendingFishingAction.error" class="fishing-confirm-error" role="alert">
+          {{ pendingFishingAction.error }}
+        </p>
+        <p v-else class="fishing-confirm-note">概率只用于本次尝试；确认前不会提前揭示是否上钩。</p>
+        <footer>
+          <button class="secondary" :disabled="fishingActionBusy" @click="closeFishingConfirmation">取消</button>
+          <button
+            class="primary-action"
+            :disabled="fishingActionBusy || Boolean(pendingFishingAction.error)"
+            @click="confirmFishingAction"
+          >
+            {{ fishingActionBusy ? '正在收线…' : '确认捕鱼' }}
+          </button>
+        </footer>
+      </article>
+    </section>
+
+    <section
       v-if="locationSearch"
       class="move-confirm-backdrop location-search-backdrop"
       @click.self="leaveLocationSearch"
@@ -1706,6 +1771,44 @@
           <p class="cooking-persistence-note">成品已进入指定容器并会继续腐败；旧原料不会恢复为全新鲜。</p>
         </section>
 
+        <section v-if="resolutionReport.fishing" class="fishing-resolution" aria-label="捕鱼过程与数值变化">
+          <div class="fishing-resolution-facts">
+            <span class="wide">
+              <small>起止时刻</small>
+              <strong>{{ resolutionReport.fishing.timeText }}</strong>
+            </span>
+            <span>
+              <small>结果</small>
+              <strong>{{ resolutionReport.fishing.outcomeText }}</strong>
+            </span>
+            <span>
+              <small>耗饵</small>
+              <strong>{{ resolutionReport.fishing.tackleText }}</strong>
+            </span>
+            <span>
+              <small>鱼获</small>
+              <strong>{{ resolutionReport.fishing.catchText }}</strong>
+            </span>
+            <span>
+              <small>技能经验</small>
+              <strong>{{ resolutionReport.fishing.skillText }}</strong>
+            </span>
+            <span class="wide">
+              <small>本地噪音 / 活动</small>
+              <strong>{{ resolutionReport.fishing.pressureText }}</strong>
+            </span>
+            <span>
+              <small>新到尸群</small>
+              <strong>{{ resolutionReport.fishing.arrivalsText }}</strong>
+            </span>
+            <span>
+              <small>水域余量</small>
+              <strong>{{ resolutionReport.fishing.stockText }}</strong>
+            </span>
+          </div>
+          <p class="fishing-persistence-note">鱼量和今日尝试次数属于当前水域；换地点不会重置，跨日后才会恢复。</p>
+        </section>
+
         <section v-if="resolutionReport.perimeter" class="perimeter-resolution" aria-label="基地防线施工结算">
           <div class="perimeter-resolution-facts">
             <span>
@@ -1757,7 +1860,7 @@
 
           <section>
             <h3>资源与环境</h3>
-            <p v-if="!resolutionReport.preparation && !resolutionReport.perimeter && !resolutionReport.inventoryChanges.length && !resolutionReport.tagChanges.length && !resolutionReport.vehicleChange && !resolutionReport.worldChanges.length">没有资源或环境变化。</p>
+            <p v-if="!resolutionReport.preparation && !resolutionReport.fishing && !resolutionReport.perimeter && !resolutionReport.inventoryChanges.length && !resolutionReport.tagChanges.length && !resolutionReport.vehicleChange && !resolutionReport.worldChanges.length">没有资源或环境变化。</p>
             <span
               v-for="change in resolutionReport.inventoryChanges"
               :key="change.id"
@@ -1810,6 +1913,9 @@ const locationSearch = ref(null);
 const locationSearchDialog = ref(null);
 const resolutionReport = ref(null);
 const resolutionDialog = ref(null);
+const pendingFishingAction = ref(null);
+const fishingConfirmDialog = ref(null);
+const fishingActionBusy = ref(false);
 const selectedExternalContainerId = ref('base');
 const activeStoragePaneId = ref('carry');
 const selectedStorageContainerId = ref('');
@@ -2013,11 +2119,16 @@ const currentNodeSecured = computed(() => {
   const until = normalizedSecuredUntilMinute.value;
   return until !== null && until > currentTotalMinute.value;
 });
-const currentNodeTemporarilySecured = computed(() => currentNodeSecured.value && localZombieState.value.population !== 0);
 const normalizedSecuredUntilMinute = computed(() => {
   const until = localZombieState.value.securedUntilMinute;
   if (until === null) return null;
-  return until < 1440 && game.day > 1 ? (game.day - 1) * 1440 + until : until;
+  return Math.max(0, until);
+});
+const currentNodeTemporarilySecured = computed(() => {
+  const until = normalizedSecuredUntilMinute.value;
+  return localZombieState.value.population !== 0
+    && until !== null
+    && until > currentTotalMinute.value;
 });
 const encounterState = computed(() => game.currentEncounter && typeof game.currentEncounter === 'object' ? game.currentEncounter : null);
 const encounterActive = computed(() => Boolean(encounterState.value?.active));
@@ -2249,6 +2360,7 @@ const tacticalLog = computed(() => {
 const securedUntilLabel = computed(() => {
   const until = normalizedSecuredUntilMinute.value;
   if (until === null) return currentNodeSecured.value ? '状态有效' : '未建立';
+  if (until <= currentTotalMinute.value) return '已过期';
   const day = Math.floor(until / 1440) + 1;
   const minuteOfDay = ((until % 1440) + 1440) % 1440;
   const hour = Math.floor(minuteOfDay / 60);
@@ -3062,7 +3174,86 @@ function confirmMove() {
   });
 }
 
-function runNodeAction(actionId) {
+function queueFishingAction(action = {}) {
+  if (fishingActionBusy.value || pendingFishingAction.value) return;
+  const command = typeof game.currentFishingCommand === 'function'
+    ? game.currentFishingCommand('ui-confirm')
+    : {};
+  let preview;
+  try {
+    preview = typeof game.previewFishing === 'function'
+      ? game.previewFishing(command)
+      : { ok: false, reason: 'projection_failed' };
+  } catch {
+    preview = { ok: false, reason: 'projection_failed' };
+  }
+  const summary = game.currentFishingSummary && typeof game.currentFishingSummary === 'object'
+    ? game.currentFishingSummary
+    : {};
+  pendingFishingAction.value = {
+    command,
+    minutes: preview?.minutes ?? action.minutes ?? summary.minutes ?? 0,
+    chancePercent: preview?.chancePercent ?? action.chancePercent ?? summary.chancePercent ?? 0,
+    stockLabel: action.stockLabel ?? summary.stockLabel ?? '鱼量数据不可用',
+    attemptsRemaining: preview?.attemptsRemaining ?? action.attemptsRemaining ?? summary.attemptsRemaining ?? 0,
+    noiseDelta: preview?.noiseDelta ?? 0,
+    activityDelta: preview?.activityDelta ?? 0,
+    rodLabel: fishingEquipmentLabel(command?.rodStackId, '鱼竿'),
+    tackleLabel: fishingEquipmentLabel(command?.tackleStackId, '钓具'),
+    error: preview?.ok ? '' : fishingReasonText(preview?.reason, action.disabledReason),
+  };
+  nextTick(() => fishingConfirmDialog.value?.focus());
+}
+
+function closeFishingConfirmation() {
+  if (fishingActionBusy.value) return;
+  pendingFishingAction.value = null;
+}
+
+async function confirmFishingAction() {
+  const pending = pendingFishingAction.value;
+  if (!pending || pending.error || fishingActionBusy.value) return;
+  fishingActionBusy.value = true;
+  const before = captureGameSnapshot();
+  let result;
+  try {
+    result = typeof game.fish === 'function'
+      ? game.fish(pending.command)
+      : { ok: false, reason: 'projection_failed' };
+  } catch {
+    result = { ok: false, reason: 'commit_failed' };
+  }
+
+  // Keep the confirmation action locked long enough to absorb pointer double-clicks.
+  await new Promise((resolve) => setTimeout(resolve, 280));
+  if (!result?.ok) {
+    pendingFishingAction.value = {
+      ...pending,
+      error: fishingReasonText(result?.reason),
+    };
+    fishingActionBusy.value = false;
+    nextTick(() => fishingConfirmDialog.value?.focus());
+    return;
+  }
+
+  const pressureAfter = normalizeLocalPressureSummary(
+    game.currentNodePressureSummary,
+    game.currentNodeId,
+  );
+  pendingFishingAction.value = null;
+  fishingActionBusy.value = false;
+  showResolutionReport(before, fishingResolutionContext(result, pressureAfter));
+}
+
+function runNodeAction(actionOrId) {
+  const action = actionOrId && typeof actionOrId === 'object'
+    ? actionOrId
+    : currentNodeActionsForDisplay.value.find((entry) => entry.id === actionOrId);
+  const actionId = action?.id ?? actionOrId;
+  if (actionId === 'fish') {
+    queueFishingAction(action ?? {});
+    return;
+  }
   const tacticalPreferredActions = {
     combat_melee: 'melee',
     combat_firearm: 'fire',
@@ -3075,6 +3266,72 @@ function runNodeAction(actionId) {
   const before = captureGameSnapshot();
   if (!game.resolveNodeAction(actionId)) return;
   showResolutionReport(before);
+}
+
+function fishingEquipmentLabel(stackId, fallback) {
+  if (!stackId) return fallback;
+  return game.inventory.find((item) => item.stackId === stackId)?.name ?? fallback;
+}
+
+function fishingResolutionContext(result, pressureAfter) {
+  const catchCount = Math.max(0, Math.round(Number(result?.catchCount) || 0));
+  const tackleCount = Math.max(0, Math.round(Number(result?.consumedTackle?.count) || 0));
+  const skillXp = Math.max(0, Number(result?.skillXp) || 0);
+  const noiseDelta = Math.max(0, Number(result?.noiseDelta) || 0);
+  const activityDelta = Math.max(0, Number(result?.activityDelta) || 0);
+  const newZombieCount = Math.max(0, Math.round(Number(result?.newZombieCount) || 0));
+  const caught = Boolean(result?.caught);
+  const stockBefore = Math.max(0, Math.round(Number(result?.stockBefore) || 0));
+  const stockAfter = Math.max(0, Math.round(Number(result?.stockAfter) || 0));
+  const attemptsRemaining = Math.max(0, Math.round(Number(result?.attemptsRemaining) || 0));
+  const pressureText = [
+    `噪音 +${formatNumber(noiseDelta)}${pressureAfter ? ` → ${formatNumber(pressureAfter.noise)}` : ''}`,
+    `活动 +${formatNumber(activityDelta)}${pressureAfter ? ` → ${formatNumber(pressureAfter.activity)}` : ''}`,
+  ].join(' · ');
+  return {
+    title: caught ? '捕鱼成功' : '捕鱼落空',
+    result: caught
+      ? `成功：捕获鲜鱼 ×${catchCount}，鱼获已经放入随身背包。`
+      : '落空：没有捕到鱼；钓具和本次时间仍然消耗。',
+    notes: `成功率 ${formatNumber(result?.chancePercent)}% · 本地水域独立结算`,
+    fishing: {
+      outcomeText: caught ? '上钩成功' : '未捕获',
+      tackleText: tackleCount ? `钓具 ×${tackleCount}` : '未记录耗饵',
+      catchText: caught ? `鲜鱼 ×${catchCount}` : '没有鱼获',
+      skillText: `钓鱼 +${formatNumber(skillXp)} XP`,
+      pressureText,
+      arrivalsText: newZombieCount ? `声音引来 ${newZombieCount} 只` : '没有新尸群抵达',
+      stockText: `${stockBefore} → ${stockAfter} 条 · 余 ${attemptsRemaining} 次`,
+    },
+  };
+}
+
+function fishingReasonText(reason, fallback = '') {
+  const labels = {
+    run_not_active: '本局已经结束，不能继续捕鱼。',
+    tactical_active: '先结束当前战术遭遇，才能在水边停留。',
+    not_fishing_spot: '这里没有适合垂钓的水域。',
+    wrong_node: '必须抵达目标水域才能捕鱼。',
+    node_unsafe: '必须先真正清空水边尸群；临时绕行不足以捕鱼。',
+    invalid_destination: '鱼获只能先放入随身背包。',
+    stock_depleted: '这片水域今天已经没有可捕的鱼，等待跨日恢复。',
+    daily_limit: '今天已经垂钓三次，让水面安静到明天。',
+    revision_exhausted: '捕鱼记录已达到上限，本次没有执行。',
+    rod_missing: '随身背包里需要一根鱼竿。',
+    tackle_missing: '随身背包里需要至少 1 份钓具或鱼饵。',
+    output_missing: '鲜鱼目录数据缺失，本次没有执行。',
+    capacity_exceeded: '随身背包至少需要为一条鲜鱼留出空间。',
+    invalid_command: '捕鱼请求无效，请关闭弹窗后重新选择。',
+    duplicate_command: '这次捕鱼命令已经处理过，没有再次消耗时间或钓具。',
+    stale_revision: '鱼量或物资已经变化，请关闭弹窗后重新确认。',
+    timeline_mismatch: '捕鱼时间线尚未同步，本次没有执行。',
+    invalid_timeline: '捕鱼时间记录无效，本次没有执行。',
+    insufficient_safe_window: '当前安全状态不足以完成整段捕鱼。',
+    projection_failed: '暂时无法估算这次捕鱼，请稍后重试。',
+    invalid_projection: '捕鱼结算校验失败，本次没有执行。',
+    commit_failed: '捕鱼结算未能保存；时间、钓具和鱼量均未改变。',
+  };
+  return labels[reason] || fallback || '当前条件不允许捕鱼。';
 }
 
 function openTacticalDrawer() {
@@ -4567,6 +4824,10 @@ function buildResolutionReport(before, after, context = {}) {
       noiseText: context.preparation.noiseText ?? '噪音 0',
       skillText: context.preparation.skillText ?? '烹饪 +0 XP',
       waterText: context.preparation.waterText ?? '未消耗水',
+    } : null,
+    fishing: context.fishing ? {
+      ...context.fishing,
+      timeText: `第 ${before.day} 天 ${before.clockLabel} → 第 ${after.day} 天 ${after.clockLabel}（${formatDuration(elapsedMinutes)}）`,
     } : null,
     perimeter: context.perimeter ? { ...context.perimeter } : null,
   };

@@ -39,6 +39,7 @@ function secureNode(game, nodeId) {
 
 function syncPressureClock(game) {
   game.localPressure.lastProcessedMinute = game.totalWorldMinutes;
+  game.fishing.lastProcessedMinute = game.totalWorldMinutes;
 }
 
 function prepareSafeRun(game) {
@@ -522,7 +523,7 @@ describe('v0.10 Store transaction release blockers', () => {
     localStorage.values.set('moshi-survival-state', JSON.stringify({ game: legacy }));
     const migrated = useGameStore(createPinia());
     migrated.loadPersistedState();
-    expect(migrated.saveVersion).toBe(11);
+    expect(migrated.saveVersion).toBe(12);
     expect(migrated.expedition).toEqual({
       version: 1,
       revision: 0,

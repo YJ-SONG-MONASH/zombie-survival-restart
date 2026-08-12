@@ -58,6 +58,7 @@ function prepareRun(game) {
   game.inventory = [];
   game.baseInventory = normalizedInventory([
     rawStack('fresh_meat', 3, 1),
+    rawStack('fresh_fish', 3, 8),
     rawStack('cabbage', 3, 2),
     rawStack('apple', 2, 3),
     rawStack('wild_berries', 2, 4),
@@ -134,6 +135,7 @@ describe('v0.7 food preparation Store integration', () => {
     expect(generatedIds.length).toBeGreaterThan(0);
     const preparedIds = [
       'cooked_meat',
+      'cooked_fish',
       'vegetable_soup',
       'meat_stew',
       'fruit_salad',
@@ -144,6 +146,7 @@ describe('v0.7 food preparation Store integration', () => {
 
   it.each([
     ['cook_meat', 'fresh_meat', 'cooked_meat'],
+    ['cook_fish', 'fresh_fish', 'cooked_fish'],
     ['vegetable_soup', 'cabbage', 'vegetable_soup'],
     ['meat_stew', 'fresh_meat', 'meat_stew'],
     ['fruit_salad', 'apple', 'fruit_salad'],
@@ -173,6 +176,7 @@ describe('v0.7 food preparation Store integration', () => {
   it('blocks heated food after the outage, then accepts a fueled installed generator', () => {
     game.day = game.world.powerShutoffDay;
     game.localPressure.lastProcessedMinute = game.totalWorldMinutes;
+    game.fishing.lastProcessedMinute = game.totalWorldMinutes;
     game.world.powerOn = false;
     const outageCommand = commandFor(game, 'cook_meat');
     expectRejectedWithoutMutation(game, () => game.prepareFood(outageCommand), 'power_unavailable');
@@ -244,6 +248,7 @@ describe('v0.7 food preparation Store integration', () => {
     game.day = 1;
     game.clockMinutes = 23 * 60 + 50;
     game.localPressure.lastProcessedMinute = game.totalWorldMinutes;
+    game.fishing.lastProcessedMinute = game.totalWorldMinutes;
     const command = commandFor(game, 'cook_meat', { commandId: 'store:midnight' });
     const result = game.prepareFood(command);
 
@@ -285,7 +290,7 @@ describe('v0.7 food preparation save migration', () => {
 
     restored.loadPersistedState();
 
-    expect(SAVE_VERSION).toBe(11);
+    expect(SAVE_VERSION).toBe(12);
     expect(restored.saveVersion).toBe(SAVE_VERSION);
     expect(restored.foodPreparationRevision).toBe(0);
     expect(restored.foodPreparationCommandIds).toEqual([]);
