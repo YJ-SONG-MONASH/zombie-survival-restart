@@ -1534,7 +1534,7 @@ export const mapNodes = [
     region: 'Riverside',
     shelterIds: ['empty_garage', 'roadside_motel_room'],
     actions: ['search', 'scout', 'vehicle'],
-    connections: ['riverside', 'west_point'],
+    connections: ['riverside', 'west_point', 'west_point_gun_store'],
   },
   {
     id: 'west_point',
@@ -1562,7 +1562,7 @@ export const mapNodes = [
     region: 'West Point',
     shelterIds: ['west_point_gun_store', 'police_station'],
     actions: ['search', 'scout', 'vehicle'],
-    connections: ['west_point', 'valley_checkpoint'],
+    connections: ['west_point', 'valley_checkpoint', 'riverside_bridge', 'ivy_kettle'],
   },
   {
     id: 'valley_checkpoint',
@@ -1744,7 +1744,7 @@ export const mapNodes = [
     region: 'Ivy Kettle',
     shelterIds: ['single_floor_house', 'two_story_house', 'school_classroom'],
     actions: ['search', 'scout', 'rest', 'vehicle'],
-    connections: ['riverside_farms', 'dixie_highway_north', 'chinatown', 'raven_creek_outer'],
+    connections: ['riverside_farms', 'dixie_highway_north', 'chinatown', 'raven_creek_outer', 'west_point_gun_store'],
   },
   {
     id: 'raven_creek_outer',

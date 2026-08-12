@@ -61,7 +61,14 @@
           <line
             v-for="edge in visibleEdges"
             :key="edge.id"
-            :class="['map-edge', edge.visibility]"
+            :class="[
+              'map-edge',
+              edge.visibility,
+              {
+                'expedition-route': expeditionRouteEdgeIds.has(edge.routeId),
+                'expedition-next': expeditionNextEdgeId === edge.routeId,
+              },
+            ]"
             :x1="edge.from.x"
             :y1="edge.from.y"
             :x2="edge.to.x"
@@ -76,7 +83,14 @@
             'map-node',
             node.visibility,
             `scale-${node.displayScale}`,
-            { adjacent: node.isAdjacent, movable: node.canMove, inspected: inspectedNode?.id === node.id },
+            {
+              adjacent: node.isAdjacent,
+              movable: node.canMove,
+              inspected: inspectedNode?.id === node.id,
+              'expedition-route': expeditionRouteNodeIds.has(node.id),
+              'expedition-next': expeditionPlanView.nextNodeId === node.id,
+              'expedition-target': expeditionPlanView.targetNodeId === node.id,
+            },
           ]"
           :style="{ left: `${node.x}%`, top: `${node.y}%` }"
           :aria-pressed="inspectedNode?.id === node.id"
@@ -90,7 +104,7 @@
         </button>
       </section>
 
-      <aside :class="['map-quick-panel', { 'has-active-encounter': encounterActive || tacticalModeVisible, 'has-tactical-encounter': tacticalModeVisible }]">
+      <aside :class="['map-quick-panel', { 'has-active-encounter': encounterActive || tacticalModeVisible, 'has-tactical-encounter': tacticalModeVisible, 'has-active-expedition': expeditionPlanView.active }]">
         <p class="panel-kicker">CURRENT NODE</p>
         <h2>{{ currentNode?.name ?? '未定位' }}</h2>
         <div class="node-meta-row">
@@ -108,6 +122,60 @@
             <small>{{ localZombieDetail }}</small>
           </span>
         </div>
+        <section
+          v-if="expeditionPlanView.active"
+          :class="['expedition-objective-strip', { paused: expeditionPlanView.paused }]"
+          aria-label="当前远征目标"
+        >
+          <header>
+            <span>
+              <small>EXPEDITION · {{ expeditionPlanView.phaseLabel }}</small>
+              <strong>{{ expeditionPlanView.targetLabel }}</strong>
+            </span>
+            <b>{{ expeditionPlanView.progressLabel }}</b>
+          </header>
+          <p v-if="expeditionPlanView.paused" class="expedition-pause-copy">战斗中断 · 路线已暂停</p>
+          <p v-else>
+            {{ expeditionPlanView.nextLabel }}
+            <template v-if="expeditionPlanView.mode === 'round_trip' && expeditionPlanView.phase !== 'returning'"> · 完成指定搜索后自动返程</template>
+          </p>
+          <div class="expedition-objective-actions">
+            <button type="button" @click="openActiveExpeditionPlanner">查看</button>
+            <button
+              type="button"
+              class="primary"
+              :disabled="Boolean(expeditionNextDisabledReason)"
+              :title="expeditionNextDisabledReason"
+              @click="queueNextExpeditionLeg"
+            >
+              下一段
+            </button>
+            <button
+              type="button"
+              :disabled="Boolean(expeditionReplanDisabledReason) || expeditionCommandBusy"
+              :title="expeditionReplanDisabledReason"
+              @click="replanActiveExpedition"
+            >
+              重规划
+            </button>
+            <button
+              type="button"
+              class="danger"
+              :disabled="expeditionCommandBusy"
+              @click="abandonActiveExpedition"
+            >
+              放弃
+            </button>
+          </div>
+          <p
+            v-if="expeditionQuickFeedback"
+            :class="['expedition-quick-feedback', `tone-${expeditionFeedbackTone}`]"
+            role="status"
+            aria-live="polite"
+          >
+            {{ expeditionQuickFeedback }}
+          </p>
+        </section>
         <p>{{ currentNode?.description ?? '地图尚未初始化。' }}</p>
         <div v-if="tacticalModeVisible" class="tactical-quick-summary" role="status" aria-live="polite">
           <span>
@@ -227,11 +295,16 @@
 
             <div class="node-detail-actions">
               <button v-if="inspectedNode?.id === currentNode?.id" class="secondary" disabled>当前位置</button>
-              <button v-else-if="canMove(inspectedNode?.id)" class="primary-action" @click="queueMoveToNode(inspectedNode)">
-                前往这里
-              </button>
-              <span v-else-if="encounterActive">尸群封住了出口，先清场或成功绕行。</span>
-              <span v-else>需要接近后才能移动到这里。</span>
+              <template v-else>
+                <button class="expedition-plan-button primary-action" @click="openExpeditionPlanner(inspectedNode)">
+                  规划远征
+                </button>
+                <button v-if="canMove(inspectedNode?.id)" class="secondary" @click="queueMoveToNode(inspectedNode)">
+                  直接前往相邻节点
+                </button>
+                <span v-else-if="encounterActive">尸群封住了出口；可以先查看路线，但必须脱离战斗后才能出发。</span>
+                <span v-else>远方节点不能一步抵达；规划路线后仍需逐段确认移动。</span>
+              </template>
             </div>
 
             <h3>标志性地区</h3>
@@ -269,6 +342,28 @@
                 <small>风险 {{ entry.risk }} · {{ entry.description }}</small>
               </button>
             </div>
+
+            <template v-if="rootSceneSearchables.length">
+              <h3>散落搜索点</h3>
+              <div class="scene-card-grid nested-search-grid">
+                <button
+                  v-for="entry in rootSceneSearchables"
+                  :key="entry.searchKey || entry.id"
+                  :class="['scene-card', 'nested-search-card', { searched: isSearchableSpent(entry) }]"
+                  :title="assetTooltip(entry.assetId)"
+                  :disabled="Boolean(sceneSearchDisabledReason(entry, { allowExhausted: true }))"
+                  @click="openLocationSearch(entry)"
+                >
+                  <span :class="['scene-card-icon', `quality-${entry.quality}`]">
+                    <img :src="assetSrc(assetById(entry.assetId))" :alt="entry.name" @error="markDetailAssetMissing" />
+                    <b>{{ assetById(entry.assetId)?.fallback ?? '搜' }}</b>
+                  </span>
+                  <strong>{{ entry.name }}</strong>
+                  <small>{{ entry.description }}</small>
+                  <em>{{ searchButtonTextFor(entry) }}</em>
+                </button>
+              </div>
+            </template>
 
             <h3>人物</h3>
             <div class="scene-card-grid">
@@ -1071,6 +1166,198 @@
       </aside>
     </main>
 
+    <section
+      v-if="expeditionPlannerOpen"
+      class="expedition-planner-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="expedition-planner-title"
+      @click.self="closeExpeditionPlanner"
+    >
+      <article ref="expeditionPlannerDialog" class="expedition-planner-sheet" tabindex="-1">
+        <header class="expedition-planner-header">
+          <div>
+            <p class="panel-kicker">ROUTE / SUPPLY / RETURN</p>
+            <h2 id="expedition-planner-title">
+              {{ expeditionPlannerIntent === 'view' ? '远征进行中' : '规划远征' }}
+            </h2>
+            <span>{{ expeditionPlannerTarget?.name ?? expeditionPlanView.targetLabel }}</span>
+          </div>
+          <button type="button" class="expedition-planner-close" aria-label="关闭远征规划" @click="closeExpeditionPlanner">关闭</button>
+        </header>
+
+        <div class="expedition-planner-body">
+          <section v-if="expeditionPlannerIntent === 'view'" class="expedition-active-detail">
+            <div class="expedition-active-heading">
+              <span>
+                <small>{{ expeditionPlanView.phaseLabel }}</small>
+                <strong>{{ expeditionPlanView.progressLabel }}</strong>
+              </span>
+              <b :class="{ paused: expeditionPlanView.paused }">
+                {{ expeditionPlanView.paused ? '战斗中断' : expeditionPlanView.nextLabel }}
+              </b>
+            </div>
+            <ol class="expedition-leg-list" aria-label="当前远征路线">
+              <li
+                v-for="(node, index) in expeditionPlanView.routeNodes"
+                :key="`${node.id}:${index}`"
+                :class="{
+                  completed: index < expeditionPlanView.routeProgressIndex,
+                  current: index === expeditionPlanView.routeProgressIndex,
+                  next: node.id === expeditionPlanView.nextNodeId,
+                  target: node.id === expeditionPlanView.targetNodeId,
+                }"
+              >
+                <i>{{ index + 1 }}</i>
+                <span>
+                  <strong>{{ node.name }}</strong>
+                  <small>{{ node.id === expeditionPlanView.nextNodeId ? '下一段' : node.id === expeditionPlanView.targetNodeId ? '远征目标' : node.id === currentNode?.id ? '当前位置' : '路线节点' }}</small>
+                </span>
+              </li>
+            </ol>
+            <dl class="expedition-active-metrics">
+              <div><dt>行动阶段</dt><dd>{{ expeditionPlanView.phaseLabel }}</dd></div>
+              <div><dt>目标动作</dt><dd>{{ expeditionPlanView.objectiveLabel }}</dd></div>
+              <div><dt>路线状态</dt><dd>{{ expeditionPlanView.paused ? '战术暂停，清场后继续' : expeditionPlanView.routeStatusLabel }}</dd></div>
+            </dl>
+          </section>
+
+          <template v-else>
+            <section class="expedition-planner-brief">
+              <div>
+                <small>起点</small>
+                <strong>{{ currentNode?.name ?? '未定位' }}</strong>
+              </div>
+              <b aria-hidden="true">→</b>
+              <div>
+                <small>目标</small>
+                <strong>{{ expeditionPlannerTarget?.name ?? '未选择' }}</strong>
+              </div>
+            </section>
+
+            <fieldset class="expedition-mode-selector">
+              <legend>远征方式</legend>
+              <button
+                type="button"
+                :class="{ active: expeditionPlannerMode === 'one_way' }"
+                :aria-pressed="expeditionPlannerMode === 'one_way'"
+                @click="setExpeditionMode('one_way')"
+              >
+                <strong>单程抵达</strong>
+                <small>到达并清理目标节点后结束计划</small>
+              </button>
+              <button
+                type="button"
+                :class="{ active: expeditionPlannerMode === 'round_trip' }"
+                :aria-pressed="expeditionPlannerMode === 'round_trip'"
+                @click="setExpeditionMode('round_trip')"
+              >
+                <strong>往返搜寻</strong>
+                <small>精确搜索目标物件，再沿真实路线返家</small>
+              </button>
+            </fieldset>
+
+            <section v-if="expeditionPlannerMode === 'round_trip'" class="expedition-objective-picker">
+              <label for="expedition-search-target">目标搜索对象</label>
+              <select
+                id="expedition-search-target"
+                v-model="expeditionPlannerSearchKey"
+                :disabled="!expeditionSearchOptions.length"
+              >
+                <option value="">选择一个确切对象</option>
+                <option v-for="option in expeditionSearchOptions" :key="option.key" :value="option.key" :disabled="option.exhausted">
+                  {{ option.label }}{{ option.exhausted ? '（已搜空）' : '' }}
+                </option>
+              </select>
+              <p v-if="!expeditionSearchOptions.length" class="expedition-planner-warning">
+                这个已知地点没有可确认的搜索对象，无法制定往返搜寻；可改为单程抵达。
+              </p>
+              <p v-else>计划只会在目标节点认领这个对象；实际物资仍要玩家亲自搜索和选择。</p>
+            </section>
+
+            <section class="expedition-route-section">
+              <header>
+                <div>
+                  <h3>路线候选</h3>
+                  <p>全部时间都是最低估计；遭遇、天气与临时行动会延后抵达。</p>
+                </div>
+                <span v-if="expeditionPreviewRouteSame" class="same-route-notice">三种偏好同路</span>
+              </header>
+
+              <p v-if="expeditionPreviewPending" class="expedition-planner-empty">选择目标后生成路线情报。</p>
+              <p v-else-if="expeditionPreviewReason" class="expedition-planner-error" role="status">
+                {{ expeditionPreviewReason }}
+              </p>
+              <div v-else class="expedition-candidate-grid">
+                <button
+                  v-for="candidate in expeditionPlanCandidates"
+                  :key="candidate.id"
+                  type="button"
+                  :class="['expedition-candidate-card', { selected: candidate.strategies.includes(expeditionPlannerStrategy) } ]"
+                  :aria-pressed="candidate.strategies.includes(expeditionPlannerStrategy)"
+                  :disabled="candidate.disabled"
+                  @click="expeditionPlannerStrategy = candidate.strategy"
+                >
+                  <header>
+                    <span>
+                      <small>{{ candidate.eyebrow }}</small>
+                      <strong>{{ candidate.label }}</strong>
+                    </span>
+                    <b>{{ candidate.riskLabel }}</b>
+                  </header>
+                  <p class="expedition-route-path">{{ candidate.pathLabel }}</p>
+                  <dl class="expedition-candidate-metrics">
+                    <div><dt>最低 ETA</dt><dd>{{ candidate.minimumLabel }}</dd></div>
+                    <div><dt>抵达</dt><dd>{{ candidate.arrivalLabel }}</dd></div>
+                    <div><dt>返家</dt><dd>{{ candidate.returnLabel }}</dd></div>
+                  </dl>
+                  <p class="expedition-fuel-line">{{ candidate.fuelLabel }}</p>
+                  <ul v-if="candidate.advisories.length" class="expedition-advisory-list">
+                    <li v-for="warning in candidate.advisories" :key="warning">{{ warning }}</li>
+                  </ul>
+                  <small v-if="candidate.sharedRouteLabel" class="expedition-duplicate-copy">{{ candidate.sharedRouteLabel }}</small>
+                </button>
+              </div>
+            </section>
+          </template>
+        </div>
+
+        <footer class="expedition-planner-footer">
+          <p
+            v-if="expeditionPlannerFeedback"
+            :class="[`tone-${expeditionFeedbackTone}`]"
+            role="status"
+            aria-live="polite"
+          >
+            {{ expeditionPlannerFeedback }}
+          </p>
+          <span v-else-if="expeditionPlannerIntent !== 'view'">{{ expeditionStartDisabledReason || '每次只移动一段；任何战斗都会暂停路线。' }}</span>
+          <span v-else>{{ expeditionPlanView.paused ? '先完成当前战斗，路线不会自动推进。' : '下一段会先打开移动确认，不会自动跨越节点。' }}</span>
+          <button type="button" class="secondary" @click="closeExpeditionPlanner">关闭</button>
+          <button
+            v-if="expeditionPlannerIntent === 'view'"
+            type="button"
+            class="primary-action"
+            :disabled="Boolean(expeditionNextDisabledReason)"
+            :title="expeditionNextDisabledReason"
+            @click="queueNextExpeditionLeg"
+          >
+            前往下一段
+          </button>
+          <button
+            v-else
+            type="button"
+            class="primary-action"
+            :disabled="Boolean(expeditionStartDisabledReason) || expeditionCommandBusy"
+            :title="expeditionStartDisabledReason"
+            @click="commitExpeditionPlan"
+          >
+            {{ expeditionCommandBusy ? '正在锁定路线…' : '启动远征' }}
+          </button>
+        </footer>
+      </article>
+    </section>
+
     <section v-if="pendingMoveNode" class="move-confirm-backdrop" role="dialog" aria-modal="true">
       <article class="move-confirm-dialog">
         <p class="panel-kicker">CONFIRM MOVE</p>
@@ -1094,6 +1381,13 @@
             <dd>{{ moveConsequenceText }}</dd>
           </div>
         </dl>
+        <section v-if="pendingMoveExpeditionContext" :class="['move-expedition-context', { detour: !pendingMoveExpeditionContext.planned }]">
+          <strong>{{ pendingMoveExpeditionContext.planned ? `远征第 ${pendingMoveExpeditionContext.segmentNumber} 段` : '偏离当前远征路线' }}</strong>
+          <span v-if="pendingMoveExpeditionContext.planned">
+            {{ pendingMoveExpeditionContext.phaseLabel }} · 下一站 {{ pendingMoveNode.name }} · 目标 {{ pendingMoveExpeditionContext.targetLabel }}
+          </span>
+          <span v-else>这次移动不在计划路线上；抵达后远征会标记为偏航，需要重新规划。</span>
+        </section>
         <p class="move-warning">{{ moveRiskText(pendingMoveNode) }}</p>
         <footer>
           <button class="secondary" @click="pendingMoveNode = null">取消</button>
@@ -1440,16 +1734,31 @@ const foodPreparationFeedbackTone = ref('neutral');
 const baseWorkBusyToken = ref('');
 const baseWorkFeedback = ref('');
 const baseWorkFeedbackTone = ref('neutral');
+const expeditionPlannerOpen = ref(false);
+const expeditionPlannerDialog = ref(null);
+const expeditionPlannerIntent = ref('new');
+const expeditionPlannerTargetId = ref('');
+const expeditionPlannerMode = ref('one_way');
+const expeditionPlannerSearchKey = ref('');
+const expeditionPlannerStrategy = ref('fastest');
+const expeditionPlannerFeedback = ref('');
+const expeditionQuickFeedback = ref('');
+const expeditionFeedbackTone = ref('neutral');
+const expeditionCommandBusy = ref(false);
 let locationSearchSessionToken = 0;
 let locationSearchCommandSequence = 0;
 let foodPreparationCommandSequence = 0;
 let baseWorkCommandSequence = 0;
+let expeditionCommandSequence = 0;
 const foodPreparationSessionToken = typeof globalThis.crypto?.randomUUID === 'function'
   ? globalThis.crypto.randomUUID()
   : `session-${Date.now().toString(36)}`;
 const baseWorkSessionToken = typeof globalThis.crypto?.randomUUID === 'function'
   ? globalThis.crypto.randomUUID()
   : `base-${Date.now().toString(36)}`;
+const expeditionSessionToken = typeof globalThis.crypto?.randomUUID === 'function'
+  ? globalThis.crypto.randomUUID()
+  : `route-${Date.now().toString(36)}`;
 const tacticalActionFallbacks = [
   { id: 'push', label: '推开', estimatedOutcome: '争取身位，打断贴身尸体', staminaCost: 5, noiseDelta: 1 },
   { id: 'melee', label: '近战攻击', estimatedOutcome: '用当前主手攻击贴身目标', staminaCost: 6, noiseLabel: '随武器' },
@@ -1863,12 +2172,12 @@ const visibleEdges = computed(() => mapEdges.map(([fromId, toId]) => {
     : from?.canMove || to?.canMove
       ? 'active'
       : 'known';
-  return { id: `${fromId}-${toId}`, from, to, visibility };
+  return { id: `${fromId}-${toId}`, routeId: canonicalEdgeId(fromId, toId), from, to, visibility };
 }).filter((edge) => edge.from && edge.to));
 const currentNode = computed(() => game.currentMapNode);
 const currentNodeType = computed(() => game.currentNodeType);
 const currentNodeActionsForDisplay = computed(() => (Array.isArray(game.currentNodeActions) ? game.currentNodeActions : [])
-  .filter((action) => action?.id !== 'fortify'));
+  .filter((action) => !['fortify', 'search'].includes(action?.id)));
 const neighborNodes = computed(() => game.currentNeighborNodes);
 const neighborVisibleNodes = computed(() => neighborNodes.value.map((node) => nodeById.value[node.id] ?? node));
 const inspectedNode = computed(() => nodeById.value[game.inspectedNodeId] ?? game.inspectedMapNode ?? currentNode.value);
@@ -1891,6 +2200,131 @@ const landmarksForDisplay = computed(() => [
   ...(shelterLandmark.value ? [shelterLandmark.value] : []),
   ...(inspectedDetail.value?.landmarks ?? []),
 ]);
+const canonicalSceneSearchables = computed(() => {
+  const nodeId = inspectedNode.value?.id;
+  if (!nodeId || inspectedNode.value?.visibility === 'unknown') return [];
+  try {
+    return game.canonicalSceneSearchablesFor(nodeId) ?? [];
+  } catch {
+    return [];
+  }
+});
+const rootSceneSearchables = computed(() => canonicalSceneSearchables.value
+  .filter((entry) => !entry.parentSection && !entry.parentId));
+const expeditionPlannerTarget = computed(() => nodeById.value[expeditionPlannerTargetId.value] ?? null);
+const expeditionSearchOptions = computed(() => {
+  const target = expeditionPlannerTarget.value;
+  if (!target || inspectedNode.value?.id !== target.id || !inspectedDetail.value) return [];
+  return canonicalSceneSearchables.value.map((searchable) => {
+    const { searchKey: catalogKey, ...descriptor } = searchable;
+    const key = catalogKey || searchKeyForNode(descriptor, target.id);
+    let summary = null;
+    try {
+      summary = game.sceneLootSummary(descriptor, key);
+    } catch {
+      summary = null;
+    }
+    return {
+      key,
+      label: `${descriptor.parentName ? `${descriptor.parentName} · ` : ''}${descriptor.name}`,
+      description: descriptor.description,
+      searchable: descriptor,
+      exhausted: Boolean(summary?.exhausted),
+    };
+  });
+});
+const selectedExpeditionSearchOption = computed(() => expeditionSearchOptions.value
+  .find((option) => option.key === expeditionPlannerSearchKey.value) ?? null);
+const expeditionRevision = computed(() => Math.max(0, Math.round(Number(game.expedition?.revision) || 0)));
+const expeditionPlanView = computed(() => normalizeExpeditionSummary(
+  game.expeditionSummary,
+  game.expeditionPlan,
+  tacticalModeVisible.value,
+));
+const expeditionPlannerCommand = computed(() => ({
+  commandId: `expedition-preview:${expeditionPlannerTargetId.value || 'none'}:${expeditionPlannerMode.value}:${expeditionPlannerStrategy.value}:r${expeditionRevision.value}`.slice(0, 180),
+  expectedRevision: expeditionRevision.value,
+  mode: expeditionPlannerMode.value,
+  strategy: expeditionPlannerStrategy.value,
+  targetNodeId: expeditionPlannerTargetId.value,
+  ...(expeditionPlannerMode.value === 'round_trip' && selectedExpeditionSearchOption.value
+    ? {
+        targetSearchKey: selectedExpeditionSearchOption.value.key,
+        targetSearchable: { ...selectedExpeditionSearchOption.value.searchable },
+      }
+    : {}),
+}));
+const expeditionPreviewRaw = computed(() => {
+  if (!expeditionPlannerTargetId.value || expeditionPlannerIntent.value === 'view') return null;
+  try {
+    return game.previewExpeditionPlan(expeditionPlannerCommand.value) ?? { ok: false, reason: 'invalid_projection' };
+  } catch (error) {
+    return { ok: false, reason: 'projection_failed', message: error instanceof Error ? error.message : '' };
+  }
+});
+const expeditionPlanCandidates = computed(() => normalizeExpeditionCandidates(expeditionPreviewRaw.value));
+const expeditionPreviewRouteSame = computed(() => Boolean(
+  expeditionPreviewRaw.value?.routeSame
+  || (expeditionPlanCandidates.value.length > 1 && expeditionPlanCandidates.value.every((candidate) => candidate.routeSignature === expeditionPlanCandidates.value[0].routeSignature))
+));
+const expeditionPreviewPending = computed(() => !expeditionPlannerTargetId.value || expeditionPreviewRaw.value === null);
+const expeditionPreviewReason = computed(() => {
+  const preview = expeditionPreviewRaw.value;
+  if (!preview || preview.ok !== false) return '';
+  return expeditionReasonText(preview.reason, preview.message);
+});
+const selectedExpeditionCandidate = computed(() => expeditionPlanCandidates.value.find((candidate) => candidate.strategies.includes(expeditionPlannerStrategy.value))
+  ?? expeditionPlanCandidates.value.find((candidate) => !candidate.disabled)
+  ?? null);
+const expeditionStartDisabledReason = computed(() => {
+  if (expeditionCommandBusy.value) return '正在锁定路线';
+  if (game.isGameOver) return '本局已经结束';
+  if (tacticalModeVisible.value || encounterActive.value) return '战斗中只能查看路线，清场或脱离后才能出发';
+  if (!expeditionPlannerTargetId.value) return '请选择远征目标';
+  if (expeditionPlanView.value.active) return '已有远征正在进行，请先查看、重规划或放弃';
+  if (expeditionPlannerMode.value === 'round_trip' && !expeditionSearchOptions.value.length) return '目标地点没有可确认的搜索对象';
+  if (expeditionPlannerMode.value === 'round_trip' && !expeditionPlannerSearchKey.value) return '请选择一个确切搜索对象';
+  if (expeditionPlannerMode.value === 'round_trip' && !selectedExpeditionSearchOption.value) return '目标对象已经变化，请重新选择';
+  if (expeditionPreviewRaw.value?.ok === false) return expeditionPreviewReason.value || '路线无法建立';
+  if (!selectedExpeditionCandidate.value) return '没有可用路线候选';
+  if (selectedExpeditionCandidate.value.disabled) return selectedExpeditionCandidate.value.disabledReason || '这条路线当前不可用';
+  return '';
+});
+const expeditionRouteNodeIds = computed(() => new Set(expeditionPlanView.value.routeNodeIds));
+const expeditionRouteEdgeIds = computed(() => new Set(expeditionPlanView.value.routeEdgeIds));
+const expeditionNextEdgeId = computed(() => expeditionPlanView.value.nextNodeId && currentNode.value?.id
+  ? canonicalEdgeId(currentNode.value.id, expeditionPlanView.value.nextNodeId)
+  : '');
+const expeditionNextDisabledReason = computed(() => {
+  if (!expeditionPlanView.value.active) return '没有进行中的远征';
+  if (expeditionCommandBusy.value) return '远征命令正在处理';
+  if (game.isGameOver) return '本局已经结束';
+  if (tacticalModeVisible.value || encounterActive.value || expeditionPlanView.value.paused) return '战斗中断了路线，清场或成功脱离后才能继续';
+  if (!expeditionPlanView.value.nextNodeId) return expeditionPlanView.value.phase === 'objective'
+    ? '已经抵达目标，请完成目标动作'
+    : '当前路线没有下一站，请重新规划';
+  const nextNode = nodeById.value[expeditionPlanView.value.nextNodeId];
+  if (!nextNode) return '下一站尚未出现在已知地图中';
+  if (!nextNode.canMove && !canMove(nextNode.id)) return '下一站当前不可达，请重新规划';
+  return '';
+});
+const expeditionReplanDisabledReason = computed(() => {
+  if (!expeditionPlanView.value.active) return '没有进行中的远征';
+  if (expeditionCommandBusy.value) return '远征命令正在处理';
+  if (tacticalModeVisible.value || encounterActive.value || expeditionPlanView.value.paused) return '战斗中不能重新规划';
+  if (expeditionPlanView.value.phase !== 'off_route') return '当前路线仍然有效，无需重规划';
+  return '';
+});
+const pendingMoveExpeditionContext = computed(() => {
+  if (!pendingMoveNode.value || !expeditionPlanView.value.active) return null;
+  const planned = pendingMoveNode.value.id === expeditionPlanView.value.nextNodeId;
+  return {
+    planned,
+    segmentNumber: expeditionPlanView.value.routeProgressIndex + 1,
+    phaseLabel: expeditionPlanView.value.phaseLabel,
+    targetLabel: expeditionPlanView.value.targetLabel,
+  };
+});
 const selectedSceneLabel = computed(() => {
   const labels = {
     landmark: 'LANDMARK',
@@ -1927,7 +2361,13 @@ const selectedScenePassiveResult = computed(() => {
   if (entry.section === 'building') return `${entry.name}已纳入风险评估，进入前建议确认体力和撤退路线。`;
   return `${entry.name}已标记为当前区域的参考点，下方对象可以逐个翻找。`;
 });
-const selectedNestedSearchables = computed(() => nestedSearchablesForSceneElement(selectedSceneElement.value, inspectedDetail.value));
+const selectedNestedSearchables = computed(() => {
+  const parent = selectedSceneElement.value;
+  if (!parent || !['landmark', 'building'].includes(parent.section)) return [];
+  return canonicalSceneSearchables.value.filter((entry) => (
+    entry.parentSection === parent.section && entry.parentId === parent.id
+  ));
+});
 const locationLootSummary = computed(() => {
   const search = locationSearch.value;
   if (!search) return null;
@@ -2262,6 +2702,149 @@ function inspectNode(node) {
   activeDrawer.value = 'location';
 }
 
+function openExpeditionPlanner(node = inspectedNode.value) {
+  if (!node?.id || node.id === currentNode.value?.id || node.visibility === 'unknown') return;
+  expeditionPlannerIntent.value = 'new';
+  expeditionPlannerTargetId.value = node.id;
+  expeditionPlannerMode.value = 'one_way';
+  expeditionPlannerSearchKey.value = '';
+  expeditionPlannerStrategy.value = 'fastest';
+  expeditionPlannerFeedback.value = '';
+  expeditionQuickFeedback.value = '';
+  expeditionFeedbackTone.value = 'neutral';
+  activeDrawer.value = '';
+  expeditionPlannerOpen.value = true;
+  nextTick(() => expeditionPlannerDialog.value?.focus());
+}
+
+function openActiveExpeditionPlanner() {
+  if (!expeditionPlanView.value.active) return;
+  expeditionPlannerIntent.value = 'view';
+  expeditionPlannerTargetId.value = expeditionPlanView.value.targetNodeId;
+  expeditionPlannerMode.value = expeditionPlanView.value.mode;
+  expeditionPlannerSearchKey.value = expeditionPlanView.value.targetSearchKey;
+  expeditionPlannerStrategy.value = expeditionPlanView.value.strategy;
+  expeditionPlannerFeedback.value = '';
+  activeDrawer.value = '';
+  expeditionPlannerOpen.value = true;
+  nextTick(() => expeditionPlannerDialog.value?.focus());
+}
+
+function closeExpeditionPlanner() {
+  expeditionPlannerOpen.value = false;
+  expeditionPlannerFeedback.value = '';
+}
+
+function setExpeditionMode(mode) {
+  if (!['one_way', 'round_trip'].includes(mode) || expeditionCommandBusy.value) return;
+  expeditionPlannerMode.value = mode;
+  expeditionPlannerSearchKey.value = '';
+  expeditionPlannerFeedback.value = '';
+}
+
+function queueNextExpeditionLeg() {
+  const disabledReason = expeditionNextDisabledReason.value;
+  if (disabledReason) {
+    expeditionQuickFeedback.value = disabledReason;
+    expeditionPlannerFeedback.value = disabledReason;
+    expeditionFeedbackTone.value = 'danger';
+    return;
+  }
+  const nextNode = nodeById.value[expeditionPlanView.value.nextNodeId];
+  if (!nextNode) return;
+  expeditionPlannerOpen.value = false;
+  expeditionQuickFeedback.value = '';
+  queueMoveToNode(nextNode);
+}
+
+async function commitExpeditionPlan() {
+  const disabledReason = expeditionStartDisabledReason.value;
+  if (disabledReason || expeditionCommandBusy.value) {
+    expeditionPlannerFeedback.value = disabledReason;
+    expeditionFeedbackTone.value = 'danger';
+    return;
+  }
+  const command = {
+    commandId: nextExpeditionCommandId('start'),
+    expectedRevision: expeditionRevision.value,
+    mode: expeditionPlannerMode.value,
+    strategy: expeditionPlannerStrategy.value,
+    targetNodeId: expeditionPlannerTargetId.value,
+    ...(expeditionPlannerMode.value === 'round_trip'
+      ? {
+          targetSearchKey: selectedExpeditionSearchOption.value.key,
+          targetSearchable: { ...selectedExpeditionSearchOption.value.searchable },
+        }
+      : {}),
+  };
+  await runExpeditionCommand((request) => game.startExpedition(request), command, {
+    successText: '远征计划已建立，从目标条逐段出发。',
+    closeOnSuccess: true,
+  });
+}
+
+async function replanActiveExpedition() {
+  const disabledReason = expeditionReplanDisabledReason.value;
+  if (disabledReason || expeditionCommandBusy.value) {
+    expeditionQuickFeedback.value = disabledReason;
+    expeditionFeedbackTone.value = 'danger';
+    return;
+  }
+  await runExpeditionCommand(
+    (request) => game.replanExpedition(request),
+    {
+      commandId: nextExpeditionCommandId('replan'),
+      expectedRevision: expeditionRevision.value,
+      strategy: expeditionPlanView.value.strategy,
+    },
+    { successText: '已从当前位置重新建立路线，下一段仍需手动确认。' },
+  );
+}
+
+async function abandonActiveExpedition() {
+  if (!expeditionPlanView.value.active || expeditionCommandBusy.value) return;
+  await runExpeditionCommand(
+    (request) => game.abandonExpedition(request),
+    {
+      commandId: nextExpeditionCommandId('abandon'),
+      expectedRevision: expeditionRevision.value,
+    },
+    { successText: '远征已放弃；人物和物资不会被自动传送或返还。', closeOnSuccess: true },
+  );
+}
+
+async function runExpeditionCommand(action, command, options = {}) {
+  if (expeditionCommandBusy.value) return null;
+  expeditionCommandBusy.value = true;
+  expeditionPlannerFeedback.value = '';
+  expeditionQuickFeedback.value = '';
+  expeditionFeedbackTone.value = 'neutral';
+  try {
+    const result = await Promise.resolve(action(command));
+    if (result === false || result?.ok === false) {
+      const message = expeditionReasonText(result?.reason, result?.message);
+      expeditionPlannerFeedback.value = message;
+      expeditionQuickFeedback.value = message;
+      expeditionFeedbackTone.value = 'danger';
+      return result;
+    }
+    expeditionPlannerFeedback.value = options.successText ?? '远征命令已执行。';
+    expeditionQuickFeedback.value = expeditionPlannerFeedback.value;
+    expeditionFeedbackTone.value = 'good';
+    if (options.closeOnSuccess) expeditionPlannerOpen.value = false;
+    return result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '远征命令执行失败，状态没有变化。';
+    expeditionPlannerFeedback.value = message;
+    expeditionQuickFeedback.value = message;
+    expeditionFeedbackTone.value = 'danger';
+    return null;
+  } finally {
+    await new Promise((resolve) => setTimeout(resolve, 280));
+    expeditionCommandBusy.value = false;
+  }
+}
+
 function selectSceneElement(section, entry) {
   selectedSceneElement.value = { ...entry, section };
   selectedSearchTarget.value = null;
@@ -2312,11 +2895,17 @@ function queueMoveToNode(node) {
 
 function confirmMove() {
   if (!pendingMoveNode.value) return;
+  const expeditionContext = pendingMoveExpeditionContext.value;
   const nodeId = pendingMoveNode.value.id;
   pendingMoveNode.value = null;
   const before = captureGameSnapshot();
   if (!game.moveToNode(nodeId)) return;
-  showResolutionReport(before, { title: '移动结算' });
+  showResolutionReport(before, {
+    title: expeditionContext?.planned ? `远征第 ${expeditionContext.segmentNumber} 段结算` : '移动结算',
+    notes: expeditionContext?.planned
+      ? `已完成计划路段；路线不会自动跨段。目标仍是 ${expeditionContext.targetLabel}。`
+      : undefined,
+  });
 }
 
 function runNodeAction(actionId) {
@@ -3212,6 +3801,260 @@ function leaveLocationSearch() {
   locationSearch.value = null;
 }
 
+function nextExpeditionCommandId(kind) {
+  expeditionCommandSequence += 1;
+  return `expedition-ui:${expeditionSessionToken}:${kind}:r${expeditionRevision.value}:c${expeditionCommandSequence}`.slice(0, 180);
+}
+
+function canonicalEdgeId(fromId, toId) {
+  return [String(fromId ?? ''), String(toId ?? '')].sort((left, right) => left.localeCompare(right)).join('::');
+}
+
+function normalizeNodePath(path) {
+  if (!Array.isArray(path)) return [];
+  return path
+    .map((entry) => typeof entry === 'string' ? entry : entry?.id ?? entry?.nodeId ?? '')
+    .map((entry) => String(entry ?? '').trim())
+    .filter(Boolean);
+}
+
+function pathEdgeIds(path) {
+  const ids = normalizeNodePath(path);
+  return ids.slice(1).map((nodeId, index) => canonicalEdgeId(ids[index], nodeId));
+}
+
+function uniqueNodeIds(...paths) {
+  const seen = new Set();
+  return paths.flatMap((path) => normalizeNodePath(path)).filter((nodeId) => {
+    if (seen.has(nodeId)) return false;
+    seen.add(nodeId);
+    return true;
+  });
+}
+
+function normalizeExpeditionSummary(summary, plan, tacticalPaused = false) {
+  const active = Boolean(summary?.active && plan?.id);
+  if (!active) {
+    return {
+      active: false,
+      id: '',
+      phase: 'idle',
+      phaseLabel: '未规划',
+      mode: 'one_way',
+      strategy: 'fastest',
+      targetNodeId: '',
+      targetLabel: '未设目标',
+      targetSearchKey: '',
+      objectiveLabel: '抵达目标',
+      paused: false,
+      nextNodeId: '',
+      nextLabel: '没有下一站',
+      progressLabel: '0/0 段',
+      routeNodeIds: [],
+      routeEdgeIds: [],
+      routeNodes: [],
+      routeProgressIndex: 0,
+      routeStatusLabel: '未建立',
+    };
+  }
+
+  const phase = summary.phase;
+  const outboundPath = normalizeNodePath(plan.outboundPath);
+  const returnPath = normalizeNodePath(plan.returnPath);
+  const activePath = phase === 'returning' ? returnPath : outboundPath;
+  const legIndex = Math.max(0, Math.round(Number(plan.legIndex) || 0));
+  const routeProgressIndex = Math.min(Math.max(0, activePath.length - 1), legIndex);
+  const expectedNextNodeId = String(summary.expectedNextNodeId ?? '');
+  const targetNodeId = String(summary.targetNodeId ?? '');
+  const targetLabel = nodeById.value[targetNodeId]?.name ?? targetNodeId ?? '远征目标';
+  const nextNodeLabel = nodeById.value[expectedNextNodeId]?.name ?? expectedNextNodeId;
+  const phaseLabels = {
+    outbound: '去程',
+    objective: '目标行动',
+    returning: '返程',
+    off_route: '偏离路线',
+    paused: '已暂停',
+    completed: '已完成',
+  };
+  const paused = Boolean(tacticalPaused || summary.paused);
+  const mode = summary.mode;
+  const routeNodeIds = uniqueNodeIds(outboundPath, returnPath, activePath);
+  const routeEdgeIds = [...new Set([...pathEdgeIds(outboundPath), ...pathEdgeIds(returnPath), ...pathEdgeIds(activePath)])];
+  const routeNodes = activePath.map((nodeId) => ({ id: nodeId, name: nodeById.value[nodeId]?.name ?? nodeId }));
+  const totalLegs = Math.max(0, activePath.length - 1);
+  const completedLegs = Math.min(totalLegs, legIndex);
+  const targetSearchKey = String(summary.targetSearchKey ?? '');
+
+  return {
+    active,
+    id: summary.id,
+    phase,
+    phaseLabel: paused ? '战术暂停' : phaseLabels[phase] ?? '执行中',
+    mode,
+    strategy: summary.strategy,
+    originNodeId: plan.originNodeId,
+    targetNodeId,
+    targetLabel,
+    targetSearchKey,
+    objectiveLabel: mode === 'round_trip'
+      ? (targetSearchKey ? `搜索 ${targetSearchKey.split(':').at(-1)}` : '搜索指定对象')
+      : '抵达并确保节点安全',
+    paused,
+    pausedBy: summary.pausedBy,
+    nextNodeId: expectedNextNodeId,
+    nextLabel: expectedNextNodeId ? `下一站 ${nextNodeLabel}` : phase === 'objective' ? '等待目标行动' : '路线等待重规划',
+    progressLabel: `${completedLegs}/${totalLegs} 段`,
+    routeNodeIds,
+    routeEdgeIds,
+    routeNodes,
+    routeProgressIndex,
+    routeStatusLabel: phase === 'off_route' ? '已偏航，需要重规划' : '路线有效，等待玩家推进',
+  };
+}
+
+function normalizeExpeditionCandidates(preview) {
+  if (!preview || preview.ok === false) return [];
+  const source = Array.isArray(preview.uniqueRoutes) && preview.uniqueRoutes.length
+    ? preview.uniqueRoutes
+    : (preview.profiles ?? []);
+  return source.map((candidate, index) => {
+    const strategies = [...new Set((Array.isArray(candidate.strategies) && candidate.strategies.length
+      ? candidate.strategies
+      : [candidate.strategy]).filter((strategy) => ['fastest', 'safest', 'balanced'].includes(strategy)))];
+    const strategy = strategies.includes(expeditionPlannerStrategy.value)
+      ? expeditionPlannerStrategy.value
+      : (candidate.strategy ?? strategies[0] ?? 'fastest');
+    const outboundPath = normalizeNodePath(candidate.outboundPath);
+    const returnPath = normalizeNodePath(candidate.returnPath);
+    const routeSignature = `${outboundPath.join('>')}|${returnPath.join('>')}`;
+    const etaTotalMinutes = Math.max(0, Number(candidate.etaTotalMinutes) || 0);
+    const minimumMinutes = Math.max(0, Number(candidate.minimumMinutes) || 0);
+    const startMinutes = Math.max(0, etaTotalMinutes - minimumMinutes);
+    const outboundMinutes = (candidate.outboundSegments ?? [])
+      .reduce((total, segment) => total + Math.max(0, Number(segment?.minutes) || 0), 0);
+    return {
+      ...candidate,
+      id: `${strategy}:${routeSignature || index}`,
+      strategy,
+      strategies,
+      eyebrow: strategies.map(expeditionStrategyLabel).join(' / '),
+      label: strategies.length > 1 ? '当前道路得出同一路线' : expeditionStrategyTitle(strategy),
+      disabled: false,
+      disabledReason: '',
+      sharedRouteLabel: strategies.length > 1
+        ? `${strategies.map(expeditionStrategyTitle).join('、')}在当前情报下没有路线差异。`
+        : '',
+      outboundPath,
+      returnPath,
+      routeSignature,
+      pathLabel: expeditionPathLabel(outboundPath, returnPath),
+      minimumLabel: formatExpeditionDuration(minimumMinutes),
+      arrivalLabel: formatExpeditionClock(startMinutes + outboundMinutes),
+      returnLabel: expeditionPlannerMode.value === 'round_trip'
+        ? formatExpeditionClock(etaTotalMinutes)
+        : '—',
+      riskLabel: `风险 ${candidate.riskScore}`,
+      fuelLabel: expeditionFuelLabel(candidate.fuel),
+      advisories: expeditionAdvisoryList(candidate.advisory),
+    };
+  });
+}
+
+function expeditionStrategyLabel(strategy) {
+  return { fastest: '最快', safest: '最稳', balanced: '均衡' }[strategy] ?? String(strategy ?? '路线');
+}
+
+function expeditionStrategyTitle(strategy) {
+  return { fastest: '最快抵达', safest: '避险优先', balanced: '时间与风险均衡' }[strategy] ?? expeditionStrategyLabel(strategy);
+}
+
+function expeditionPathLabel(outboundPath, returnPath) {
+  const nodeLabel = (nodeId) => nodeById.value[nodeId]?.name ?? nodeId;
+  const outbound = outboundPath.length ? outboundPath.map(nodeLabel).join(' → ') : '路线节点待同步';
+  if (!returnPath.length) return outbound;
+  return `${outbound} ｜ 返程 ${returnPath.map(nodeLabel).join(' → ')}`;
+}
+
+function expeditionFuelLabel(fuel = {}) {
+  const starting = optionalNumber(fuel.starting);
+  const used = optionalNumber(fuel.used);
+  const remaining = optionalNumber(fuel.remaining);
+  const vehicleLegs = optionalNumber(fuel.vehicleLegs);
+  const footLegs = optionalNumber(fuel.footLegs);
+  const depletedNodeId = fuel.depletedAtNodeId;
+  const parts = [];
+  if (vehicleLegs === 0 && (footLegs ?? 0) > 0) parts.push('全程徒步');
+  else if (starting !== null || used !== null || remaining !== null) {
+    parts.push(`燃料 ${starting ?? '?'} - ${used ?? '?'} = ${remaining ?? '?'}`);
+  } else parts.push('燃料投影待同步');
+  if (vehicleLegs !== null || footLegs !== null) parts.push(`驾车 ${vehicleLegs ?? 0} 段 / 徒步 ${footLegs ?? 0} 段`);
+  if (depletedNodeId) parts.push(`将在 ${nodeById.value[depletedNodeId]?.name ?? depletedNodeId} 耗尽并改为徒步`);
+  return parts.join(' · ');
+}
+
+function expeditionAdvisoryList(advisory) {
+  if (!advisory || typeof advisory !== 'object') return ['补给与负重建议不可用'];
+  const labels = { water: '饮水', food: '食物', medical: '医疗' };
+  const lines = Object.entries(labels).map(([key, label]) => {
+    const available = Number(advisory.available?.[key]) || 0;
+    const recommended = Number(advisory.recommended?.[key]) || 0;
+    const deficit = Number(advisory.deficits?.[key]) || 0;
+    return `${label} ${available}/${recommended}${deficit > 0 ? ` · 缺 ${deficit}` : ' · 充足'}`;
+  });
+  lines.push(`负重 ${advisory.load}/${advisory.capacity} · 余量 ${advisory.freeCapacity}`);
+  if (advisory.warnings?.includes('vehicle_fuel_depletes')) lines.push('车辆会在途中耗尽燃料并改为徒步');
+  return lines;
+}
+
+function formatExpeditionDuration(value) {
+  const minutes = optionalNumber(value);
+  return minutes === null ? '等待投影' : formatDuration(minutes);
+}
+
+function formatExpeditionClock(value) {
+  const total = optionalNumber(value);
+  if (total === null) return '未单列';
+  const normalized = Math.max(0, Math.round(total));
+  const day = Math.floor(normalized / 1440) + 1;
+  const minuteOfDay = normalized % 1440;
+  const hour = Math.floor(minuteOfDay / 60);
+  const minute = minuteOfDay % 60;
+  return `第 ${day} 天 ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+function expeditionReasonText(reason, fallback = '') {
+  const labels = {
+    command_id_required: '远征命令缺少唯一编号，状态没有变化',
+    duplicate_command: '这个远征命令已经处理过，请勿重复点击',
+    stale_revision: '地图或物资已经变化，请重新生成路线',
+    invalid_mode: '远征方式无效，请重新选择',
+    invalid_strategy: '路线偏好无效，请重新选择',
+    unknown_origin: '当前位置不在可规划地图中',
+    active_expedition: '已经有一条远征路线在执行',
+    no_active_expedition: '没有可以操作的远征',
+    planning_unavailable: '当前状态不允许规划远征；战斗中请先清场或脱离',
+    unknown_target: '目标不在已知地图中',
+    unreachable_target: '已知道路无法抵达这个目标',
+    target_is_origin: '目标就是当前位置，无需规划远征',
+    target_search_required: '往返远征必须选择一个确切搜索对象',
+    unknown_target_searchable: '目标搜索对象不在已知情报中',
+    searchable_node_mismatch: '搜索对象不属于这个目标地点',
+    target_search_exhausted: '这个搜索对象已经搜空，请选择其他目标',
+    invalid_leg: '下一段与计划不一致，请重新规划',
+    replan_required: '当前已经偏航，请先重新规划',
+    replan_not_required: '当前路线仍然有效，无需重规划',
+    invalid_phase: '当前远征阶段不能执行这个操作',
+    objective_not_ready: '目标节点尚未安全，不能结算搜寻目标',
+    objective_node_mismatch: '目标行动不在计划节点，状态没有变化',
+    objective_search_mismatch: '实际搜索对象与远征目标不一致',
+    claimed_stack_required: '没有认领任何具体物资，不能完成搜寻目标',
+    unsupported_event: '这个行动不能推进远征状态',
+    projection_failed: '路线投影失败，请重新打开规划器',
+    invalid_projection: '路线投影数据不可用',
+  };
+  return labels[reason] ?? fallback ?? (reason ? `远征无法执行：${reason}` : '远征操作失败，状态没有变化');
+}
+
 function nestedSearchablesForSceneElement(parent, detail) {
   if (!parent || !['landmark', 'building'].includes(parent.section)) return [];
   if (Array.isArray(parent.searchables) && parent.searchables.length) {
@@ -3344,7 +4187,11 @@ function shiftedQuality(quality, shift = 0) {
 }
 
 function searchKeyFor(searchable) {
-  const nodeId = currentNode.value?.id ?? '';
+  return searchKeyForNode(searchable, currentNode.value?.id ?? '');
+}
+
+function searchKeyForNode(searchable, requestedNodeId) {
+  const nodeId = typeof requestedNodeId === 'string' ? requestedNodeId.trim() : '';
   const objectId = typeof searchable?.id === 'string' ? searchable.id.trim() : '';
   const parentSection = typeof searchable?.parentSection === 'string' ? searchable.parentSection.trim() : '';
   const parentId = typeof searchable?.parentId === 'string' ? searchable.parentId.trim() : '';

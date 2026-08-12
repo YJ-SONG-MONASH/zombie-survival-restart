@@ -109,8 +109,18 @@ import {
   resolveBaseWork,
   summarizeBaseSecurity,
 } from '../services/base-security.js';
+import {
+  abandonExpedition as abandonExpeditionProjection,
+  createExpeditionState,
+  normalizeExpeditionState,
+  previewExpeditionPlan as previewExpeditionPlanProjection,
+  replanExpedition as replanExpeditionProjection,
+  resolveExpeditionEvent as resolveExpeditionEventProjection,
+  startExpedition as startExpeditionProjection,
+  summarizeExpedition,
+} from '../services/expedition.js';
 
-export const SAVE_VERSION = 9;
+export const SAVE_VERSION = 10;
 
 const TARGETED_TACTICAL_ACTION_IDS = new Set(['push', 'melee', 'stomp', 'fire']);
 
@@ -154,6 +164,7 @@ const defaultState = () => ({
   searchedSceneObjectIds: [],
   legacyDepletedSceneObjectIds: [],
   worldLootContainers: {},
+  expedition: createExpeditionState(),
   foodPreparationRevision: 0,
   foodPreparationCommandIds: [],
   nodeSearchCounts: {},
@@ -238,18 +249,20 @@ export const useGameStore = defineStore('game', {
         return display.tone === 'danger';
       }).length,
     sceneLootSummary: (state) => (searchable, searchKey = '') => {
+      const canonicalSearchable = canonicalSceneSearchable(state.currentNodeId, searchable);
+      if (!canonicalSearchable) return null;
       const requested = typeof searchKey === 'string' ? searchKey.trim() : '';
       const key = requested && state.worldLootContainers?.[requested]
         ? requested
-        : sceneLootKeyForState(state, searchable, requested);
+        : sceneLootKeyForState(state, canonicalSearchable, requested);
       if (!key) return null;
       const raw = state.worldLootContainers?.[key];
       if (!raw) {
-        return isLegacySceneLootDepleted(state, searchable)
+        return isLegacySceneLootDepleted(state, canonicalSearchable)
           ? legacyDepletedSceneLootSummary(key)
           : null;
       }
-      return summarizeWorldLootContainer(raw, worldLootContextForState(state, searchable, key));
+      return summarizeWorldLootContainer(raw, worldLootContextForState(state, canonicalSearchable, key));
     },
     woundList: (state) => (state.body?.wounds ?? []).map((wound) => ({
       ...wound,
@@ -331,10 +344,32 @@ export const useGameStore = defineStore('game', {
     },
     recipeList: (state) => craftingRecipes.map((recipe) => recipeStatus(recipe, state)),
     foodPreparationOptions: (state) => listFoodPreparationOptions(foodPreparationContextForState(state)),
-    inspectedMapNode: (state) => mapNodes.find((node) => node.id === state.inspectedNodeId) ?? null,
-    inspectedNodeDetail: (state) => mapNodeDetails[state.inspectedNodeId] ?? null,
+    inspectedMapNode: (state) => (
+      mapNodeVisibilityForState(state, state.inspectedNodeId) === 'unknown'
+        ? null
+        : mapNodes.find((node) => node.id === state.inspectedNodeId) ?? null
+    ),
+    inspectedNodeDetail: (state) => (
+      mapNodeVisibilityForState(state, state.inspectedNodeId) === 'unknown'
+        ? null
+        : mapNodeDetails[state.inspectedNodeId] ?? null
+    ),
+    canonicalSceneSearchablesFor: (state) => (nodeId) => (
+      mapNodeVisibilityForState(state, nodeId) === 'unknown'
+        ? []
+        : canonicalSceneSearchableRegistry(nodeId).map(cloneSnapshot)
+    ),
     visibleMapNodeList: (state) => buildVisibleMapNodes(state),
     currentNeighborNodes: (state) => neighborsForNode(state.currentNodeId).map((id) => mapNodes.find((node) => node.id === id)).filter(Boolean),
+    expeditionPlan: (state) => normalizeExpeditionState(
+      state.expedition,
+      expeditionContextForState(state),
+    ).active,
+    expeditionSummary: (state) => summarizeExpedition(
+      state.expedition,
+      expeditionContextForState(state),
+    ),
+    expeditionRoutePreview: (state) => (request = {}) => previewExpeditionPlanForState(state, request),
     currentNodeActions: (state) => {
       const node = mapNodes.find((entry) => entry.id === state.currentNodeId);
       const zombieState = node ? state.nodeZombieStates?.[node.id] : null;
@@ -361,7 +396,9 @@ export const useGameStore = defineStore('game', {
         .map((id) => {
           const action = mapNodeActions.find((entry) => entry.id === id);
           if (!action) return null;
-          let disabledReason = '';
+          let disabledReason = id === 'search'
+            ? '请从“查看地点”选择具体容器进行搜索'
+            : '';
           const actionMinutes = durationForAction(id);
           const encounterAction = ['evade', 'combat_melee', 'combat_firearm'].includes(id);
           if (encounterActive && !encounterAction) disabledReason = `附近还有 ${zombieState.count} 只游荡者，先战斗或绕行`;
@@ -384,6 +421,7 @@ export const useGameStore = defineStore('game', {
           if (id === 'search' && (state.nodeSearchCounts?.[node?.id] ?? 0) >= 3 && !disabledReason) disabledReason = '周边已被搜空，请检查具体建筑容器';
           return {
             ...action,
+            label: id === 'search' ? '去查看地点' : action.label,
             minutes: actionMinutes,
             disabled: Boolean(disabledReason),
             disabledReason,
@@ -477,6 +515,7 @@ export const useGameStore = defineStore('game', {
       if (!hasOwn('nextEncounterSequence')) this.nextEncounterSequence = 1;
       if (!hasOwn('firearmLoads')) this.firearmLoads = {};
       if (!hasOwn('worldLootContainers')) this.worldLootContainers = {};
+      if (!hasOwn('expedition')) this.expedition = createExpeditionState();
       if (!hasOwn('foodPreparationRevision')) this.foodPreparationRevision = 0;
       if (!hasOwn('foodPreparationCommandIds')) this.foodPreparationCommandIds = [];
       if (!hasOwn('legacyDepletedSceneObjectIds')) {
@@ -665,6 +704,9 @@ export const useGameStore = defineStore('game', {
         this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, this.currentNodeId, ...neighborsForNode(this.currentNodeId)]);
         if (!this.inspectedNodeId) this.inspectedNodeId = this.currentNodeId;
       }
+      if (mapNodeVisibilityForState(this.$state, this.inspectedNodeId) === 'unknown') {
+        this.inspectedNodeId = this.currentNodeId;
+      }
       this.vehicle = normalizeVehicle(this.vehicle, this.currentNodeId ?? this.spawnLocation?.id);
       this.movesRemaining = Number.isFinite(this.movesRemaining) ? Math.max(0, Math.round(this.movesRemaining)) : 1;
       this.mapLog = Array.isArray(this.mapLog) ? this.mapLog.slice(0, 80) : [];
@@ -774,6 +816,11 @@ export const useGameStore = defineStore('game', {
         .filter((item) => item.tags?.includes('bag'))
         .sort((left, right) => (right.effects?.capacity ?? 0) - (left.effects?.capacity ?? 0))[0];
       this.equippedBagStackId = validEquippedBag?.stackId ?? (migrateLegacyBag ? bestLegacyBag?.stackId ?? null : null);
+      this.expedition = normalizeExpeditionState(
+        this.expedition,
+        expeditionContextForState(this.$state),
+      );
+      this.expedition = reconcileLoadedExpeditionForState(this.$state);
     },
     recalculateCharacterState(includeUnlocks = false) {
       if (!this.profession) return;
@@ -1533,6 +1580,7 @@ export const useGameStore = defineStore('game', {
       this.searchedSceneObjectIds = [];
       this.legacyDepletedSceneObjectIds = [];
       this.worldLootContainers = {};
+      this.expedition = createExpeditionState();
       this.nodeSearchCounts = {};
       this.nodeZombieStates = {};
       this.activeTacticalEncounter = null;
@@ -1639,6 +1687,7 @@ export const useGameStore = defineStore('game', {
       const selectedWeapon = selectTacticalStartingWeapon(this.$state, preferredActionId);
       const encounterSequence = clampInteger(this.nextEncounterSequence, 1, 1_000_000_000, 1);
       const firearmLoads = normalizeFirearmLoads(this.firearmLoads, [this.inventory, this.baseInventory, this.vehicleInventory]);
+      const aggressiveEntry = ['melee', 'fire', 'combat_melee', 'combat_firearm'].includes(preferredActionId);
       this.activeTacticalEncounter = createTacticalEncounter({
         nodeId: node.id,
         zombieCount: zombieState.count,
@@ -1647,8 +1696,12 @@ export const useGameStore = defineStore('game', {
         startedAtMinutes: this.totalWorldMinutes,
         selectedWeaponStackId: selectedWeapon?.stackId ?? null,
         firearmLoads,
-        initialRangeBand: ['evade', 'disengage'].includes(preferredActionId) ? 'far' : 'near',
-        escapeProgress: ['evade', 'disengage'].includes(preferredActionId) ? 40 : 0,
+        // Merely arriving in a populated node means spotting the horde at a
+        // distance, not materializing inside a grab. Players who explicitly
+        // choose melee/fire still commit to a close engagement; automatic and
+        // defensive entries retain enough space to assess, retreat, or equip.
+        initialRangeBand: aggressiveEntry ? 'near' : 'far',
+        escapeProgress: aggressiveEntry ? 0 : 40,
       });
       this.firearmLoads = firearmLoads;
       if (selectedWeapon) {
@@ -1808,6 +1861,7 @@ export const useGameStore = defineStore('game', {
       const targetText = formatTacticalTargetOutcome(targetOutcome);
       const resultText = [eventText, targetText].filter(Boolean).join(' ');
 
+      const beforeCommitState = cloneSnapshot(this.$state);
       this.inventory = projectedInventory;
       this.firearmLoads = projectedLoads;
       this.vitals = projectedVitals;
@@ -1861,12 +1915,28 @@ export const useGameStore = defineStore('game', {
         };
       }
       this.movesRemaining = this.movementAllowance();
-      this.finishIfGameOver();
+      let expeditionResult = null;
+      if (survivorTerminalFailureForState(this.$state)) {
+        this.finishIfGameOver();
+      } else {
+        try {
+          expeditionResult = this.reconcileSecuredExpeditionNode(nextEncounter.id);
+        } catch {
+          this.$state = beforeCommitState;
+          return false;
+        }
+        if (expeditionResult?.ok === false) {
+          this.$state = beforeCommitState;
+          return false;
+        }
+        this.finishIfGameOver();
+      }
       const result = {
         ok: true,
         events: cloneSnapshot(Array.isArray(resolution.events) ? resolution.events : []),
         effects: cloneSnapshot(effects),
         summary: cloneSnapshot(this.tacticalEncounterSummary),
+        expedition: expeditionResult ? cloneSnapshot(expeditionResult) : null,
       };
       if (targetOutcome) {
         result.target = cloneSnapshot(targetOutcome);
@@ -1902,7 +1972,86 @@ export const useGameStore = defineStore('game', {
       const duration = Math.max(0, Math.round(Number(minutes) || 0));
       return now + duration <= zombieState.evasionUntilMinutes;
     },
+    expeditionCommandToken(kind = 'command') {
+      const state = normalizeExpeditionState(
+        this.expedition,
+        expeditionContextForState(this.$state),
+      );
+      return createExpeditionCommandToken(state, kind, this.totalWorldMinutes);
+    },
+    previewExpeditionPlan(command = {}) {
+      return previewExpeditionPlanForState(this.$state, command);
+    },
+    startExpedition(command = {}) {
+      const context = expeditionContextForState(this.$state, { request: command });
+      const state = normalizeExpeditionState(this.expedition, context);
+      if (requestedExpeditionSearchableIsInvalid(this.$state, command)) {
+        return expeditionStoreFailure(state, 'unknown_target_searchable');
+      }
+      const result = startExpeditionProjection(
+        this.expedition,
+        command,
+        context,
+      );
+      if (result.ok) this.expedition = result.nextState;
+      return result;
+    },
+    replanExpedition(command = {}) {
+      const result = replanExpeditionProjection(
+        this.expedition,
+        command,
+        expeditionContextForState(this.$state),
+      );
+      if (result.ok) this.expedition = result.nextState;
+      return result;
+    },
+    abandonExpedition(command = {}) {
+      const result = abandonExpeditionProjection(
+        this.expedition,
+        command,
+        expeditionContextForState(this.$state),
+      );
+      if (result.ok) this.expedition = result.nextState;
+      return result;
+    },
+    reconcileExpeditionEvent(event = {}) {
+      const result = resolveExpeditionEventProjection(
+        this.expedition,
+        event,
+        expeditionContextForState(this.$state),
+      );
+      if (result.ok) this.expedition = result.nextState;
+      return result;
+    },
+    reconcileSecuredExpeditionNode(encounterId = '') {
+      const active = this.expeditionPlan;
+      if (
+        !active
+        || active.phase !== 'objective'
+        || active.targetNodeId !== this.currentNodeId
+        || active.targetSecured
+        || !this.isCurrentNodeSecured
+      ) return null;
+      const resolvedEncounterId = tacticalRuntimeId(encounterId)
+        ?? tacticalRuntimeId(this.activeTacticalEncounter?.id);
+      if (!resolvedEncounterId) {
+        const state = normalizeExpeditionState(this.expedition, expeditionContextForState(this.$state));
+        return expeditionStoreFailure(state, 'encounter_id_required');
+      }
+      const token = createExpeditionCommandToken(
+        normalizeExpeditionState(this.expedition, expeditionContextForState(this.$state)),
+        `secure:${resolvedEncounterId}`,
+        this.totalWorldMinutes,
+      );
+      return this.reconcileExpeditionEvent({
+        type: 'node_secured',
+        ...token,
+        nodeId: this.currentNodeId,
+        encounterId: resolvedEncounterId,
+      });
+    },
     initializeMapState(force = false) {
+      if (this.runPhase === 'setup' && this.searchingSlotId) return false;
       this.baseSecurity = normalizeBaseSecurity(this.baseSecurity, {
         shelter: this.shelter,
         totalMinutes: worldMinutesForState(this.$state),
@@ -1977,75 +2126,99 @@ export const useGameStore = defineStore('game', {
     },
     inspectMapNode(nodeId) {
       const node = mapNodes.find((entry) => entry.id === nodeId);
-      if (!node) return false;
+      if (!node || mapNodeVisibilityForState(this.$state, node.id) === 'unknown') return false;
       this.inspectedNodeId = node.id;
       return true;
     },
-    moveToNode(nodeId) {
+    moveToNode(nodeId, expeditionCommand = null) {
       if (this.isGameOver) return false;
       const node = mapNodes.find((entry) => entry.id === nodeId);
       if (!node || !this.canMoveToNode(nodeId)) return false;
       const from = mapNodes.find((entry) => entry.id === this.currentNodeId);
       const travelVehicle = activeTravelVehicleForState(this.$state);
-      this.ensureNodeZombieState(node.id);
-      const previousMapState = {
-        currentNodeId: this.currentNodeId,
-        inspectedNodeId: this.inspectedNodeId,
-        visitedNodeIds: [...this.visitedNodeIds],
-        knownNodeIds: [...this.knownNodeIds],
-        vehicle: { ...this.vehicle },
-        movesRemaining: this.movesRemaining,
-      };
-      const outcome = resolveMapMove({
-        day: this.day,
-        node,
-        inventory: this.inventory,
-        tags: this.hiddenTags,
-        traits: this.selectedTraits,
-        vitals: this.vitals,
-        skills: this.skills,
-        vehicle: travelVehicle,
-        world: this.world,
-      });
-      outcome.title = `${from?.name ?? '未知地点'} → ${node.name}`;
-      outcome.skillXpGains = skillGainsForMapAction({
-        actionId: 'move',
-        outcome,
-        inventory: this.inventory,
-        equippedWeaponId: this.equippedWeaponStackId ?? this.equippedWeaponId,
-        node,
-        vehicle: travelVehicle,
-      });
-      this.currentNodeId = node.id;
-      this.inspectedNodeId = node.id;
-      this.visitedNodeIds = uniqueValidNodeIds([...this.visitedNodeIds, node.id]);
-      this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, node.id, ...neighborsForNode(node.id)]);
-      const usingVehicle = travelVehicle?.status !== 'none' && (travelVehicle.fuel ?? 0) > 0;
-      if (usingVehicle) {
-        this.vehicle = {
-          ...travelVehicle,
-          fuel: Math.max(0, (travelVehicle.fuel ?? 0) - 1),
-          nodeId: node.id,
-        };
-      }
-      this.movesRemaining = this.movementAllowance();
-      if (this.applyMapOutcome(outcome, 'move', true)) {
+      const activeExpedition = this.expeditionPlan;
+      const beforeState = cloneSnapshot(this.$state);
+      try {
+        this.ensureNodeZombieState(node.id);
+        const outcome = resolveMapMove({
+          day: this.day,
+          node,
+          inventory: this.inventory,
+          tags: this.hiddenTags,
+          traits: this.selectedTraits,
+          vitals: this.vitals,
+          skills: this.skills,
+          vehicle: travelVehicle,
+          world: this.world,
+        });
+        outcome.title = `${from?.name ?? '未知地点'} → ${node.name}`;
+        outcome.skillXpGains = skillGainsForMapAction({
+          actionId: 'move',
+          outcome,
+          inventory: this.inventory,
+          equippedWeaponId: this.equippedWeaponStackId ?? this.equippedWeaponId,
+          node,
+          vehicle: travelVehicle,
+        });
+        this.currentNodeId = node.id;
+        this.inspectedNodeId = node.id;
+        this.visitedNodeIds = uniqueValidNodeIds([...this.visitedNodeIds, node.id]);
+        this.knownNodeIds = uniqueValidNodeIds([...this.knownNodeIds, node.id, ...neighborsForNode(node.id)]);
+        const usingVehicle = travelVehicle?.status !== 'none' && (travelVehicle.fuel ?? 0) > 0;
+        if (usingVehicle) {
+          this.vehicle = {
+            ...travelVehicle,
+            fuel: Math.max(0, (travelVehicle.fuel ?? 0) - 1),
+            nodeId: node.id,
+          };
+        }
+        this.movesRemaining = this.movementAllowance();
+        if (!this.applyMapOutcome(outcome, 'move', true, true)) {
+          this.$state = beforeState;
+          return false;
+        }
         if (this.activeTacticalEncounter && isTacticalEncounterTerminal(this.activeTacticalEncounter)) {
           this.activeTacticalEncounter = null;
         }
+        if (survivorTerminalFailureForState(this.$state)) {
+          this.finishIfGameOver();
+          return true;
+        }
+        if (activeExpedition && this.expeditionPlan) {
+          const normalizedExpedition = normalizeExpeditionState(
+            this.expedition,
+            expeditionContextForState(this.$state),
+          );
+          const token = expeditionCommand === null || expeditionCommand === undefined
+            ? createExpeditionCommandToken(
+                normalizedExpedition,
+                `leg:${from?.id ?? 'unknown'}:${node.id}`,
+                this.totalWorldMinutes,
+              )
+            : expeditionCommand;
+          const reconciled = this.reconcileExpeditionEvent({
+            type: 'leg_completed',
+            commandId: token?.commandId,
+            expectedRevision: token?.expectedRevision,
+            fromNodeId: from?.id,
+            toNodeId: node.id,
+            secured: this.isCurrentNodeSecured,
+          });
+          if (!reconciled?.ok) {
+            this.$state = beforeState;
+            return false;
+          }
+        }
+        this.finishIfGameOver();
         return true;
+      } catch {
+        this.$state = beforeState;
+        return false;
       }
-      this.currentNodeId = previousMapState.currentNodeId;
-      this.inspectedNodeId = previousMapState.inspectedNodeId;
-      this.visitedNodeIds = previousMapState.visitedNodeIds;
-      this.knownNodeIds = previousMapState.knownNodeIds;
-      this.vehicle = previousMapState.vehicle;
-      this.movesRemaining = previousMapState.movesRemaining;
-      return false;
     },
     resolveNodeAction(actionId) {
       if (this.isGameOver) return false;
-      if (actionId === 'fortify') return false;
+      if (actionId === 'fortify' || actionId === 'search') return false;
       if (!this.currentNodeId) this.initializeMapState();
       const node = mapNodes.find((entry) => entry.id === this.currentNodeId);
       const action = mapNodeActions.find((entry) => entry.id === actionId);
@@ -2094,31 +2267,61 @@ export const useGameStore = defineStore('game', {
     openSceneLoot(searchable, searchKey = '') {
       const access = sceneLootAccess(this, searchable, searchKey);
       if (!access.ok) return access;
-      const { key, node, context } = access;
+      const { key, node, context, searchable: canonicalSearchable } = access;
       const legacyDepleted = !this.worldLootContainers?.[key]
-        && isLegacySceneLootDepleted(this.$state, searchable);
+        && isLegacySceneLootDepleted(this.$state, canonicalSearchable);
       if (legacyDepleted) {
         return { ok: false, reason: 'legacy_depleted', searchKey: key, summary: legacyDepletedSceneLootSummary(key) };
       }
       const raw = this.worldLootContainers?.[key] ?? createSceneLootContainerForState(this.$state, context, key);
       const container = normalizeWorldLootContainer(raw, context);
-      this.worldLootContainers = commitWorldLootContainer(this.worldLootContainers, key, container);
-      return {
-        ok: true,
-        reason: null,
-        searchKey: key,
-        nodeId: node.id,
-        container: cloneSnapshot(container),
-        summary: summarizeWorldLootContainer(container, context),
-      };
+      const summary = summarizeWorldLootContainer(container, context);
+      const beforeState = cloneSnapshot(this.$state);
+      try {
+        this.worldLootContainers = commitWorldLootContainer(this.worldLootContainers, key, container);
+        let expeditionResult = null;
+        const active = this.expeditionPlan;
+        if (
+          summary.exhausted
+          && active?.mode === 'round_trip'
+          && active.phase === 'objective'
+          && active.targetSecured
+          && active.targetNodeId === node.id
+          && active.targetSearchKey === key
+        ) {
+          const normalized = normalizeExpeditionState(this.expedition, expeditionContextForState(this.$state));
+          expeditionResult = this.reconcileExpeditionEvent({
+            type: 'container_exhausted',
+            ...createExpeditionCommandToken(normalized, `empty-open:${key}`, this.totalWorldMinutes),
+            nodeId: node.id,
+            searchKey: key,
+          });
+          if (!expeditionResult?.ok) {
+            this.$state = beforeState;
+            return { ...expeditionResult, searchKey: key, expedition: expeditionResult };
+          }
+        }
+        return {
+          ok: true,
+          reason: null,
+          searchKey: key,
+          nodeId: node.id,
+          container: cloneSnapshot(container),
+          summary,
+          expedition: expeditionResult,
+        };
+      } catch {
+        this.$state = beforeState;
+        return { ok: false, reason: 'open_commit_failed', searchKey: key };
+      }
     },
     revealSceneLoot(searchable, command = {}, searchKey = '') {
       const access = sceneLootAccess(this, searchable, searchKey);
       if (!access.ok) return access;
-      const { key, node, context } = access;
+      const { key, node, context, searchable: canonicalSearchable } = access;
       const raw = this.worldLootContainers?.[key];
       if (!raw) {
-        const legacyDepleted = isLegacySceneLootDepleted(this.$state, searchable);
+        const legacyDepleted = isLegacySceneLootDepleted(this.$state, canonicalSearchable);
         if (legacyDepleted) return { ok: false, reason: 'legacy_depleted', searchKey: key };
       }
       const container = normalizeWorldLootContainer(raw ?? createSceneLootContainerForState(this.$state, context, key), context);
@@ -2126,7 +2329,9 @@ export const useGameStore = defineStore('game', {
       const result = revealWorldLootSlots(container, { ...command, completedAtMinutes }, context);
       if (!result.ok) return { ...result, searchKey: key };
 
-      let committedContainer = result.nextState;
+      const beforeState = cloneSnapshot(this.$state);
+      try {
+        let committedContainer = result.nextState;
       if (result.cost.minutes > 0) {
         if (!this.canPerformWorldAction('search', result.cost.minutes)) {
           return { ok: false, reason: 'unsafe_or_insufficient_window', searchKey: key };
@@ -2147,12 +2352,12 @@ export const useGameStore = defineStore('game', {
           body: this.body,
           base: this.base,
           equippedWeaponId: this.equippedWeaponStackId ?? this.equippedWeaponId,
-          manualLoot: { sourceName: searchable?.name ?? node.name, collectedItems: [] },
+          manualLoot: { sourceName: canonicalSearchable?.name ?? node.name, collectedItems: [] },
           zombiePopulation: this.nodeZombieStates[node.id]?.count ?? 0,
         });
         if (!outcome) return { ok: false, reason: 'search_resolution_failed', searchKey: key };
-        outcome.title = `翻找 ${searchable?.name ?? node.name}`;
-        outcome.result = `你花时间翻找了${searchable?.name ?? '这个容器'}，确认了里面还能带走的物资。未拿走的东西会继续留在原处。`;
+        outcome.title = `翻找 ${canonicalSearchable?.name ?? node.name}`;
+        outcome.result = `你花时间翻找了${canonicalSearchable?.name ?? '这个容器'}，确认了里面还能带走的物资。未拿走的东西会继续留在原处。`;
         outcome.notes = [
           `发现 ${result.revealedSlots.length} 处物资`,
           ...(typeof outcome.notes === 'string' ? outcome.notes.split(' / ') : Array.isArray(outcome.notes) ? outcome.notes : [])
@@ -2178,13 +2383,52 @@ export const useGameStore = defineStore('game', {
         return { ok: false, reason: 'unsafe_or_insufficient_window', searchKey: key };
       }
 
-      this.worldLootContainers = commitWorldLootContainer(this.worldLootContainers, key, committedContainer);
-      return {
-        ...result,
-        nextState: cloneSnapshot(committedContainer),
-        searchKey: key,
-        summary: summarizeWorldLootContainer(committedContainer, context),
-      };
+        this.worldLootContainers = commitWorldLootContainer(this.worldLootContainers, key, committedContainer);
+        const summary = summarizeWorldLootContainer(committedContainer, context);
+        let expeditionResult = null;
+        const activeExpedition = this.expeditionPlan;
+        if (
+          summary.exhausted
+          && activeExpedition?.mode === 'round_trip'
+          && activeExpedition.phase === 'objective'
+          && activeExpedition.targetNodeId === node.id
+          && activeExpedition.targetSearchKey === key
+        ) {
+          const normalizedExpedition = normalizeExpeditionState(
+            this.expedition,
+            expeditionContextForState(this.$state),
+          );
+          const suppliedToken = command?.expeditionCommand;
+          const token = suppliedToken === null || suppliedToken === undefined
+            ? createExpeditionCommandToken(
+                normalizedExpedition,
+                `empty:${command?.commandId ?? key}`,
+                this.totalWorldMinutes,
+              )
+            : suppliedToken;
+          expeditionResult = this.reconcileExpeditionEvent({
+            type: 'container_exhausted',
+            commandId: token?.commandId,
+            expectedRevision: token?.expectedRevision,
+            nodeId: node.id,
+            searchKey: key,
+          });
+          if (!expeditionResult?.ok) {
+            this.$state = beforeState;
+            return { ...expeditionResult, searchKey: key, expedition: expeditionResult };
+          }
+        }
+        return {
+          ...result,
+          nextState: cloneSnapshot(committedContainer),
+          searchKey: key,
+          summary,
+          expedition: expeditionResult,
+        };
+      } catch {
+        this.$state = beforeState;
+        return { ok: false, reason: 'search_commit_failed', searchKey: key };
+      }
     },
     previewSceneLootClaim(searchable, request = {}, searchKey = '') {
       const access = sceneLootAccess(this, searchable, searchKey);
@@ -2211,20 +2455,61 @@ export const useGameStore = defineStore('game', {
       }
       const raw = this.worldLootContainers?.[access.key];
       if (!raw) return { ok: false, reason: 'container_missing', searchKey: access.key };
-      const result = claimWorldLoot(raw, command, {
-        ...access.context,
-        inventory: this.inventory,
-        capacity: inventoryCapacityForState(this.$state, this.inventory),
-      });
-      if (!result.ok) return { ...result, searchKey: access.key };
+      const beforeState = cloneSnapshot(this.$state);
+      try {
+        const result = claimWorldLoot(raw, command, {
+          ...access.context,
+          inventory: this.inventory,
+          capacity: inventoryCapacityForState(this.$state, this.inventory),
+        });
+        if (!result.ok) return { ...result, searchKey: access.key };
 
-      this.inventory = result.inventory;
+        const activeExpedition = this.expeditionPlan;
+        const objectiveClaim = Boolean(
+          activeExpedition
+          && activeExpedition.mode === 'round_trip'
+          && activeExpedition.phase === 'objective'
+          && activeExpedition.targetNodeId === access.node.id
+          && activeExpedition.targetSearchKey === access.key
+        );
+        this.inventory = result.inventory;
       this.nextItemSequence = Math.min(
         1_000_000_000,
         this.nextItemSequence + result.claimedStacks.reduce((sum, item) => sum + Math.max(1, Number(item.count) || 1), 0),
       );
       this.worldLootContainers = commitWorldLootContainer(this.worldLootContainers, access.key, result.nextState);
       const summary = summarizeWorldLootContainer(result.nextState, access.context);
+      let expeditionResult = null;
+      if (objectiveClaim) {
+        const normalizedExpedition = normalizeExpeditionState(
+          this.expedition,
+          expeditionContextForState(this.$state),
+        );
+        const suppliedToken = command?.expeditionCommand;
+        const token = suppliedToken === null || suppliedToken === undefined
+          ? createExpeditionCommandToken(
+              normalizedExpedition,
+              `loot:${command?.commandId ?? access.key}`,
+              this.totalWorldMinutes,
+            )
+          : suppliedToken;
+        expeditionResult = this.reconcileExpeditionEvent({
+          type: 'loot_claimed',
+          commandId: token?.commandId,
+          expectedRevision: token?.expectedRevision,
+          nodeId: access.node.id,
+          searchKey: access.key,
+          claimedStacks: result.claimedStacks.map((item) => ({
+            stackId: item.stackId,
+            id: item.id,
+            count: item.count,
+          })),
+        });
+        if (!expeditionResult?.ok) {
+          this.$state = beforeState;
+          return { ...expeditionResult, searchKey: access.key, expedition: expeditionResult };
+        }
+      }
       this.mapLog.unshift({
         day: this.day,
         time: this.clockLabel,
@@ -2233,9 +2518,13 @@ export const useGameStore = defineStore('game', {
         mode: 'loot',
       });
       this.mapLog = this.mapLog.slice(0, 80);
-      return { ...result, searchKey: access.key, summary };
+      return { ...result, searchKey: access.key, summary, expedition: expeditionResult };
+      } catch {
+        this.$state = beforeState;
+        return { ok: false, reason: 'claim_commit_failed', searchKey: access.key };
+      }
     },
-    applyMapOutcome(outcome, mode = 'action', allowTerminalCommit = false) {
+    applyMapOutcome(outcome, mode = 'action', allowTerminalCommit = false, deferTerminalCommit = false) {
       if (!outcome || (this.isGameOver && !allowTerminalCommit)) return false;
       const transaction = projectInventoryTransaction(this.inventory, {
         consume: (outcome.consume ?? []).map((id) => ({ id, count: 1 })),
@@ -2340,7 +2629,7 @@ export const useGameStore = defineStore('game', {
       });
       this.activeEvent = null;
       this.movesRemaining = this.movementAllowance();
-      this.finishIfGameOver();
+      if (!deferTerminalCommit) this.finishIfGameOver();
       return true;
     },
     advanceSimulation({ minutes = 0, mode = 'active', noiseDelta = 0, threatDelta = 0 } = {}) {
@@ -2446,6 +2735,17 @@ export const useGameStore = defineStore('game', {
     },
     finishIfGameOver() {
       if (!this.isGameOver) return false;
+      const activeExpedition = this.expeditionPlan;
+      if (activeExpedition) {
+        const context = expeditionContextForState(this.$state);
+        const expeditionState = normalizeExpeditionState(this.expedition, context);
+        const result = abandonExpeditionProjection(
+          expeditionState,
+          createExpeditionCommandToken(expeditionState, 'ending', this.totalWorldMinutes),
+          context,
+        );
+        if (result.ok) this.expedition = result.nextState;
+      }
       const previousHighlight = this.ending?.highlight;
       this.ending = createEnding({
         day: Math.max(1, Math.min(this.day, this.maxDay + 5)),
@@ -2556,18 +2856,268 @@ function findHiddenSurvivorPreset(name) {
   return hiddenSurvivorPresets.find((preset) => preset.names.some((entry) => normalizeName(entry) === normalized)) ?? null;
 }
 
+function createExpeditionCommandToken(state, kind = 'command', totalMinutes = 0) {
+  const safeKind = `${kind ?? 'command'}`.trim().replace(/[^a-zA-Z0-9:_-]+/g, '-').slice(0, 96) || 'command';
+  const activeToken = state?.active?.id ?? `next-${Math.max(1, Number(state?.nextSequence) || 1)}`;
+  const revision = Math.max(0, Number(state?.revision) || 0);
+  return {
+    commandId: `${safeKind}:${activeToken}:r${revision}:t${Math.max(0, Math.round(Number(totalMinutes) || 0))}`.slice(0, 180),
+    expectedRevision: revision,
+  };
+}
+
+function expeditionStoreFailure(state, reason) {
+  return {
+    ok: false,
+    reason,
+    replayed: false,
+    revision: Math.max(0, Number(state?.revision) || 0),
+    nextState: cloneSnapshot(state),
+  };
+}
+
+function previewExpeditionPlanForState(state, request = {}) {
+  const context = expeditionContextForState(state, { request });
+  const expeditionState = normalizeExpeditionState(state?.expedition, context);
+  if (requestedExpeditionSearchableIsInvalid(state, request)) {
+    return expeditionStoreFailure(expeditionState, 'unknown_target_searchable');
+  }
+  return previewExpeditionPlanProjection(state?.expedition, request, context);
+}
+
+function requestedExpeditionSearchableIsInvalid(state, request) {
+  if (request?.mode !== 'round_trip' || !Object.prototype.hasOwnProperty.call(request ?? {}, 'targetSearchable')) {
+    return false;
+  }
+  const nodeId = typeof request?.targetNodeId === 'string' ? request.targetNodeId.trim() : '';
+  const allowedNodeIds = new Set(uniqueValidNodeIds([
+    ...(Array.isArray(state?.knownNodeIds) ? state.knownNodeIds : []),
+    ...(Array.isArray(state?.visitedNodeIds) ? state.visitedNodeIds : []),
+    state?.currentNodeId,
+  ]));
+  // Unknown destinations must retain the service's sanitized unknown_target
+  // response instead of revealing whether any supplied descriptor exists.
+  if (!nodeId || !allowedNodeIds.has(nodeId)) return false;
+  const canonical = canonicalSceneSearchable(nodeId, request.targetSearchable);
+  return !canonical || canonicalSceneSearchableKey(nodeId, canonical) !== request.targetSearchKey;
+}
+
+function reconcileLoadedExpeditionForState(state) {
+  const context = expeditionContextForState(state);
+  let normalized = normalizeExpeditionState(state?.expedition, context);
+  const active = normalized.active;
+  if (!active) return normalized;
+
+  const archive = (kind) => {
+    const result = abandonExpeditionProjection(
+      normalized,
+      createExpeditionCommandToken(normalized, kind, worldMinutesForState(state)),
+      context,
+    );
+    return result.ok ? result.nextState : createExpeditionState();
+  };
+  if (loadedStateIsTerminal(state) || !state?.currentNodeId) return archive('load-ended');
+
+  if (active.mode === 'round_trip' && active.phase !== 'returning' && active.objectiveState === 'pending') {
+    const registry = canonicalSceneSearchableRegistry(active.targetNodeId);
+    const exact = registry.find((entry) => entry.searchKey === active.targetSearchKey);
+    const parts = `${active.targetSearchKey ?? ''}`.split(':');
+    const migrated = !exact && parts.length === 2 && parts[0] === active.targetNodeId
+      ? registry.find((entry) => entry.id === parts[1])
+      : null;
+    const target = exact ?? migrated;
+    if (!target) return archive('load-invalid-objective');
+    if (migrated) active.targetSearchKey = migrated.searchKey;
+  }
+
+  const physicalNodeId = state.currentNodeId;
+  if (['outbound', 'returning'].includes(active.phase)) {
+    const route = active.phase === 'returning' ? active.returnPath : active.outboundPath;
+    const cursorNodeId = route[active.legIndex] ?? null;
+    if (physicalNodeId !== cursorNodeId) {
+      active.offRouteFromPhase = active.phase;
+      active.phase = 'off_route';
+      active.legIndex = 0;
+    }
+  } else if (active.phase === 'objective' && physicalNodeId !== active.targetNodeId) {
+    active.offRouteFromPhase = 'outbound';
+    active.phase = 'off_route';
+    active.legIndex = 0;
+  }
+  return normalized;
+}
+
+function loadedStateIsTerminal(state) {
+  if (state?.ending?.title) return true;
+  if ((Number(state?.vitals?.health) || 0) <= 0 || (Number(state?.body?.infectionLevel) || 0) >= 100) return true;
+  const day = Number(state?.day) || 1;
+  const maxDay = Number(state?.maxDay) || 20;
+  if (day > maxDay + 5) return true;
+  if (day < maxDay || !['valley_checkpoint', 'louisville_outskirts'].includes(state?.currentNodeId)) return false;
+  const zombieState = state?.nodeZombieStates?.[state.currentNodeId];
+  return Boolean(zombieState && isNodeSecured(zombieState, worldMinutesForState(state)));
+}
+
+function survivorTerminalFailureForState(state) {
+  return (Number(state?.vitals?.health) || 0) <= 0
+    || (Number(state?.body?.infectionLevel) || 0) >= 100
+    || (Number(state?.day) || 1) > (Number(state?.maxDay) || 20) + 5;
+}
+
+function expeditionContextForState(state, overrides = {}) {
+  const allowedNodeIds = new Set(uniqueValidNodeIds([
+    ...(Array.isArray(state?.knownNodeIds) ? state.knownNodeIds : []),
+    ...(Array.isArray(state?.visitedNodeIds) ? state.visitedNodeIds : []),
+    state?.currentNodeId,
+  ]));
+  const knownNodes = mapNodes.filter((node) => allowedNodeIds.has(node.id));
+  const tacticalActive = Boolean(
+    state?.activeTacticalEncounter
+    && !isTacticalEncounterTerminal(state.activeTacticalEncounter)
+  );
+  return {
+    // Only IDs that the survivor already knows cross the service boundary.
+    // Names, descriptions, coordinates, and unknown-node danger never enter a
+    // preview or a persisted expedition result.
+    nodes: knownNodes.map((node) => ({
+      id: node.id,
+      risk: Math.max(0, Number(node.danger) || 0) ** 2,
+    })),
+    edges: mapEdges
+      .filter(([from, to]) => allowedNodeIds.has(from) && allowedNodeIds.has(to))
+      .map(([from, to]) => ({
+        from,
+        to,
+        footMinutes: durationForAction('move'),
+        workingMinutes: durationForAction('move', { vehicle: { status: 'working', fuel: 1 } }),
+        damagedMinutes: durationForAction('move', { vehicle: { status: 'damaged', fuel: 1 } }),
+        // Destination-node risk is already charged by the route service.
+        // Keeping edge risk at zero prevents the same danger being counted twice.
+        risk: 0,
+      })),
+    currentNodeId: allowedNodeIds.has(state?.currentNodeId) ? state.currentNodeId : null,
+    totalMinutes: worldMinutesForState(state),
+    planningAllowed: typeof overrides.planningAllowed === 'boolean'
+      ? overrides.planningAllowed
+      : expeditionPlanningAllowedForState(state, tacticalActive),
+    tacticalActive,
+    vehicle: (() => {
+      const localVehicle = vehicleAtCurrentNodeForState(state);
+      return { status: localVehicle.status, fuel: localVehicle.fuel };
+    })(),
+    inventory: (Array.isArray(state?.inventory) ? state.inventory : []).map((item) => ({
+      id: item?.id,
+      count: item?.count,
+      space: item?.space,
+      category: item?.category,
+      tags: Array.isArray(item?.tags) ? [...item.tags] : [],
+    })),
+    capacity: inventoryCapacityForState(state, state?.inventory),
+    searchables: expeditionSearchablesForState(
+      state,
+      allowedNodeIds,
+      validatedRequestedExpeditionSearchable(state, allowedNodeIds, overrides.request),
+    ),
+  };
+}
+
+function expeditionPlanningAllowedForState(state, tacticalActive = false) {
+  if (!state?.currentNodeId || tacticalActive || state?.ending?.title) return false;
+  if ((Number(state?.vitals?.health) || 0) <= 0 || (Number(state?.body?.infectionLevel) || 0) >= 100) return false;
+  if ((Number(state?.day) || 1) > (Number(state?.maxDay) || 20) + 5) return false;
+  const now = worldMinutesForState(state);
+  const zombieState = state?.nodeZombieStates?.[state.currentNodeId];
+  const protectedAtHome = state.currentNodeId === state?.spawnLocation?.id
+    && baseInteriorSafetyForState(state);
+  const securedInWorld = Boolean(zombieState && isNodeSecured(zombieState, now));
+  if (!protectedAtHome && !securedInWorld) return false;
+  if (
+    (Number(state?.day) || 1) >= (Number(state?.maxDay) || 20)
+    && ['valley_checkpoint', 'louisville_outskirts'].includes(state.currentNodeId)
+    && securedInWorld
+  ) return false;
+  return true;
+}
+
+function validatedRequestedExpeditionSearchable(state, allowedNodeIds, request) {
+  const nodeId = typeof request?.targetNodeId === 'string' ? request.targetNodeId.trim() : '';
+  const searchKey = typeof request?.targetSearchKey === 'string' ? request.targetSearchKey.trim() : '';
+  const searchable = request?.targetSearchable;
+  if (!nodeId || !searchKey || !allowedNodeIds.has(nodeId) || !searchable || typeof searchable !== 'object' || Array.isArray(searchable)) {
+    return null;
+  }
+  const stateAtTarget = { ...state, currentNodeId: nodeId };
+  const canonicalSearchable = canonicalSceneSearchable(nodeId, searchable);
+  if (!canonicalSearchable) return null;
+  const canonicalKey = sceneLootKeyForState(stateAtTarget, canonicalSearchable, searchKey);
+  if (!canonicalKey || canonicalKey !== searchKey) return null;
+  return { nodeId, searchKey: canonicalKey, searchable: canonicalSearchable };
+}
+
+function expeditionSearchablesForState(state, allowedNodeIds, requested = null) {
+  const result = new Map();
+  const addSearchable = (nodeId, searchable, searchKey, rawContainer = null) => {
+    const canonicalSearchable = canonicalSceneSearchable(nodeId, searchable);
+    if (!allowedNodeIds.has(nodeId) || !canonicalSearchable) return;
+    const canonicalKey = canonicalSceneSearchableKey(nodeId, canonicalSearchable);
+    if (!canonicalKey || canonicalKey !== searchKey) return;
+    const stateAtNode = { ...state, currentNodeId: nodeId };
+    const context = worldLootContextForState(stateAtNode, canonicalSearchable, searchKey);
+    const legacyDepleted = !rawContainer && isLegacySceneLootDepleted(stateAtNode, canonicalSearchable);
+    const container = rawContainer
+      ? normalizeWorldLootContainer(rawContainer, context)
+      : createSceneLootContainerForState(stateAtNode, context, searchKey);
+    const summary = summarizeWorldLootContainer(container, context);
+    result.set(searchKey, {
+      searchKey,
+      nodeId,
+      searchMinutes: summary.searchCostPaid || legacyDepleted ? 0 : summary.searchCost.minutes,
+      exhausted: legacyDepleted || summary.exhausted,
+    });
+  };
+
+  Object.entries(state?.worldLootContainers ?? {}).forEach(([searchKey, rawContainer]) => {
+    if (typeof searchKey !== 'string') return;
+    const parts = searchKey.split(':');
+    const nodeId = typeof rawContainer?.source?.nodeId === 'string'
+      ? rawContainer.source.nodeId
+      : parts[0];
+    if (parts[0] !== nodeId || !allowedNodeIds.has(nodeId)) return;
+    const searchable = canonicalSceneSearchableRegistry(nodeId)
+      .find((entry) => entry.searchKey === searchKey);
+    if (!searchable || (rawContainer?.source?.searchableId && rawContainer.source.searchableId !== searchable.id)) return;
+    addSearchable(nodeId, searchable, searchKey, rawContainer);
+  });
+
+  for (const nodeId of allowedNodeIds) {
+    for (const searchable of canonicalSceneSearchableRegistry(nodeId)) {
+      const searchKey = searchable.searchKey;
+      if (!result.has(searchKey)) addSearchable(nodeId, searchable, searchKey);
+    }
+  }
+  if (requested && !result.has(requested.searchKey)) {
+    addSearchable(requested.nodeId, requested.searchable, requested.searchKey);
+  }
+  return [...result.values()];
+}
+
 function buildVisibleMapNodes(state) {
-  const visited = new Set(uniqueValidNodeIds(state.visitedNodeIds));
-  const known = new Set(uniqueValidNodeIds(state.knownNodeIds));
   const adjacent = new Set(neighborsForNode(state.currentNodeId));
   return mapNodes.map((node) => {
-    const visibility = node.id === state.currentNodeId
-      ? 'current'
-      : visited.has(node.id)
-        ? 'visited'
-        : known.has(node.id) || adjacent.has(node.id)
-          ? 'known'
-          : 'unknown';
+    const visibility = mapNodeVisibilityForState(state, node.id);
+    if (visibility === 'unknown') {
+      return {
+        id: node.id,
+        x: node.x,
+        y: node.y,
+        visibility,
+        isAdjacent: false,
+        canMove: false,
+        displayName: '???',
+        displayScale: 'normal',
+        typeMeta: null,
+      };
+    }
     return {
       ...node,
       typeMeta: mapNodeTypes.find((type) => type.id === node.type),
@@ -3497,6 +4047,17 @@ function advanceInventoryConditionStates(inventory, {
   });
 }
 
+function mapNodeVisibilityForState(state, nodeId) {
+  if (!nodeId || !mapNodes.some((node) => node.id === nodeId)) return 'unknown';
+  if (nodeId === state?.currentNodeId) return 'current';
+  if (uniqueValidNodeIds(state?.visitedNodeIds).includes(nodeId)) return 'visited';
+  if (
+    uniqueValidNodeIds(state?.knownNodeIds).includes(nodeId)
+    || neighborsForNode(state?.currentNodeId).includes(nodeId)
+  ) return 'known';
+  return 'unknown';
+}
+
 function advanceWorldLootConditionStates(containers, elapsedMinutes = 0) {
   const elapsed = Math.max(0, Number(elapsedMinutes) || 0);
   if (!elapsed || !containers || typeof containers !== 'object' || Array.isArray(containers)) {
@@ -3535,6 +4096,218 @@ function sceneLootKeyForState(state, searchable, requestedKey = '') {
   return typeof requestedKey === 'string' && requestedKey.trim() === canonical ? canonical : '';
 }
 
+const SCENE_PARENT_SECTIONS = Object.freeze([
+  ['landmark', 'landmarks'],
+  ['building', 'buildings'],
+]);
+
+const SCENE_QUALITY_ORDER = Object.freeze(['white', 'green', 'blue', 'purple', 'gold', 'red']);
+
+function canonicalSceneSearchableRegistry(nodeId) {
+  const detail = mapNodeDetails[nodeId];
+  if (!detail) return [];
+  const parents = SCENE_PARENT_SECTIONS.flatMap(([section, collection]) => (
+    (Array.isArray(detail[collection]) ? detail[collection] : []).map((parent) => ({
+      ...parent,
+      section,
+    }))
+  ));
+  const assignedDirectIds = new Set();
+  const result = [];
+  const seenKeys = new Set();
+  const add = (descriptor) => {
+    const key = canonicalSceneSearchableKey(nodeId, descriptor);
+    if (!key || seenKeys.has(key)) return;
+    seenKeys.add(key);
+    result.push(Object.freeze({ ...descriptor, searchKey: key }));
+  };
+
+  for (const direct of Array.isArray(detail.searchables) ? detail.searchables : []) {
+    const parent = parents.find((entry) => sceneSearchableMatchesParent(direct, entry));
+    if (!parent) continue;
+    assignedDirectIds.add(direct.id);
+    add(canonicalNestedSceneSearchable(direct, parent));
+  }
+  for (const direct of Array.isArray(detail.searchables) ? detail.searchables : []) {
+    if (!assignedDirectIds.has(direct.id)) add(canonicalRootSceneSearchable(direct));
+  }
+  for (const parent of parents) {
+    const explicit = Array.isArray(parent.searchables) && parent.searchables.length > 0
+      ? parent.searchables
+      : [];
+    const generated = explicit.length > 0 ? [] : generatedSceneSearchablesForParent(parent);
+    for (const child of [...explicit, ...generated]) add(canonicalNestedSceneSearchable(child, parent));
+  }
+  return result;
+}
+
+function canonicalSceneSearchableKey(nodeId, searchable) {
+  const objectId = typeof searchable?.id === 'string' ? searchable.id.trim() : '';
+  if (!nodeId || !objectId) return '';
+  const parentSection = typeof searchable?.parentSection === 'string' ? searchable.parentSection.trim() : '';
+  const parentId = typeof searchable?.parentId === 'string' ? searchable.parentId.trim() : '';
+  return parentSection && parentId
+    ? `${nodeId}:${parentSection}:${parentId}:${objectId}`
+    : `${nodeId}:${objectId}`;
+}
+
+function canonicalSceneSearchable(nodeId, requested) {
+  if (!requested || typeof requested !== 'object' || Array.isArray(requested)) return null;
+  const objectId = typeof requested.id === 'string' ? requested.id.trim() : '';
+  if (!objectId) return null;
+  const parentSection = typeof requested.parentSection === 'string' ? requested.parentSection.trim() : '';
+  const parentId = typeof requested.parentId === 'string' ? requested.parentId.trim() : '';
+  const registry = canonicalSceneSearchableRegistry(nodeId);
+  let canonical = registry.find((entry) => (
+    entry.id === objectId
+    && (entry.parentSection ?? '') === parentSection
+    && (entry.parentId ?? '') === parentId
+  ));
+  // Existing callers may still pass the direct catalog record without its
+  // derived parent. Resolve that record to the one registry identity instead
+  // of creating a second two-part alias.
+  if (!canonical && !parentSection && !parentId) {
+    const direct = (mapNodeDetails[nodeId]?.searchables ?? []).find((entry) => entry.id === objectId);
+    if (direct && sceneSearchableCatalogFieldsMatch(requested, direct)) {
+      canonical = registry.find((entry) => entry.id === objectId) ?? null;
+    }
+  }
+  if (!canonical || !sceneSearchableCatalogFieldsMatch(requested, canonical)) return null;
+  const { searchKey: _searchKey, ...descriptor } = canonical;
+  return cloneSnapshot(descriptor);
+}
+
+function sceneSearchableCatalogFieldsMatch(requested, canonical) {
+  return ['name', 'quality', 'assetId'].every((field) => (
+    requested[field] === undefined || requested[field] === canonical[field]
+  ));
+}
+
+function canonicalRootSceneSearchable(entry) {
+  return {
+    id: entry.id,
+    name: entry.name,
+    assetId: entry.assetId,
+    quality: entry.quality,
+    description: entry.description,
+  };
+}
+
+function canonicalNestedSceneSearchable(entry, parent) {
+  return {
+    id: entry.id || `${parent.id}_${sceneSlug(entry.name)}`,
+    name: entry.name,
+    assetId: entry.assetId || parent.assetId || 'tile_locker',
+    quality: entry.quality || sceneQualityForParent(parent),
+    description: entry.description || `${parent.name}里还有一处可以翻找的角落。`,
+    parentSection: parent.section,
+    parentId: parent.id,
+    parentName: parent.name,
+  };
+}
+
+function sceneSearchableMatchesParent(searchable, parent) {
+  const text = `${parent.name} ${parent.description ?? ''} ${parent.assetId ?? ''}`.toLowerCase();
+  const target = `${searchable.name} ${searchable.description ?? ''} ${searchable.assetId ?? ''}`.toLowerCase();
+  return text.split(/\s+/).some((part) => part.length >= 3 && target.includes(part))
+    || parent.assetId === searchable.assetId
+    || target.includes(parent.name.toLowerCase().slice(0, 2));
+}
+
+function generatedSceneSearchablesForParent(parent) {
+  const text = `${parent.name} ${parent.description ?? ''} ${parent.assetId ?? ''}`.toLowerCase();
+  const quality = sceneQualityForParent(parent);
+  const make = (suffix, name, assetId, description, tierShift = 0) => ({
+    id: `${parent.id}_${suffix}`,
+    name,
+    assetId,
+    quality: shiftedSceneQuality(quality, tierShift),
+    description,
+  });
+  if (/药|医|诊|hospital|clinic|medical|med/.test(text)) {
+    return [
+      make('medicine_cabinet', '药柜', 'tile_medical', '药品、绷带和消毒用品集中。', 1),
+      make('first_aid_case', '急救箱', 'tile_medical', '急救包、止痛药和β受体阻滞剂。'),
+    ];
+  }
+  if (/警|枪|弹|gun|police|ammo|cruiser/.test(text)) {
+    return [
+      make('duty_locker', '值班储物柜', 'tile_locker', '弹药、手电和钥匙线索。', 1),
+      make('desk_drawer', '办公桌抽屉', 'tile_police', '文件、地图碎片和少量警用补给。'),
+    ];
+  }
+  if (/消防|斧|fire/.test(text)) {
+    return [
+      make('axe_locker', '斧头柜', 'tile_fire', '消防斧、手斧和防护装备。', 1),
+      make('tool_wall', '工具墙', 'tile_locker', '喷灯、胶带和维修工具。'),
+    ];
+  }
+  if (/餐|厨|食|饮|罐头|冰柜|杂货|store|restaurant|kitchen|pantry|shelf|shop/.test(text)) {
+    return [
+      make('shelf', '货架', 'tile_store', '罐头、饮料、零食和香烟。'),
+      make('counter', '柜台抽屉', 'tile_store', '电池、胶带和轻量补给。'),
+      make('freezer', '后厨冰柜', 'tile_restaurant', '短期食物和饮料。', 1),
+    ];
+  }
+  if (/加油|燃油|车辆|后备箱|车|gas|fuel|trunk|wreck|vehicle/.test(text)) {
+    return [
+      make('pump', '加油泵', 'tile_gas', '汽油桶、车钥匙和电池线索。', 1),
+      make('trunk', '后备箱', 'tile_wreck', '工具、背包和散装食物。'),
+    ];
+  }
+  if (/仓|工具|车库|柜|箱|托盘|warehouse|locker|crate|storage|garage|shed/.test(text)) {
+    return [
+      make('rack', '工具架', 'tile_locker', '锤子、锯子、扳手和胶带。'),
+      make('crate', '木箱', 'tile_warehouse', '木板、钉子和基地材料。'),
+      make('pallet', '托盘堆', 'tile_warehouse', '大件工具和维修材料。', 1),
+    ];
+  }
+  if (/学校|教室|school|book/.test(text)) {
+    return [
+      make('locker', '储物柜', 'tile_school', '背包、书本和基础药品。'),
+      make('office', '办公室柜', 'tile_locker', '地图、文具和电池。'),
+    ];
+  }
+  if (/农|种子|园艺|钓|河|farm|seed|fishing|camp|river/.test(text)) {
+    return [
+      make('supply_box', '补给箱', 'tile_camp', '水瓶、手电和野外工具。'),
+      make('tool_bin', '农具箱', 'tile_farm', '种子、小铲子和钓具。'),
+    ];
+  }
+  if (/公寓|民宅|旅馆|拖车|住宅|house|apartment|motel|trailer|home/.test(text)) {
+    return [
+      make('kitchen', '厨房柜', 'tile_house', '食物、饮水和轻药品。'),
+      make('bedroom', '卧室抽屉', 'tile_apartment', '背包、衣物和电池。'),
+    ];
+  }
+  return [
+    make('container', `${parent.name}储物箱`, parent.assetId || 'tile_locker', '能翻到少量通用补给。'),
+    make('drawer', `${parent.name}抽屉`, 'tile_locker', '小件工具、食物或药品。'),
+  ];
+}
+
+function sceneQualityForParent(parent) {
+  if (parent.quality) return parent.quality;
+  if (parent.risk === '极高') return 'red';
+  if (parent.risk === '高') return 'purple';
+  if (parent.risk === '中') return 'blue';
+  if (parent.risk === '低') return 'green';
+  return parent.section === 'landmark' ? 'blue' : 'green';
+}
+
+function shiftedSceneQuality(quality, shift = 0) {
+  const index = Math.max(0, SCENE_QUALITY_ORDER.indexOf(quality));
+  return SCENE_QUALITY_ORDER[Math.max(0, Math.min(SCENE_QUALITY_ORDER.length - 1, index + shift))];
+}
+
+function sceneSlug(value) {
+  return `${value ?? 'container'}`
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '_')
+    .replace(/^_+|_+$/g, '') || 'container';
+}
+
 function legacySceneLootAliases(state, searchable) {
   const nodeId = typeof state?.currentNodeId === 'string' ? state.currentNodeId : '';
   const objectId = typeof searchable?.id === 'string' ? searchable.id.trim() : '';
@@ -3569,27 +4342,26 @@ function sceneLootAccess(store, searchable, requestedKey = '') {
   const node = mapNodes.find((entry) => entry.id === store.currentNodeId);
   if (!node || !(node.actions ?? []).includes('search')) return { ok: false, reason: 'wrong_node' };
   if (store.inspectedNodeId && store.inspectedNodeId !== node.id) return { ok: false, reason: 'wrong_node' };
-  if (!isValidSceneSearchable(node.id, searchable)) return { ok: false, reason: 'unknown_searchable' };
-  const key = sceneLootKeyForState(store.$state, searchable, requestedKey);
+  const canonicalSearchable = canonicalSceneSearchable(node.id, searchable);
+  if (!canonicalSearchable) return { ok: false, reason: 'unknown_searchable' };
+  const key = sceneLootKeyForState(store.$state, canonicalSearchable, requestedKey);
   if (!key) return { ok: false, reason: 'invalid_search_key' };
   if (!store.nodeZombieStates?.[node.id]) return { ok: false, reason: 'world_not_ready', searchKey: key };
   if (!store.canPerformWorldAction('loot', 0, false)) {
     return { ok: false, reason: 'unsafe_or_insufficient_window', searchKey: key };
   }
-  return { ok: true, reason: null, key, node, context: worldLootContextForState(store.$state, searchable, key) };
+  return {
+    ok: true,
+    reason: null,
+    key,
+    node,
+    searchable: canonicalSearchable,
+    context: worldLootContextForState(store.$state, canonicalSearchable, key),
+  };
 }
 
 function isValidSceneSearchable(nodeId, searchable) {
-  const detail = mapNodeDetails[nodeId];
-  const objectId = typeof searchable?.id === 'string' ? searchable.id.trim() : '';
-  if (!detail || !objectId) return false;
-  const direct = (detail.searchables ?? []).some((entry) => entry.id === objectId);
-  const parentId = typeof searchable?.parentId === 'string' ? searchable.parentId.trim() : '';
-  if (!parentId) return direct;
-  if (!['landmark', 'building'].includes(searchable?.parentSection)) return false;
-  const parentSection = searchable.parentSection === 'landmark' ? 'landmarks' : 'buildings';
-  const parentExists = (detail[parentSection] ?? []).some((entry) => entry.id === parentId);
-  return parentExists && (direct || objectId.startsWith(`${parentId}_`));
+  return Boolean(canonicalSceneSearchable(nodeId, searchable));
 }
 
 function commitWorldLootContainer(rawContainers, key, container) {
@@ -3604,6 +4376,7 @@ function commitWorldLootContainer(rawContainers, key, container) {
 function normalizeWorldLootContainersForState(state, rawContainers) {
   if (!rawContainers || typeof rawContainers !== 'object' || Array.isArray(rawContainers)) return {};
   const result = {};
+  const exactCanonicalKeys = new Set();
   Object.entries(rawContainers).slice(-512).forEach(([rawKey, raw]) => {
     const key = typeof rawKey === 'string' ? rawKey.trim().slice(0, 500) : '';
     const nodeId = typeof raw?.source?.nodeId === 'string' ? raw.source.nodeId : key.split(':')[0];
@@ -3612,14 +4385,28 @@ function normalizeWorldLootContainersForState(state, rawContainers) {
     const searchableId = typeof raw?.source?.searchableId === 'string'
       ? raw.source.searchableId
       : key.split(':').at(-1);
+    if (!searchableId || key.split(':')[0] !== nodeId) return;
+    const registry = canonicalSceneSearchableRegistry(nodeId);
+    const exact = registry.find((entry) => entry.searchKey === key && entry.id === searchableId);
+    // v6-v9 stored direct catalog objects as two-part keys. If that object now
+    // has one canonical parent, migrate the old key once; four-part aliases are
+    // never guessed because that would preserve forged parent/child identities.
+    const legacyDirect = key.split(':').length === 2
+      ? registry.find((entry) => entry.id === searchableId)
+      : null;
+    const descriptor = exact ?? legacyDirect;
+    if (!descriptor) return;
+    const canonicalKey = descriptor.searchKey;
+    if (!exact && exactCanonicalKeys.has(canonicalKey)) return;
+    if (exact) exactCanonicalKeys.add(canonicalKey);
     const context = {
       worldSeed: state?.world?.seed,
-      searchKey: key,
-      searchable: { id: searchableId || 'unknown', quality: 'white' },
+      searchKey: canonicalKey,
+      searchable: descriptor,
       node,
       catalog: marketItems,
     };
-    result[key] = normalizeWorldLootContainer(raw, context);
+    result[canonicalKey] = normalizeWorldLootContainer(raw, context);
   });
   return result;
 }

@@ -469,14 +469,23 @@ export function resolveCombatEncounter({
   };
 }
 
-export function createWound({ danger = 3, score = 40, day = 1, clockMinutes = START_MINUTE, source = '尸群接触', rng = Math.random } = {}) {
+export function createWound({
+  danger = 3,
+  score = 40,
+  day = 1,
+  clockMinutes = START_MINUTE,
+  source = '尸群接触',
+  rng = Math.random,
+  woundType = null,
+} = {}) {
   const typeRoll = clampNumber(rng(), 0.5, 0, 0.999999);
   const partRoll = clampNumber(rng(), 0.5, 0, 0.999999);
   const parts = ['left_arm', 'right_arm', 'left_hand', 'right_hand', 'left_leg', 'right_leg', 'torso'];
-  let type = 'scratch';
-  if (danger >= 5 && score < 22 && typeRoll < 0.16) type = 'bite';
-  else if (score < 34 || typeRoll < 0.42) type = 'laceration';
-  else if (typeRoll > 0.88) type = 'blunt';
+  const explicitType = Object.prototype.hasOwnProperty.call(woundTypeLabels, woundType) ? woundType : null;
+  let type = explicitType ?? 'scratch';
+  if (!explicitType && danger >= 5 && score < 22 && typeRoll < 0.16) type = 'bite';
+  else if (!explicitType && (score < 34 || typeRoll < 0.42)) type = 'laceration';
+  else if (!explicitType && typeRoll > 0.88) type = 'blunt';
   const severity = type === 'bite' ? 5 : type === 'laceration' ? 3 : type === 'blunt' ? 2 : 1;
   const bodyPart = parts[Math.min(parts.length - 1, Math.floor(partRoll * parts.length))];
   return {

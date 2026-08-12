@@ -101,6 +101,13 @@ describe('catalog integrity', () => {
     expect(mapNodes.filter((node) => !visited.has(node.id)).map((node) => node.id)).toEqual([]);
   });
 
+  it('keeps the two expedition bypass roads that create real route trade-offs', () => {
+    const edgeKeys = new Set(mapEdges.map(([from, to]) => [from, to].sort().join('::')));
+
+    expect(edgeKeys).toContain('riverside_bridge::west_point_gun_store');
+    expect(edgeKeys).toContain('ivy_kettle::west_point_gun_store');
+  });
+
   it('keeps shelter and loot references valid', () => {
     const shelterIds = idsOf(shelters);
     const locationIds = idsOf(spawnLocations);

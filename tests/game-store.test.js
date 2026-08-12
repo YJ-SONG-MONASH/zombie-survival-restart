@@ -386,7 +386,11 @@ describe('game store invariants', () => {
     expect(game.nodeZombieStates.dixie_highway_north.count).toBe(10);
     expect(game.isCurrentNodeSecured).toBe(true);
     expect(game.currentEncounter).toBeNull();
-    expect(game.currentNodeActions.find((action) => action.id === 'search')?.disabled).toBe(false);
+    expect(game.currentNodeActions.find((action) => action.id === 'search')).toEqual(expect.objectContaining({
+      label: '去查看地点',
+      disabled: true,
+      disabledReason: expect.stringContaining('具体容器'),
+    }));
 
     game.advanceSimulation({ minutes: 181, mode: 'active' });
     expect(game.isCurrentNodeSecured).toBe(false);

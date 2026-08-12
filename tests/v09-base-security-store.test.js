@@ -376,7 +376,7 @@ describe('v0.9 base security Store integration', () => {
     const restored = useGameStore();
     restored.loadPersistedState();
 
-    expect(restored.saveVersion).toBe(9);
+    expect(restored.saveVersion).toBe(SAVE_VERSION);
     expect(restored.baseSecurity).toEqual(expected);
   });
 });
@@ -408,8 +408,8 @@ describe('v0.9 base security migration', () => {
 
     restored.loadPersistedState();
 
-    expect(SAVE_VERSION).toBe(9);
-    expect(restored.saveVersion).toBe(9);
+    expect(SAVE_VERSION).toBe(10);
+    expect(restored.saveVersion).toBe(SAVE_VERSION);
     expect(restored.baseSecurity).toMatchObject({ revision: 0, lastProcessedHour: 82, lastIncident: null });
     expect(restored.baseSecuritySummary).toMatchObject({ totalBarricade: 125, legacyBarricades: 5 });
     expect(restored.base).toMatchObject({ defense: 9, barricades: 5, waterReserve: 2 });

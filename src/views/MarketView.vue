@@ -117,7 +117,13 @@
         </span>
       </section>
 
-      <button class="primary-action loot-start-action" @click="startSurvival">整理随身装备并开始生存</button>
+      <button
+        class="primary-action loot-start-action"
+        :disabled="!canStartSurvival"
+        @click="startSurvival"
+      >
+        {{ game.searchingSlotId ? '等待搜索完成…' : '整理随身装备并开始生存' }}
+      </button>
     </template>
   </section>
 </template>
@@ -135,6 +141,7 @@ const remainingRolls = computed(() => Math.max(0, game.maxShelterRolls - game.sh
 const hiddenCount = computed(() => game.lootSlots.filter((slot) => slot.status === 'hidden').length);
 const searchedCount = computed(() => game.lootSlots.filter((slot) => slot.status !== 'hidden').length);
 const canSearchAll = computed(() => hiddenCount.value > 0 && !game.searchingSlotId);
+const canStartSurvival = computed(() => Boolean(game.shelter) && !game.searchingSlotId);
 const searchAllButtonText = computed(() => {
   if (game.searchingSlotId) return '搜索中';
   if (!hiddenCount.value) return '已全部搜索';
@@ -283,8 +290,7 @@ function lootAriaLabel(slot) {
 }
 
 function startSurvival() {
-  if (!game.shelter) return;
-  game.initializeMapState(true);
+  if (!canStartSurvival.value || !game.initializeMapState(true)) return;
   router.push('/survival');
 }
 

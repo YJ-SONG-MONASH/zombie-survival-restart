@@ -441,13 +441,32 @@ export function resolveNodeAction({
       : nodeLoot({ node, day: day + searchCount * 7, skills, traits, inventory }).slice(0, Math.max(1, 2 - searchCount));
   foundItems.forEach((item) => add.push({ ...item, count: item.count ?? 1 }));
   const searchScore = Math.max(10, Math.min(98, 54 - danger * 4 + scoutScore(skills, traits) + lootToolScore(inventory) - (manualLoot ? 0 : searchCount * 9)));
+  const accident = resolveSearchAccident({
+    node,
+    day,
+    clockMinutes,
+    searchScore,
+    searchCount,
+    sourceName: manualLoot?.sourceName,
+    traits,
+    vitals,
+    world,
+    body,
+    zombiePopulation,
+    exactContainer: Boolean(manualLoot),
+  });
   const wounds = [];
-  if (searchScore < 42) {
-    vitalDelta.health -= danger >= 5 ? 10 : 5;
-    vitalDelta.panic += 10;
+  // Searching already carries meaningful time, endurance, noise, and threat
+  // costs. Health loss should represent an actual accident rather than an
+  // unavoidable surcharge attached to every danger-4+ container.
+  vitalDelta.health = 0;
+  if (accident.wound) {
+    vitalDelta.health -= accident.healthLoss;
+    vitalDelta.panic += accident.exposed ? 8 : 4;
+    vitalDelta.stress += accident.exposed ? 4 : 2;
     addTags.push('受伤');
-    wounds.push(createWound({ danger, score: searchScore, day, clockMinutes, source: `${node.name}搜刮事故` }));
-    notes.push('搜刮时受伤');
+    wounds.push(accident.wound);
+    notes.push(accident.exposed ? '尸群仍在附近，翻找时受伤' : '翻找时发生环境事故');
   } else if (foundItems.length) {
     notes.push(`${manualLoot ? '带走' : '找到'}${foundItems.map((item) => item.name).join('、')}`);
   } else {
@@ -472,6 +491,142 @@ export function resolveNodeAction({
     threatDelta: Math.max(0, danger - 2),
     highlight: searchScore >= 86 ? `第${day}天：你在${node.name}找到关键补给。` : null,
   });
+}
+
+/**
+ * Resolve the one-off physical risk of a search without touching combat.
+ *
+ * A cleared location has only a small environmental-accident floor. An
+ * evasion window can make a location actionable while zombies remain nearby;
+ * that exposed search is deliberately riskier, with bad condition, darkness,
+ * weather, and local population contributing to the chance. The roll is
+ * derived from saveable world state so reloading cannot reroll the same search.
+ */
+export function resolveSearchAccident({
+  node = null,
+  day = 1,
+  clockMinutes = 480,
+  searchScore = 42,
+  searchCount = 0,
+  sourceName = '',
+  traits = [],
+  vitals = {},
+  world = null,
+  body = null,
+  zombiePopulation = 0,
+  exactContainer = true,
+} = {}) {
+  const danger = boundedSearchNumber(node?.danger, 3, 1, 6);
+  const population = boundedSearchNumber(zombiePopulation, 0, 0, 1000);
+  const exposed = population > 0;
+  const traitIds = new Set((traits ?? []).map((trait) => typeof trait === 'string' ? trait : trait?.id).filter(Boolean));
+  const weather = weatherDefinitions.find((entry) => entry.id === world?.weatherId) ?? weatherDefinitions[0];
+  const normalizedMinute = ((boundedSearchNumber(clockMinutes, 480, 0, Number.MAX_SAFE_INTEGER) % 1440) + 1440) % 1440;
+  const isNight = normalizedMinute < 6 * 60 || normalizedMinute >= 21 * 60;
+  const wounds = Array.isArray(body?.wounds) ? body.wounds : [];
+  const bleedingCount = wounds.filter((wound) => wound?.bleeding && !wound?.bandaged).length;
+
+  const conditionPressure =
+    Math.max(0, boundedSearchNumber(vitals?.fatigue, 20, 0, 100) - 50) * 0.0014 +
+    Math.max(0, 40 - boundedSearchNumber(vitals?.endurance, 100, 0, 100)) * 0.0015 +
+    Math.max(0, boundedSearchNumber(vitals?.panic, 20, 0, 100) - 55) * 0.001 +
+    Math.max(0, boundedSearchNumber(body?.pain, 0, 0, 100) - 35) * 0.0005 +
+    Math.min(0.036, wounds.length * 0.012) +
+    Math.min(0.03, bleedingCount * 0.015) +
+    Math.max(0, -boundedSearchNumber(weather?.searchMod, 0, -20, 20)) * 0.003 +
+    Math.max(0, boundedSearchNumber(world?.threat, 20, 0, 100) - 60) * 0.0008 +
+    (isNight ? 0.025 : 0);
+  const scorePressure = Math.max(0, 46 - boundedSearchNumber(searchScore, 42, 5, 98)) * 0.004;
+  const traitPressure =
+    (traitIds.has('thin_skinned') ? 0.018 : 0) -
+    (traitIds.has('thick_skinned') ? 0.012 : 0) -
+    (traitIds.has('outdoorsman') ? 0.008 : 0);
+  const broadSearchPressure = exactContainer ? 0 : 0.015;
+  const rawChance = exposed
+    ? 0.035 + danger * 0.015 + Math.min(12, population) * 0.008 + scorePressure * 0.75
+    : 0.008 + scorePressure;
+  const chance = clampSearchNumber(
+    rawChance + conditionPressure + traitPressure + broadSearchPressure,
+    exposed ? 0.03 : 0.005,
+    exposed ? 0.45 : 0.18,
+  );
+
+  const rng = seededSearchRng([
+    world?.seed ?? 0,
+    node?.id ?? 'unknown',
+    day,
+    clockMinutes,
+    searchCount,
+    sourceName || (exactContainer ? 'container' : 'broad-search'),
+    population,
+  ].join('|'));
+  const roll = rng();
+  if (roll >= chance) {
+    return { chance, roll, exposed, conditionPressure, wound: null, healthLoss: 0 };
+  }
+
+  const typeRoll = rng();
+  const biteChance = exposed && danger >= 5
+    ? clampSearchNumber((danger - 4) * 0.006 + Math.max(0, Math.min(12, population) - 6) * 0.001 + conditionPressure * 0.04, 0, 0.05)
+    : 0;
+  const lacerationChance = exposed
+    ? clampSearchNumber(0.12 + Math.max(0, danger - 2) * 0.06 + Math.min(12, population) * 0.006 + conditionPressure * 0.6, 0.08, 0.65)
+    : clampSearchNumber(0.025 + Math.max(0, danger - 2) * 0.02 + conditionPressure * 0.4, 0.02, 0.2);
+  const bluntChance = exposed ? 0.12 : 0.5;
+  let woundType = 'scratch';
+  if (typeRoll < biteChance) woundType = 'bite';
+  else if (typeRoll < biteChance + lacerationChance) woundType = 'laceration';
+  else if (typeRoll < biteChance + lacerationChance + bluntChance) woundType = 'blunt';
+  const wound = createWound({
+    danger,
+    score: searchScore,
+    day,
+    clockMinutes,
+    source: `${node?.name ?? '未知地点'}搜刮事故`,
+    rng,
+    woundType,
+  });
+  const healthLossByType = { scratch: 1, blunt: 2, laceration: 4, bite: 10 };
+  const healthLoss = healthLossByType[wound.type] + (exposed ? 1 : 0);
+  return {
+    chance,
+    roll,
+    exposed,
+    conditionPressure,
+    biteChance,
+    lacerationChance,
+    wound,
+    healthLoss,
+  };
+}
+
+function seededSearchRng(token) {
+  let state = hashSearchToken(token);
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function hashSearchToken(value) {
+  let hash = 2166136261;
+  for (const char of String(value ?? '')) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function boundedSearchNumber(value, fallback, min, max) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? clampSearchNumber(numeric, min, max) : fallback;
+}
+
+function clampSearchNumber(value, min, max) {
+  return Math.max(min, Math.min(max, value));
 }
 
 function normalizeManualLootItems(items = []) {

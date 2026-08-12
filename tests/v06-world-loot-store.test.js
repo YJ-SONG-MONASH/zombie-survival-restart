@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 
 import {
-  mapNodeDetails,
   mapNodes,
   marketItems,
 } from '../src/data/zombie.js';
@@ -12,8 +11,8 @@ const SAVE_KEY = 'moshi-survival-state';
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const catalogItem = (id) => marketItems.find((entry) => entry.id === id);
-const searchableAt = (nodeId, searchableId) => (
-  mapNodeDetails[nodeId]?.searchables?.find((entry) => entry.id === searchableId)
+const searchableAt = (game, nodeId, searchableId) => (
+  game.canonicalSceneSearchablesFor(nodeId).find((entry) => entry.id === searchableId)
 );
 
 function memoryStorage() {
@@ -61,6 +60,16 @@ function openContainer(game, searchable, searchKey = '') {
   return result;
 }
 
+function openFirstPerishableContainer(game, nodeId) {
+  for (const searchable of game.canonicalSceneSearchablesFor(nodeId)) {
+    const opened = openContainer(game, searchable, searchable.searchKey);
+    if (opened.container.slots.some((slot) => slot.item.conditionState?.freshness?.perishable)) {
+      return { searchable, key: opened.searchKey, opened };
+    }
+  }
+  throw new Error(`Expected at least one perishable scene-loot container at ${nodeId}`);
+}
+
 function reveal(game, searchable, command) {
   const result = game.revealSceneLoot(searchable, command);
   expect(result).toEqual(expect.objectContaining({
@@ -95,12 +104,12 @@ describe('v0.6 persistent scene loot store boundary', () => {
   });
 
   it('uses the current save version and opens one deterministic, idempotent world container without spending time', () => {
-    expect(SAVE_VERSION).toBe(9);
-    expect(game.saveVersion).toBe(9);
+    expect(SAVE_VERSION).toBe(10);
+    expect(game.saveVersion).toBe(SAVE_VERSION);
     expect(game.worldLootContainers).toEqual({});
     prepareSafeNode(game, 'muldraugh');
-    const searchable = searchableAt('muldraugh', 'muldraugh_medcab');
-    const key = `muldraugh:${searchable.id}`;
+    const searchable = searchableAt(game, 'muldraugh', 'muldraugh_medcab');
+    const key = searchable.searchKey;
     const beforeMinutes = game.totalWorldMinutes;
     const beforeState = clone(game.$state);
 
@@ -135,26 +144,14 @@ describe('v0.6 persistent scene loot store boundary', () => {
 
   it('uses parent scene identity and rejects invented searchables without generating loot', () => {
     prepareSafeNode(game, 'muldraugh');
-    const storageCrate = {
-      id: 'muldraugh_storage_crate',
-      name: '仓储区木箱',
-      quality: 'blue',
-      parentSection: 'building',
-      parentId: 'muldraugh_storage',
-    };
-    const gasCrate = {
-      id: 'muldraugh_gas_crate',
-      name: '加油站木箱',
-      quality: 'blue',
-      parentSection: 'building',
-      parentId: 'muldraugh_gas',
-    };
+    const storageCrate = searchableAt(game, 'muldraugh', 'muldraugh_storage_crate');
+    const gasShelf = searchableAt(game, 'muldraugh', 'muldraugh_gas_shelf');
 
     const first = openContainer(game, storageCrate);
-    const second = openContainer(game, gasCrate);
+    const second = openContainer(game, gasShelf);
 
     expect(first.searchKey).toBe('muldraugh:building:muldraugh_storage:muldraugh_storage_crate');
-    expect(second.searchKey).toBe('muldraugh:building:muldraugh_gas:muldraugh_gas_crate');
+    expect(second.searchKey).toBe('muldraugh:building:muldraugh_gas:muldraugh_gas_shelf');
     expect(first.container.generationId).not.toBe(second.container.generationId);
     expectRejectedWithoutMutation(game, () => game.openSceneLoot({
       id: 'invented_infinite_crate',
@@ -169,8 +166,8 @@ describe('v0.6 persistent scene loot store boundary', () => {
     ['gold/red', 'louisville', 'louisville_pharmacy', 90],
   ])('charges the %s search tier once and reveals every requested slot atomically', (_tier, nodeId, searchableId, expectedMinutes) => {
     prepareSafeNode(game, nodeId);
-    const searchable = searchableAt(nodeId, searchableId);
-    const key = `${nodeId}:${searchable.id}`;
+    const searchable = searchableAt(game, nodeId, searchableId);
+    const key = searchable.searchKey;
     const opened = openContainer(game, searchable);
     const slotIds = opened.container.slots.map((slot) => slot.slotId);
     const firstBatch = slotIds.slice(0, Math.max(1, slotIds.length - 1));
@@ -209,8 +206,8 @@ describe('v0.6 persistent scene loot store boundary', () => {
   it('claims exact source stacks in zero minutes, preserves leftovers across travel, and reports exhaustion only after taking all', () => {
     prepareSafeNode(game, 'muldraugh');
     game.skills.strength = 10;
-    const searchable = searchableAt('muldraugh', 'muldraugh_motel_drawer');
-    const key = `muldraugh:${searchable.id}`;
+    const searchable = searchableAt(game, 'muldraugh', 'muldraugh_motel_drawer');
+    const key = searchable.searchKey;
     const opened = openContainer(game, searchable);
     reveal(game, searchable, {
       commandId: 'claim-flow:reveal',
@@ -276,7 +273,7 @@ describe('v0.6 persistent scene loot store boundary', () => {
 
   it('keeps capacity preview and commit failures completely atomic', () => {
     prepareSafeNode(game, 'muldraugh');
-    const searchable = searchableAt('muldraugh', 'muldraugh_motel_drawer');
+    const searchable = searchableAt(game, 'muldraugh', 'muldraugh_motel_drawer');
     const opened = openContainer(game, searchable);
     reveal(game, searchable, {
       commandId: 'capacity:reveal',
@@ -314,7 +311,7 @@ describe('v0.6 persistent scene loot store boundary', () => {
 
   it('rejects stale and duplicate mutation commands without touching any Store state', () => {
     prepareSafeNode(game, 'muldraugh');
-    const searchable = searchableAt('muldraugh', 'muldraugh_motel_drawer');
+    const searchable = searchableAt(game, 'muldraugh', 'muldraugh_motel_drawer');
     const opened = openContainer(game, searchable);
     const [firstSlot, secondSlot] = opened.container.slots;
     reveal(game, searchable, {
@@ -338,8 +335,7 @@ describe('v0.6 persistent scene loot store boundary', () => {
 
   it('rejects remote access and active-encounter access with complete zero-write failures', () => {
     prepareSafeNode(game, 'muldraugh');
-    const searchable = searchableAt('muldraugh', 'muldraugh_medcab');
-    const key = `muldraugh:${searchable.id}`;
+    const searchable = searchableAt(game, 'muldraugh', 'muldraugh_medcab');
     const opened = openContainer(game, searchable);
     const firstSlotId = opened.container.slots[0].slotId;
 
@@ -369,8 +365,8 @@ describe('v0.6 persistent scene loot store boundary', () => {
   it('round-trips partially claimed containers through the real v6 save loader', () => {
     prepareSafeNode(game, 'muldraugh');
     game.skills.strength = 10;
-    const searchable = searchableAt('muldraugh', 'muldraugh_motel_drawer');
-    const key = `muldraugh:${searchable.id}`;
+    const searchable = searchableAt(game, 'muldraugh', 'muldraugh_motel_drawer');
+    const key = searchable.searchKey;
     const opened = openContainer(game, searchable);
     reveal(game, searchable, {
       commandId: 'save:reveal',
@@ -390,7 +386,7 @@ describe('v0.6 persistent scene loot store boundary', () => {
     const { game: restored } = createGame(localStorage);
     restored.loadPersistedState();
 
-    expect(restored.saveVersion).toBe(9);
+    expect(restored.saveVersion).toBe(SAVE_VERSION);
     expect(restored.worldLootContainers[key]).toEqual(savedContainer);
     expect(restored.sceneLootSummary(searchable)).toEqual(savedSummary);
     expect(restored.inventory.some((item) => item.stackId === firstStackId)).toBe(true);
@@ -399,7 +395,7 @@ describe('v0.6 persistent scene loot store boundary', () => {
 
   it('migrates a v5 searched-scene tombstone without regenerating its loot', () => {
     prepareSafeNode(game, 'muldraugh');
-    const searchable = searchableAt('muldraugh', 'muldraugh_medcab');
+    const searchable = searchableAt(game, 'muldraugh', 'muldraugh_medcab');
     const key = `muldraugh:${searchable.id}`;
     const legacyState = clone(game.$state);
     legacyState.saveVersion = 5;
@@ -410,7 +406,7 @@ describe('v0.6 persistent scene loot store boundary', () => {
     const { game: migrated } = createGame(localStorage);
     migrated.loadPersistedState();
 
-    expect(migrated.saveVersion).toBe(9);
+    expect(migrated.saveVersion).toBe(SAVE_VERSION);
     expect(migrated.worldLootContainers).toEqual(expect.any(Object));
     expect(migrated.sceneLootSummary(searchable)).toEqual(expect.objectContaining({
       total: 0,
@@ -429,9 +425,7 @@ describe('v0.6 persistent scene loot store boundary', () => {
 
   it('ages revealed but unclaimed perishable world stacks during normal simulation time', () => {
     prepareSafeNode(game, 'riverside');
-    const searchable = searchableAt('riverside', 'riverside_kitchen');
-    const key = `riverside:${searchable.id}`;
-    const opened = openContainer(game, searchable);
+    const { searchable, key, opened } = openFirstPerishableContainer(game, 'riverside');
     reveal(game, searchable, {
       commandId: 'spoilage:reveal',
       expectedRevision: 0,
@@ -459,9 +453,7 @@ describe('v0.6 persistent scene loot store boundary', () => {
     prepareSafeNode(game, 'riverside');
     game.day = 3;
     game.clockMinutes = 8 * 60;
-    const searchable = searchableAt('riverside', 'riverside_kitchen');
-
-    const opened = openContainer(game, searchable);
+    const { opened } = openFirstPerishableContainer(game, 'riverside');
     const perishable = opened.container.slots.find((slot) => slot.item.conditionState?.freshness?.perishable);
 
     expect(perishable).toBeTruthy();
